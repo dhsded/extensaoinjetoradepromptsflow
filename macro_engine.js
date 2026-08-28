@@ -36,7 +36,7 @@ class FlowMacroEngine {
   // =========================================================================
   async loadState() {
     try {
-      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id && chrome.storage && chrome.storage.local) {
         const data = await chrome.storage.local.get(['flow_macro_prompts', 'flow_macro_carousels', 'flow_macro_characters', 'flow_macro_config', 'flow_macro_selected_carousel']);
         if (data.flow_macro_carousels && Array.isArray(data.flow_macro_carousels)) {
           this.carousels = data.flow_macro_carousels;
@@ -55,14 +55,14 @@ class FlowMacroEngine {
         }
       }
     } catch (e) {
-      console.warn('[FLOW Macro Engine] Error loading state:', e);
+      // Quietly ignore invalid context
     }
     this.notify();
   }
 
   async saveState() {
     try {
-      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id && chrome.storage && chrome.storage.local) {
         await chrome.storage.local.set({
           flow_macro_prompts: this.prompts,
           flow_macro_carousels: this.carousels,
@@ -72,7 +72,7 @@ class FlowMacroEngine {
         });
       }
     } catch (e) {
-      console.warn('[FLOW Macro Engine] Error saving state:', e);
+      // Quietly ignore invalid context
     }
     this.notify();
   }
@@ -288,34 +288,59 @@ class FlowMacroEngine {
         // ContentEditable / Slate.js Editor in Google FLOW
         element.focus();
 
-        // 1. Select all content natively (preserves Slate.js internal range & leaves)
+        // 1. Target the exact Slate text leaf node to preserve Slate's DOM node hierarchy
+        const slateStringSpan = element.querySelector('[data-slate-string="true"]') || element.querySelector('[data-slate-leaf="true"]') || element.querySelector('[data-slate-node="text"]');
+        
+        if (slateStringSpan) {
+          try {
+            const textNode = Array.from(slateStringSpan.childNodes).find(n => n.nodeType === 3) || slateStringSpan.firstChild || slateStringSpan;
+            const range = document.createRange();
+            if (textNode.nodeType === 3) {
+              range.setStart(textNode, 0);
+              range.setEnd(textNode, textNode.textContent.length);
+            } else {
+              range.selectNodeContents(textNode);
+            }
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+          } catch (e) { /* ignore */ }
+        }
+
+        // 2. Dispatch BeforeInput (intercepted natively by Slate.js onDOMBeforeInput)
         try {
-          document.execCommand('selectAll', false, null);
+          const dt = new DataTransfer();
+          dt.setData('text/plain', text);
+          const beforeInput = new InputEvent('beforeinput', {
+            bubbles: true,
+            cancelable: true,
+            inputType: 'insertFromPaste',
+            data: text,
+            dataTransfer: dt
+          });
+          element.dispatchEvent(beforeInput);
         } catch (e) { /* ignore */ }
 
-        // 2. Native rich-text replacement
+        // 3. Native rich-text replacement
         let inserted = false;
         try {
           inserted = document.execCommand('insertText', false, text);
         } catch (err) { /* ignore */ }
 
-        // 3. Fallback: Dispatch BeforeInput (intercepted natively by Slate.js onDOMBeforeInput)
+        // 4. If text wasn't inserted, simulate Paste Event
         if (!inserted || !(element.textContent || '').includes(text.substring(0, Math.min(10, text.length)))) {
           try {
-            const dt = new DataTransfer();
-            dt.setData('text/plain', text);
-            const beforeInput = new InputEvent('beforeinput', {
+            const pasteEvent = new ClipboardEvent('paste', {
               bubbles: true,
               cancelable: true,
-              inputType: 'insertFromPaste',
-              data: text,
-              dataTransfer: dt
+              clipboardData: new DataTransfer()
             });
-            element.dispatchEvent(beforeInput);
+            pasteEvent.clipboardData.setData('text/plain', text);
+            element.dispatchEvent(pasteEvent);
           } catch (e) { /* ignore */ }
         }
 
-        // 4. Fire standard input events
+        // 5. Fire standard input events
         element.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
         element.dispatchEvent(new Event('input', { bubbles: true }));
         element.dispatchEvent(new Event('change', { bubbles: true }));
