@@ -268,72 +268,65 @@ class FlowMacroEngine {
   async setPromptInputValue(element, text) {
     if (!element) return false;
 
-    element.focus();
-    await new Promise(r => setTimeout(r, 60));
-
-    if (element.tagName.toLowerCase() === 'textarea' || element.tagName.toLowerCase() === 'input') {
-      // React 16+ value tracker bypass
-      const prototype = Object.getPrototypeOf(element);
-      const valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value') ? Object.getOwnPropertyDescriptor(prototype, 'value').set : null;
-      if (valueSetter) {
-        valueSetter.call(element, text);
-      } else {
-        element.value = text;
-      }
-
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-    } else if (element.getAttribute('contenteditable') === 'true' || element.isContentEditable || element.classList.contains('ProseMirror')) {
-      // ContentEditable / Slate.js Editor in Google FLOW
+    try {
       element.focus();
+      await new Promise(r => setTimeout(r, 60));
 
-      // 1. Select all content natively (preserves Slate.js internal range & leaves)
-      try {
-        document.execCommand('selectAll', false, null);
-      } catch (e) { /* ignore */ }
+      if (element.tagName.toLowerCase() === 'textarea' || element.tagName.toLowerCase() === 'input') {
+        // React 16+ value tracker bypass
+        const prototype = Object.getPrototypeOf(element);
+        const valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value') ? Object.getOwnPropertyDescriptor(prototype, 'value').set : null;
+        if (valueSetter) {
+          valueSetter.call(element, text);
+        } else {
+          element.value = text;
+        }
 
-      // 2. Dispatch BeforeInput (intercepted natively by Slate.js onDOMBeforeInput)
-      try {
-        const dt = new DataTransfer();
-        dt.setData('text/plain', text);
-        const beforeInput = new InputEvent('beforeinput', {
-          bubbles: true,
-          cancelable: true,
-          inputType: 'insertText',
-          data: text,
-          dataTransfer: dt
-        });
-        element.dispatchEvent(beforeInput);
-      } catch (e) { /* ignore */ }
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+      } else {
+        // ContentEditable / Slate.js Editor in Google FLOW
+        element.focus();
 
-      // 3. Native rich-text replacement
-      try {
-        document.execCommand('insertText', false, text);
-      } catch (err) { /* ignore */ }
-
-      // 4. If text wasn't inserted, simulate Paste Event
-      if (!(element.textContent || '').includes(text.substring(0, Math.min(10, text.length)))) {
+        // 1. Select all content natively (preserves Slate.js internal range & leaves)
         try {
-          const pasteEvent = new ClipboardEvent('paste', {
-            bubbles: true,
-            cancelable: true,
-            clipboardData: new DataTransfer()
-          });
-          pasteEvent.clipboardData.setData('text/plain', text);
-          element.dispatchEvent(pasteEvent);
+          document.execCommand('selectAll', false, null);
         } catch (e) { /* ignore */ }
+
+        // 2. Native rich-text replacement
+        let inserted = false;
+        try {
+          inserted = document.execCommand('insertText', false, text);
+        } catch (err) { /* ignore */ }
+
+        // 3. Fallback: Dispatch BeforeInput (intercepted natively by Slate.js onDOMBeforeInput)
+        if (!inserted || !(element.textContent || '').includes(text.substring(0, Math.min(10, text.length)))) {
+          try {
+            const dt = new DataTransfer();
+            dt.setData('text/plain', text);
+            const beforeInput = new InputEvent('beforeinput', {
+              bubbles: true,
+              cancelable: true,
+              inputType: 'insertFromPaste',
+              data: text,
+              dataTransfer: dt
+            });
+            element.dispatchEvent(beforeInput);
+          } catch (e) { /* ignore */ }
+        }
+
+        // 4. Fire standard input events
+        element.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
       }
 
-      // 5. Fire standard input events
-      element.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 100));
+      return true;
+    } catch (err) {
+      console.warn('[FLOW Macro] setPromptInputValue safe warning:', err);
+      return false;
     }
-
-    element.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
-    element.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', bubbles: true }));
-    await new Promise(r => setTimeout(r, 100));
-    return true;
   }
 
   /**
@@ -489,39 +482,42 @@ class FlowMacroEngine {
   }
 
   /**
-   * Adjusts Flow Aspect Ratio and Quantity settings
+   * Adjusts Flow Aspect Ratio and Quantity settings safely
    */
   async applyFlowSettings() {
-    const targetRatio = this.config.aspectRatio; // '16:9', '4:3', '1:1', '3:4', '9:16'
-    const targetQuantity = `x${this.config.quantity}`; // 'x1', 'x2', 'x3', 'x4'
+    try {
+      const targetRatio = this.config.aspectRatio; // '16:9', '4:3', '1:1', '3:4', '9:16'
+      const targetQuantity = `x${this.config.quantity}`; // 'x1', 'x2', 'x3', 'x4'
 
-    // Look for ratio buttons on page
-    const allButtons = Array.from(document.querySelectorAll('button, [role="button"], div[role="radio"], span'));
-    
-    // 1. Ratio buttons (16:9, 4:3, 1:1, 3:4, 9:16)
-    for (const btn of allButtons) {
-      const text = btn.innerText.trim();
-      if (text === targetRatio || text.includes(targetRatio)) {
-        if (btn.offsetParent !== null) {
+      const promptInput = this.findPromptInput();
+      const toolbar = promptInput ? (promptInput.closest('form, section, div') || promptInput.parentElement) : document.body;
+
+      // 1. Ratio buttons (16:9, 4:3, 1:1, 3:4, 9:16)
+      const ratioBtns = Array.from(toolbar.querySelectorAll('button, [role="button"], div[role="radio"]'));
+      for (const btn of ratioBtns) {
+        if (btn.offsetParent === null) continue;
+        const text = (btn.innerText || '').trim();
+        if (text === targetRatio || text.startsWith(targetRatio)) {
           btn.click();
           this.addLog(`Proporção ajustada para: ${targetRatio}`, 'info');
-          await new Promise(r => setTimeout(r, 200));
+          await new Promise(r => setTimeout(r, 120));
           break;
         }
       }
-    }
 
-    // 2. Quantity buttons (x1, x2, x3, x4)
-    for (const btn of allButtons) {
-      const text = btn.innerText.trim();
-      if (text === targetQuantity || text === `${this.config.quantity}` || text === `×${this.config.quantity}`) {
-        if (btn.offsetParent !== null) {
+      // 2. Quantity buttons (x1, x2, x3, x4)
+      for (const btn of ratioBtns) {
+        if (btn.offsetParent === null) continue;
+        const text = (btn.innerText || '').trim();
+        if (text === targetQuantity || text === `${this.config.quantity}` || text === `×${this.config.quantity}`) {
           btn.click();
           this.addLog(`Quantidade ajustada para: ${targetQuantity}`, 'info');
-          await new Promise(r => setTimeout(r, 200));
+          await new Promise(r => setTimeout(r, 120));
           break;
         }
       }
+    } catch (e) {
+      console.warn('[FLOW Macro] applyFlowSettings safe warning:', e);
     }
   }
 
