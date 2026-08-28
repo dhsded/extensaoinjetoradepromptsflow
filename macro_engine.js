@@ -314,39 +314,60 @@ class FlowMacroEngine {
 
   /**
    * Finds and clicks the submit / generate button in Flow with multi-stage traversal
+   * Matches Google Flow's exact button structure:
+   * <button aria-disabled="false" ...><i class="... google-symbols ...">arrow_forward</i><span>Criar</span></button>
    */
   findSubmitButton() {
     const promptInput = this.findPromptInput();
 
-    // 1. Traverse up from promptInput to find the floating prompt bar container
+    // Strategy 1: Find by Google Symbols icon ("arrow_forward", "send", "play_arrow", "arrow_right_alt")
+    const symbolElements = Array.from(document.querySelectorAll('i.google-symbols, span.google-symbols, .google-symbols, i, span')).filter(el => {
+      const symText = (el.innerText || el.textContent || '').trim().toLowerCase();
+      return (symText === 'arrow_forward' || symText === 'send' || symText === 'play_arrow' || symText === 'arrow_right_alt');
+    });
+
+    for (const sym of symbolElements) {
+      const btn = sym.closest('button, [role="button"], div[tabindex="0"]');
+      if (btn && btn.offsetParent !== null && btn.getAttribute('aria-disabled') !== 'true' && !btn.disabled) {
+        return btn;
+      }
+    }
+
+    // Strategy 2: Find by Screen-reader text ("Criar", "Gerar", "Create", "Generate", "Enviar")
+    const srElements = Array.from(document.querySelectorAll('span, p, div, button')).filter(el => {
+      const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+      return (t === 'criar' || t === 'gerar' || t === 'create' || t === 'generate' || t === 'enviar');
+    });
+
+    for (const sr of srElements) {
+      const btn = sr.tagName.toLowerCase() === 'button' ? sr : sr.closest('button, [role="button"]');
+      if (btn && btn.offsetParent !== null && btn.getAttribute('aria-disabled') !== 'true' && !btn.disabled) {
+        return btn;
+      }
+    }
+
+    // Strategy 3: Traverse up from promptInput to find toolbar buttons
     if (promptInput) {
       let current = promptInput.parentElement;
       for (let depth = 0; depth < 8 && current && current !== document.body; depth++) {
-        // Look for buttons inside this bar container
         const buttons = Array.from(current.querySelectorAll('button, [role="button"], div[tabindex="0"]'));
         if (buttons.length > 0) {
-          // The submit button is typically the last button or the round arrow button on the right
           for (let i = buttons.length - 1; i >= 0; i--) {
             const btn = buttons[i];
             if (btn === promptInput || btn.contains(promptInput)) continue;
-            if (btn.offsetParent === null) continue; // Skip hidden
+            if (btn.offsetParent === null) continue;
 
-            const text = (btn.innerText || '').trim().toLowerCase();
+            const text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
             const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
             const title = (btn.getAttribute('title') || '').toLowerCase();
 
-            // Check if it's explicitly not other toolbar elements
             if (text.includes('agente') || text.includes('banana') || text.includes('x1') || text.includes('x2') || text.includes('x3') || text.includes('x4')) {
               continue;
             }
 
-            // Has SVG arrow or is a round circle button on the right
-            const hasSvg = btn.querySelector && btn.querySelector('svg');
-            if (hasSvg || aria.includes('gerar') || aria.includes('enviar') || title.includes('gerar') || text === '➔' || text === '->' || text === '') {
-              const rect = btn.getBoundingClientRect ? btn.getBoundingClientRect() : null;
-              if (!rect || (rect.width >= 18 && rect.width <= 90 && rect.height >= 18 && rect.height <= 90)) {
-                return btn;
-              }
+            const hasIcon = btn.querySelector('.google-symbols, i, svg') || text.includes('arrow_forward') || text.includes('criar') || text.includes('gerar') || text.includes('enviar') || text === '➔';
+            if (hasIcon && btn.getAttribute('aria-disabled') !== 'true' && !btn.disabled) {
+              return btn;
             }
           }
         }
@@ -354,29 +375,23 @@ class FlowMacroEngine {
       }
     }
 
-    // 2. Global search for buttons with right-arrow or submit aria
-    const allButtons = Array.from(document.querySelectorAll('button, [role="button"], div[aria-label*="Gerar" i], div[aria-label*="Generate" i]'));
+    // Strategy 4: Fallback scan all visible buttons
+    const allButtons = Array.from(document.querySelectorAll('button, [role="button"]'));
     for (const btn of allButtons) {
       if (btn.offsetParent === null) continue;
+      if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
+
+      const fullText = (btn.innerText || btn.textContent || '').trim().toLowerCase();
       const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
       const title = (btn.getAttribute('title') || '').toLowerCase();
-      const text = btn.innerText.trim().toLowerCase();
 
       if (
-        aria.includes('gerar') || aria.includes('generate') || aria.includes('enviar') || aria.includes('submit') ||
-        title.includes('gerar') || title.includes('generate') || title.includes('enviar') ||
-        text === 'gerar' || text === 'generate' || text === 'criar'
+        fullText.includes('arrow_forward') || fullText.includes('criar') || fullText.includes('gerar') ||
+        fullText.includes('create') || fullText.includes('generate') ||
+        aria.includes('gerar') || aria.includes('criar') || aria.includes('enviar') || aria.includes('generate') ||
+        title.includes('gerar') || title.includes('criar') || title.includes('enviar')
       ) {
-        if (!btn.disabled) return btn;
-      }
-
-      // Check SVG arrow right inside button in bottom of viewport
-      const svg = btn.querySelector ? btn.querySelector('svg') : null;
-      if (svg && !btn.disabled) {
-        const rect = btn.getBoundingClientRect ? btn.getBoundingClientRect() : null;
-        if (rect && rect.bottom >= window.innerHeight - 220 && rect.width > 18 && rect.width < 90) {
-          return btn;
-        }
+        return btn;
       }
     }
 
