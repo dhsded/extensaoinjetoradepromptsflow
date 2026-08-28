@@ -657,7 +657,8 @@ input:checked + .fd-slider:before {
   bottom: 0;
   left: auto;
   width: 380px;
-  max-width: 95vw;
+  min-width: 280px;
+  max-width: 70vw;
   background: transparent;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -674,6 +675,25 @@ input:checked + .fd-slider:before {
 @keyframes fdSlideInRight {
   from { transform: translateX(100%); opacity: 0; }
   to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* Resize handle on the left edge */
+.fd-resize-handle {
+  pointer-events: auto;
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  background: transparent;
+  z-index: 10;
+  transition: background 0.15s ease;
+}
+
+.fd-resize-handle:hover,
+.fd-resize-handle.active {
+  background: rgba(99, 102, 241, 0.5);
 }
 
 .fd-macro-window {

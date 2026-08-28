@@ -93,10 +93,22 @@ class FlowMacroEngine {
   }
 
   getState() {
-    const totalPrompts = this.prompts.length;
-    const completedCount = this.prompts.filter(p => p.status === 'completed').length;
-    const totalGenerations = this.prompts.reduce((acc, p) => acc + (p.enabled !== false ? (parseInt(p.repeatCount, 10) || 1) : 0), 0);
-    const completedGenerations = this.prompts.reduce((acc, p) => acc + (parseInt(p.completedRepeats, 10) || 0), 0);
+    // Count only slides that will actually be executed (from enabled carousels)
+    let activeSlides = [];
+    const activeCarousels = this.carousels.filter(c => c.enabled !== false);
+    if (activeCarousels.length > 0) {
+      activeCarousels.forEach(c => {
+        const slides = (c.slides || []).filter(s => s.enabled !== false);
+        activeSlides.push(...slides);
+      });
+    } else {
+      activeSlides = this.prompts.filter(p => p.enabled !== false);
+    }
+
+    const totalPrompts = activeSlides.length;
+    const completedCount = activeSlides.filter(p => p.status === 'completed').length;
+    const totalGenerations = activeSlides.reduce((acc, p) => acc + (parseInt(p.repeatCount, 10) || 1), 0);
+    const completedGenerations = activeSlides.reduce((acc, p) => acc + (parseInt(p.completedRepeats, 10) || 0), 0);
 
     return {
       state: this.state,
@@ -108,7 +120,8 @@ class FlowMacroEngine {
       prompts: [...this.prompts],
       characters: [...this.characters],
       config: { ...this.config },
-      logs: [...this.logs]
+      logs: [...this.logs],
+      carousels: [...this.carousels]
     };
   }
 
@@ -569,7 +582,7 @@ class FlowMacroEngine {
   }
 
   /**
-   * Attaches Character reference images into FLOW's image dropzone / upload slot
+   * Attaches Character reference images into FLOW's image upload and clicks "Incluir no comando"
    */
   async attachCharacterImagesToFlow(characterList) {
     const charsWithImages = (characterList || this.characters).filter(c => c.enabled && c.avatarUrl && c.avatarUrl.startsWith('data:image'));
@@ -587,59 +600,87 @@ class FlowMacroEngine {
 
     if (files.length === 0) return false;
 
-    // 2. Find target dropzone or file input in FLOW
-    const promptInput = this.findPromptInput();
-    const promptContainer = promptInput ? (promptInput.closest('div, form, section') || promptInput.parentElement) : document.body;
+    // 2. Upload each file individually
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      
+      // Find file input
+      const fileInput = document.querySelector('input[type="file"]');
+      if (!fileInput) {
+        this.addLog(`⚠️ Slot de upload de arquivos não encontrado no FLOW.`, 'warning');
+        return false;
+      }
 
-    // Method A: Native File Input
-    const fileInput = promptContainer.querySelector('input[type="file"]') || document.querySelector('input[type="file"]');
-    if (fileInput) {
       try {
         const dt = new DataTransfer();
-        files.forEach(f => dt.items.add(f));
+        dt.items.add(file);
         fileInput.files = dt.files;
         fileInput.dispatchEvent(new Event('input', { bubbles: true }));
         fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-        this.addLog(`✅ Personagens carregados via File Input do FLOW.`, 'success');
-        await new Promise(r => setTimeout(r, 250));
-        return true;
+        this.addLog(`📤 Imagem ${i + 1}/${files.length} enviada: ${file.name}`, 'info');
       } catch (err) {
         console.warn('[FLOW Macro] File input injection failed:', err);
+        continue;
       }
+
+      // 3. Wait for the image to load in FLOW's sidebar, then click "Incluir no comando"
+      await new Promise(r => setTimeout(r, 1500));
+      await this.clickIncludeInCommand();
+      await new Promise(r => setTimeout(r, 800));
     }
 
-    // Method B: Drag and Drop Simulation on Prompt Input
-    if (promptContainer) {
-      try {
-        const dt = new DataTransfer();
-        files.forEach(f => dt.items.add(f));
+    this.addLog(`✅ ${files.length} personagem(ns) incluído(s) no comando do FLOW.`, 'success');
+    return true;
+  }
 
-        const dropTarget = promptInput || promptContainer;
-        dropTarget.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: dt }));
-        dropTarget.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
-        dropTarget.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
-        this.addLog(`✅ Personagens injetados via Drag & Drop no campo do FLOW.`, 'success');
-        await new Promise(r => setTimeout(r, 250));
+  /**
+   * Finds and clicks the "Incluir no comando" button in FLOW's resource panel
+   */
+  async clickIncludeInCommand() {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      // Search for "Incluir no comando" / "Include in command" button
+      const allButtons = Array.from(document.querySelectorAll('button, [role="button"]'));
+      const includeBtn = allButtons.find(btn => {
+        const text = (btn.innerText || btn.textContent || '').toLowerCase().trim();
+        return text.includes('incluir no comando') || text.includes('include in') || text.includes('add to prompt') || text.includes('usar') || text.includes('use ');
+      });
+
+      if (includeBtn && includeBtn.offsetParent !== null) {
+        includeBtn.click();
+        this.addLog(`✅ Botão "Incluir no comando" clicado.`, 'success');
+        await new Promise(r => setTimeout(r, 400));
         return true;
-      } catch (err) {
-        console.warn('[FLOW Macro] Drag & Drop injection failed:', err);
       }
+
+      // Also try clicking on the image thumbnail itself in the resources sidebar
+      const imgThumbnails = Array.from(document.querySelectorAll('img[src*="blob:"], img[src*="data:"], img[src*="googleusercontent"]')).filter(img => {
+        return img.offsetParent !== null && img.naturalWidth > 30 && img.closest('[class*="resource"], [class*="upload"], [class*="media"], [class*="asset"]');
+      });
+
+      if (imgThumbnails.length > 0) {
+        const lastImg = imgThumbnails[imgThumbnails.length - 1];
+        const clickTarget = lastImg.closest('button, [role="button"], a, div[tabindex]') || lastImg;
+        clickTarget.click();
+        await new Promise(r => setTimeout(r, 400));
+        
+        // After clicking thumbnail, look for "Incluir no comando" again
+        const btnsAfter = Array.from(document.querySelectorAll('button, [role="button"]'));
+        const includeBtnAfter = btnsAfter.find(btn => {
+          const text = (btn.innerText || btn.textContent || '').toLowerCase().trim();
+          return text.includes('incluir no comando') || text.includes('include in') || text.includes('add to prompt');
+        });
+        if (includeBtnAfter && includeBtnAfter.offsetParent !== null) {
+          includeBtnAfter.click();
+          this.addLog(`✅ Personagem incluído no comando via thumbnail.`, 'success');
+          await new Promise(r => setTimeout(r, 400));
+          return true;
+        }
+      }
+
+      await new Promise(r => setTimeout(r, 500));
     }
 
-    // Method C: Clipboard Paste Simulation
-    if (promptInput) {
-      try {
-        const dt = new DataTransfer();
-        files.forEach(f => dt.items.add(f));
-        promptInput.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }));
-        this.addLog(`✅ Personagens enviados via Paste Event no FLOW.`, 'success');
-        await new Promise(r => setTimeout(r, 250));
-        return true;
-      } catch (err) {
-        console.warn('[FLOW Macro] Clipboard paste injection failed:', err);
-      }
-    }
-
+    this.addLog(`⚠️ Botão "Incluir no comando" não encontrado. Tente incluir manualmente.`, 'warning');
     return false;
   }
 
@@ -703,30 +744,11 @@ class FlowMacroEngine {
   }
 
   /**
-   * Composes full prompt text with characters tags/prefixes
+   * Composes full prompt text (pure image prompt only, no character names)
+   * Characters are attached via images in FLOW, not embedded in the text prompt.
    */
   composePromptText(promptItem) {
-    let text = promptItem.fullText || promptItem.imagePrompt || '';
-
-    // Append / prepend active characters
-    const activeChars = this.characters.filter(c => c.enabled);
-    if (activeChars.length > 0 && this.config.applyGlobalCharacters) {
-      const charTags = activeChars
-        .map(c => c.promptTag || c.name)
-        .filter(Boolean)
-        .join(', ');
-
-      if (charTags && !text.includes(charTags)) {
-        // If prompt already contains structured sections, inject into image prompt
-        if (text.includes('Prompt de Imagem:')) {
-          text = text.replace('Prompt de Imagem:', `Prompt de Imagem: [${charTags}],`);
-        } else {
-          text = `[${charTags}] ${text}`;
-        }
-      }
-    }
-
-    return text;
+    return promptItem.fullText || promptItem.imagePrompt || '';
   }
 
   // =========================================================================

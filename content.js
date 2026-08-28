@@ -1067,6 +1067,7 @@
     let activeTab = 'prompts'; // 'prompts' | 'characters' | 'format' | 'execution'
 
     macroModalElement.innerHTML = `
+      <div class="fd-resize-handle" id="fd-resize-handle"></div>
       <div class="fd-macro-window" id="fd-macro-window">
         <!-- Modal Header -->
         <div class="fd-macro-header" id="fd-macro-drag-handle" style="cursor: grab;">
@@ -1439,6 +1440,43 @@
 
     // Make Studio Window Draggable
     setupDraggableModal(windowEl, dragHandle);
+
+    // Resize handle - drag left edge to resize panel width
+    const resizeHandle = macroModalElement.querySelector('#fd-resize-handle');
+    if (resizeHandle) {
+      let isResizing = false;
+      let startX = 0;
+      let startWidth = 0;
+
+      resizeHandle.addEventListener('mousedown', (e) => {
+        isResizing = true;
+        startX = e.clientX;
+        startWidth = macroModalElement.offsetWidth;
+        resizeHandle.classList.add('active');
+        document.body.style.cursor = 'ew-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+
+        const onMove = (evt) => {
+          if (!isResizing) return;
+          const dx = startX - evt.clientX;
+          const newWidth = Math.max(280, Math.min(window.innerWidth * 0.7, startWidth + dx));
+          macroModalElement.style.width = `${newWidth}px`;
+        };
+
+        const onUp = () => {
+          isResizing = false;
+          resizeHandle.classList.remove('active');
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        };
+
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+    }
 
     // Tab switching
     const tabButtons = macroModalElement.querySelectorAll('.fd-macro-tab');
