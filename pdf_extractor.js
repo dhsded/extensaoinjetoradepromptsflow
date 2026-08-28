@@ -68,28 +68,37 @@ class FlowPdfExtractor {
       // Attempt DecompressionStream('deflate')
       try {
         if (typeof DecompressionStream !== 'undefined') {
-          // Standard raw deflate stream or zlib header check
           let deflateChunk = chunk;
-          // If chunk has zlib header (0x78 0x9c or 0x78 0x01 or 0x78 0xda), we can decompress with 'deflate'
           const ds = new DecompressionStream('deflate');
           const writer = ds.writable.getWriter();
-          writer.write(deflateChunk);
-          writer.close();
           const reader = ds.readable.getReader();
+
+          // Write and close catching any stream-level rejection
+          const writePromise = writer.write(deflateChunk).then(() => writer.close()).catch(() => {});
+
           const chunks = [];
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            chunks.push(value);
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              chunks.push(value);
+            }
+          } catch (readErr) {
+            // Header or checksum mismatch in chunk
           }
-          let totalLen = chunks.reduce((acc, c) => acc + c.length, 0);
-          let merged = new Uint8Array(totalLen);
-          let offset = 0;
-          for (const c of chunks) {
-            merged.set(c, offset);
-            offset += c.length;
+
+          await writePromise;
+
+          if (chunks.length > 0) {
+            let totalLen = chunks.reduce((acc, c) => acc + c.length, 0);
+            let merged = new Uint8Array(totalLen);
+            let offset = 0;
+            for (const c of chunks) {
+              merged.set(c, offset);
+              offset += c.length;
+            }
+            decompressed = new TextDecoder('utf-8', { fatal: false }).decode(merged);
           }
-          decompressed = new TextDecoder('utf-8', { fatal: false }).decode(merged);
         }
       } catch (e) {
         // Fallback: decode raw uncompressed stream

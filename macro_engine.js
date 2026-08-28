@@ -263,12 +263,13 @@ class FlowMacroEngine {
 
   /**
    * Injects text into a prompt field and fires realistic input events
+   * Safe for Slate.js, React Rich Text, and standard Textarea
    */
   async setPromptInputValue(element, text) {
     if (!element) return false;
 
     element.focus();
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 60));
 
     if (element.tagName.toLowerCase() === 'textarea' || element.tagName.toLowerCase() === 'input') {
       // React 16+ value tracker bypass
@@ -283,24 +284,47 @@ class FlowMacroEngine {
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
     } else if (element.getAttribute('contenteditable') === 'true' || element.isContentEditable || element.classList.contains('ProseMirror')) {
-      // Clear existing old text from 'Reutilizar comando' and insert new slide prompt
+      // ContentEditable / Slate.js Editor in Google FLOW
       element.focus();
-      try {
-        const sel = window.getSelection();
-        const range = document.createRange();
-        range.selectNodeContents(element);
-        sel.removeAllRanges();
-        sel.addRange(range);
 
-        // Native rich-text replacement
-        const ok = document.execCommand('insertText', false, text);
-        if (!ok) {
-          element.innerText = text;
-        }
-      } catch (err) {
-        element.innerText = text;
+      // 1. Select all content natively (preserves Slate.js internal range & leaves)
+      try {
+        document.execCommand('selectAll', false, null);
+      } catch (e) { /* ignore */ }
+
+      // 2. Dispatch BeforeInput (intercepted natively by Slate.js onDOMBeforeInput)
+      try {
+        const dt = new DataTransfer();
+        dt.setData('text/plain', text);
+        const beforeInput = new InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: text,
+          dataTransfer: dt
+        });
+        element.dispatchEvent(beforeInput);
+      } catch (e) { /* ignore */ }
+
+      // 3. Native rich-text replacement
+      try {
+        document.execCommand('insertText', false, text);
+      } catch (err) { /* ignore */ }
+
+      // 4. If text wasn't inserted, simulate Paste Event
+      if (!(element.textContent || '').includes(text.substring(0, Math.min(10, text.length)))) {
+        try {
+          const pasteEvent = new ClipboardEvent('paste', {
+            bubbles: true,
+            cancelable: true,
+            clipboardData: new DataTransfer()
+          });
+          pasteEvent.clipboardData.setData('text/plain', text);
+          element.dispatchEvent(pasteEvent);
+        } catch (e) { /* ignore */ }
       }
 
+      // 5. Fire standard input events
       element.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
@@ -308,7 +332,7 @@ class FlowMacroEngine {
 
     element.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
     element.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', bubbles: true }));
-    await new Promise(r => setTimeout(r, 150));
+    await new Promise(r => setTimeout(r, 100));
     return true;
   }
 
