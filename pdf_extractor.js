@@ -1,17 +1,23 @@
-/**
- * FLOW Macro Studio - Client-side Pure JS PDF Text Extractor
- * Uses native browser DecompressionStream for FlateDecode streams.
- * Works 100% offline without external dependencies.
- */
+// ============================================================================
+// FLOW Macro Studio - Extrator e Parser Inteligente de PDFs e Documentos
+// ============================================================================
+// Este módulo é responsável por:
+// 1. Extrair texto puro de arquivos PDF diretamente no navegador (100% offline, sem bibliotecas externas).
+// 2. Descomprimir streams FlateDecode nativamente usando a API DecompressionStream do browser.
+// 3. Suportar outros formatos de documentos (Word .docx, .txt, .md, .json, .csv).
+// 4. Analisar e estruturar roteiros em Carrosséis (Lotes) e Slides com diálogos e prompts de imagem.
+// 5. Detectar e catalogar chaves de API de I.A (Gemini, Groq, OpenRouter) coladas pelo usuário.
+// ============================================================================
 
 class FlowPdfExtractor {
   /**
-   * Extract text from a File or ArrayBuffer
-   * @param {File|ArrayBuffer|Uint8Array} source 
-   * @returns {Promise<{text: string, pages: string[]}>}
+   * Extrai o texto completo de um arquivo ou buffer de PDF
+   * @param {File|ArrayBuffer|Uint8Array} source - Arquivo PDF recebido do input ou drag-and-drop
+   * @returns {Promise<{text: string, pages: string[]}>} - Objeto contendo o texto completo e array de páginas
    */
   static async extractText(source) {
     let arrayBuffer;
+    // Converte a fonte para ArrayBuffer binário
     if (source instanceof File || source instanceof Blob) {
       arrayBuffer = await source.arrayBuffer();
     } else if (source instanceof Uint8Array) {
@@ -28,7 +34,7 @@ class FlowPdfExtractor {
     const streamRegex = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
     let match;
 
-    // Find all stream chunks in binary
+    // Localiza todos os blocos de streams binários no arquivo PDF
     const streamIndices = [];
     let searchPos = 0;
     const streamMarker = new TextEncoder().encode('stream');
@@ -38,7 +44,7 @@ class FlowPdfExtractor {
       const idx = FlowPdfExtractor.indexOfSubarray(uint8, streamMarker, searchPos);
       if (idx === -1) break;
 
-      // Skip newline after stream
+      // Pula quebra de linha após a palavra-chave 'stream'
       let streamStart = idx + 6;
       if (uint8[streamStart] === 13 && uint8[streamStart + 1] === 10) {
         streamStart += 2;
@@ -49,7 +55,7 @@ class FlowPdfExtractor {
       const endIdx = FlowPdfExtractor.indexOfSubarray(uint8, endstreamMarker, streamStart);
       if (endIdx === -1) break;
 
-      // The end of stream data might have \r\n before 'endstream'
+      // Ajusta final do stream caso haja \r\n antes de 'endstream'
       let streamEnd = endIdx;
       if (streamEnd > streamStart && uint8[streamEnd - 1] === 10) streamEnd--;
       if (streamEnd > streamStart && uint8[streamEnd - 1] === 13) streamEnd--;
@@ -60,12 +66,12 @@ class FlowPdfExtractor {
 
     let allExtractedText = [];
 
-    // Process each stream chunk
+    // Processa e descompacta cada stream individualmente
     for (const { start, end } of streamIndices) {
       const chunk = uint8.subarray(start, end);
       let decompressed = null;
 
-      // Attempt DecompressionStream('deflate')
+      // Tenta descompressão nativa com DecompressionStream('deflate')
       try {
         if (typeof DecompressionStream !== 'undefined') {
           let deflateChunk = chunk;
@@ -73,7 +79,7 @@ class FlowPdfExtractor {
           const writer = ds.writable.getWriter();
           const reader = ds.readable.getReader();
 
-          // Write and close catching any stream-level rejection
+          // Envia o chunk para o descompressor
           const writePromise = writer.write(deflateChunk).then(() => writer.close()).catch(() => {});
 
           const chunks = [];
@@ -84,7 +90,7 @@ class FlowPdfExtractor {
               chunks.push(value);
             }
           } catch (readErr) {
-            // Header or checksum mismatch in chunk
+            // Ignora erro de header/checksum se o chunk não for deflate
           }
 
           await writePromise;
@@ -101,7 +107,7 @@ class FlowPdfExtractor {
           }
         }
       } catch (e) {
-        // Fallback: decode raw uncompressed stream
+        // Fallback: decodifica o stream diretamente caso não esteja comprimido
         try {
           decompressed = textDecoder.decode(chunk);
         } catch (err) {}
@@ -115,7 +121,7 @@ class FlowPdfExtractor {
       }
     }
 
-    // Fallback: Direct text extraction from raw PDF objects if stream extraction yielded little
+    // Fallback 1: Extração direta dos operadores do texto bruto do PDF
     if (allExtractedText.join('\n\n').trim().length < 10) {
       const rawText = FlowPdfExtractor.parsePdfOperators(rawPdf);
       if (rawText.trim().length > 0) {
@@ -123,7 +129,7 @@ class FlowPdfExtractor {
       }
     }
 
-    // Secondary Fallback: Regex for parenthesis strings (e.g. `(Prompt de Imagem)`)
+    // Fallback 2: Regex para strings literais entre parênteses (ex: (Prompt de Imagem))
     if (allExtractedText.join('\n\n').trim().length < 10) {
       const literalStrings = [];
       const strRegex = /\(((?:[^()\\]|\\.)*)\)/g;
@@ -147,7 +153,11 @@ class FlowPdfExtractor {
   }
 
   /**
-   * Helper to find subarray index
+   * Localiza a posição de uma sequência de bytes (subarray) dentro de um array binário
+   * @param {Uint8Array} haystack - Array onde pesquisar
+   * @param {Uint8Array} needle - Sequência de bytes a encontrar
+   * @param {number} startIndex - Índice inicial da busca
+   * @returns {number} - Posição encontrada ou -1 se não existir
    */
   static indexOfSubarray(haystack, needle, startIndex = 0) {
     const hLen = haystack.length;
@@ -169,7 +179,10 @@ class FlowPdfExtractor {
   }
 
   /**
-   * Unescape PDF string literals: \( \) \\ \n \r \t \ooo
+   * Converte sequências de escape do padrão PDF para caracteres normais
+   * Ex: \( \) \\ \n \r \t \ooo
+   * @param {string} str - String bruta do PDF
+   * @returns {string} - String desescapada e legível
    */
   static unescapePdfString(str) {
     if (!str) return '';
@@ -186,19 +199,21 @@ class FlowPdfExtractor {
   }
 
   /**
-   * Parse PDF text operators: BT...ET, Tj, TJ, ', "
+   * Interpreta operadores de texto nativos do padrão PDF (BT, ET, Tj, TJ, ', ")
+   * @param {string} streamContent - Conteúdo do stream descompactado
+   * @returns {string} - Texto legível reconstruído
    */
   static parsePdfOperators(streamContent) {
     if (!streamContent) return '';
     let result = '';
     
-    // Extract BT ... ET blocks (Begin Text ... End Text)
+    // Extrai blocos entre BT (Begin Text) e ET (End Text)
     const btBlocks = streamContent.match(/BT[\s\S]*?ET/g) || [streamContent];
 
     for (const block of btBlocks) {
       let blockText = '';
       
-      // Match TJ arrays: [(text1) -120 (text2)] TJ
+      // Operador TJ (Array de strings e espaçamentos): [(Texto1) -120 (Texto2)] TJ
       const tjArrayRegex = /\[((?:[^\(\]]*|\([^\)]*\))*?)\]\s*TJ/gi;
       let match;
       while ((match = tjArrayRegex.exec(block)) !== null) {
@@ -212,13 +227,13 @@ class FlowPdfExtractor {
         if (subText) blockText += subText + ' ';
       }
 
-      // Match single string Tj: (Some text) Tj
+      // Operador Tj (String única): (Texto) Tj
       const tjSingleRegex = /\(((?:[^()\\]|\\.)*)\)\s*Tj/gi;
       while ((match = tjSingleRegex.exec(block)) !== null) {
         blockText += FlowPdfExtractor.unescapePdfString(match[1]) + '\n';
       }
 
-      // Match ' or " operators: (Text) ' or (Text) "
+      // Operadores de aspas ' ou ": (Texto) '
       const quoteRegex = /\(((?:[^()\\]|\\.)*)\)\s*['"]/gi;
       while ((match = quoteRegex.exec(block)) !== null) {
         blockText += '\n' + FlowPdfExtractor.unescapePdfString(match[1]) + '\n';
@@ -233,27 +248,42 @@ class FlowPdfExtractor {
   }
 
   /**
-   * Intelligently parses raw text into discrete prompt items
-   * Supports structured scripts like:
-   * - "Texto nos Balões: ... Prompt de Imagem: ..."
-   * - "Cena 1:", "Cena 2:", "Scene 1", "Prompt 1"
-   * - Page-by-page blocks or blank-line separated blocks
+   * Limpa e normaliza o texto do prompt de imagem para envio ao FLOW
+   * Remove quebras de linha excessivas e normaliza aspas
+   * @param {string} str - Texto bruto do prompt
+   * @returns {string} - Prompt limpo em linha única
    */
+  static cleanPrompt(str) {
+    if (!str || typeof str !== 'string') return '';
+    return str
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/[\u2018\u2019]/g, "'") // Aspas simples curvas para retas
+      .replace(/[\u201C\u201D]/g, '"') // Aspas duplas curvas para retas
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0)
+      .join(' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
   /**
-   * Intelligently parses raw text or multi-page PDF text into discrete prompt/slide items
-   * Intelligently parses raw text or multi-page PDF into Carousels (Lotes) with child Slides
-   * Supports:
-   * - "CARROSSEL 1: ...", "CARROSSEL 2: ...", up to N carousels
-   * - "SLIDE 1", "SLIDE 2" inside each carousel
-   * - "Texto nos Balões: PT: ...", "Prompt de Imagem (Midjourney / Dall-E): ..."
-   * - Automatic dialogue placeholder replacement per slide
-   * - Instagram Captions per carousel
+   * Analisa um roteiro completo e o divide estruturadamente em Carrosséis (Lotes) com seus respectivos Slides
+   * Suporta:
+   * - Identificação de "CARROSSEL 1", "CARROSSEL 2", "LOTE 1", "POST 1"
+   * - Identificação de "SLIDE 1", "CENA 1", "QUADRO 1"
+   * - Extração de "Texto nos Balões: PT: ..." e "Prompt de Imagem: ..."
+   * - Captura de Estilo/Nicho e Legendas do Instagram
+   * @param {string} rawText - Texto bruto do roteiro
+   * @param {string[]} pages - Páginas extraídas do PDF (opcional)
+   * @returns {Array<Object>} - Lista de objetos de carrosséis estruturados
    */
   static parseCarouselsFromScript(rawText, pages = []) {
     if (!rawText || !rawText.trim()) return [];
     const text = rawText.replace(/\r\n/g, '\n').trim();
 
-    // 1. Detect Carousel headers
+    // 1. Detecta cabeçalhos de múltiplos carrosséis
     const carouselHeaderRegex = /(?:^|\n)(?=(?:CARROSSEL|CAROUSEL|LOTE|POST)\s*#?\s*\d+)/i;
     const hasMultipleCarousels = carouselHeaderRegex.test(text);
 
@@ -271,31 +301,31 @@ class FlowPdfExtractor {
       let styleInfo = '';
       let caption = '';
 
-      // Extract Carousel title
+      // Extrai título do carrossel
       const cTitleMatch = cText.match(/^(?:CARROSSEL|CAROUSEL|LOTE|POST)\s*#?\s*\d+[^\n]*/i);
       if (cTitleMatch) {
         title = cTitleMatch[0].trim();
       }
 
-      // Extract Style / Niche
+      // Extrai informações de Estilo / Nicho
       const styleMatch = cText.match(/(?:Estilo|Style|Nicho|Niche)\s*:\s*[^\n]+/i);
       if (styleMatch) {
         styleInfo = styleMatch[0].trim();
       }
 
-      // Extract Instagram Caption / Legenda
+      // Extrai Legenda do Instagram
       const captionMatch = cText.match(/(?:LEGENDA\s+DO\s+INSTAGRAM|LEGENDA|CAPTION)\s*[\:\n]([\s\S]*?)(?=(?:#|$))/i);
       if (captionMatch) {
         caption = captionMatch[1].trim();
       }
 
-      // Isolate slides content
+      // Isola o conteúdo dos slides removendo os cabeçalhos
       let slidesBody = cText;
       if (cTitleMatch) slidesBody = slidesBody.replace(cTitleMatch[0], '');
       if (styleMatch) slidesBody = slidesBody.replace(styleMatch[0], '');
       if (captionMatch) slidesBody = slidesBody.replace(captionMatch[0], '');
 
-      // Split slides within this carousel
+      // Divide os slides dentro deste carrossel
       const slideSplitRegex = /(?:^|\n)(?=(?:SLIDE|CENA|SCENE|QUADRO|PAINEL|PÁGINA|PAGE)\s*#?\s*\d+)/i;
       let slideBlocks = [];
       if (slideSplitRegex.test(slidesBody)) {
@@ -309,12 +339,13 @@ class FlowPdfExtractor {
         }
       }
 
+      // Constrói os objetos de cada slide
       const slides = slideBlocks.map((block, sIdx) => {
         let slideTitle = `Slide ${sIdx + 1}`;
         const titleMatch = block.match(/^(?:(?:SLIDE|CENA|SCENE|QUADRO|PAINEL|PÁGINA|PAGE)\s*#?\s*\d+[^\n]*)/i);
         if (titleMatch) slideTitle = titleMatch[0].trim();
 
-        // Extract Portuguese balloon text
+        // Extrai texto dos balões em Português
         let ptDialogue = '';
         let balloonText = '';
         const balloonMatch = block.match(/(?:Texto\s+(?:nos?\s+)?Bal(?:ão|ões)|Bal(?:ão|ões)|Diálogo|Dialogue)\s*[\:\n]([\s\S]*?)(?=(?:Prompt\s+de\s+Imagem|Image\s+Prompt|Visual\s+Prompt|$))/i);
@@ -326,9 +357,10 @@ class FlowPdfExtractor {
           } else {
             ptDialogue = balloonText.split('\n')[0].replace(/^(?:PT|BR|Texto|Fala)\s*:\s*/i, '').trim();
           }
+          ptDialogue = ptDialogue.replace(/^["“'”]+|["“'”]+$/g, '').trim();
         }
 
-        // Extract image prompt
+        // Extrai prompt de imagem
         let imagePrompt = '';
         const promptMatch = block.match(/(?:Prompt\s+de\s+Imagem[^\n\:]*|Image\s+Prompt|Visual\s+Prompt)\s*[\:\n]\s*([\s\S]*?)(?=(?:LEGENDA|$))/i);
         if (promptMatch) {
@@ -337,18 +369,21 @@ class FlowPdfExtractor {
           imagePrompt = block.replace(titleMatch ? titleMatch[0] : '').replace(balloonMatch ? balloonMatch[0] : '').trim();
         }
 
-        // Substitute dialogue placeholder
-        let finalPrompt = imagePrompt;
-        if (ptDialogue && finalPrompt.includes('dialogue placeholder')) {
-          finalPrompt = finalPrompt.replace(/'dialogue placeholder'/gi, `'${ptDialogue}'`)
-                                   .replace(/"dialogue placeholder"/gi, `"${ptDialogue}"`)
-                                   .replace(/dialogue placeholder/gi, `'${ptDialogue}'`);
+        // Limpa espaços no prompt de imagem
+        imagePrompt = FlowPdfExtractor.cleanPrompt(imagePrompt);
+
+        // Formata o prompt completo correspondendo à estrutura padrão do FLOW
+        let fullFormattedText = '';
+        if (ptDialogue) {
+          fullFormattedText = `Texto nos balões:\nPT: "${ptDialogue}"\n\nPrompt de Imagem (Midjourney / Dall-E):\n${imagePrompt}`;
+        } else {
+          fullFormattedText = imagePrompt || block;
         }
 
         return {
           id: `slide_${cIdx + 1}_${sIdx + 1}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
           index: sIdx + 1,
-          globalIndex: 0, // Assigned below
+          globalIndex: 0, // Será atribuído após o loop
           carouselIndex: cIdx + 1,
           carouselTitle: title,
           title: `${title} • ${slideTitle}`,
@@ -356,7 +391,7 @@ class FlowPdfExtractor {
           balloonText: balloonText,
           ptDialogue: ptDialogue,
           imagePrompt: imagePrompt,
-          fullText: finalPrompt || imagePrompt || block,
+          fullText: fullFormattedText,
           enabled: true,
           repeatCount: 1,
           completedRepeats: 0,
@@ -378,7 +413,7 @@ class FlowPdfExtractor {
       });
     });
 
-    // Assign continuous global indexes across all slides
+    // Atribui índices globais contínuos para todos os slides de todos os carrosséis
     let gIdx = 1;
     carousels.forEach(c => {
       c.slides.forEach(s => {
@@ -390,7 +425,10 @@ class FlowPdfExtractor {
   }
 
   /**
-   * Intelligently parses raw text or multi-page PDF text into discrete prompt/slide items
+   * Converte o roteiro em uma lista plana (flat) de todos os prompts de slides
+   * @param {string} rawText - Texto bruto
+   * @param {string[]} pages - Páginas do PDF
+   * @returns {Array<Object>} - Lista plana de slides prontos para execução
    */
   static parsePromptsFromScript(rawText, pages = []) {
     const carousels = FlowPdfExtractor.parseCarouselsFromScript(rawText, pages);
@@ -401,6 +439,12 @@ class FlowPdfExtractor {
     return flatPrompts;
   }
 
+  /**
+   * Cria um item de prompt a partir de um bloco de texto individual
+   * @param {string} blockText - Texto do bloco
+   * @param {number} index - Posição do slide
+   * @returns {Object|null} - Item de prompt formatado
+   */
   static createPromptItemFromBlock(blockText, index) {
     if (!blockText || blockText.trim().length === 0) return null;
 
@@ -409,26 +453,25 @@ class FlowPdfExtractor {
     let imagePrompt = '';
     let rawCleaned = blockText.trim();
 
-    // 1. Extract Slide / Scene Title (e.g. "Slide 1", "Cena 2 - Encontro")
+    // 1. Extrai título do slide ou cena (ex: "Slide 1", "Cena 2")
     const titleMatch = rawCleaned.match(/^(?:(?:Slide|Cena|Scene|Quadro|Painel|Página|Page|Prompt|Item)\s*#?\s*\d+[^\n]*)/i);
     if (titleMatch) {
       title = titleMatch[0].trim();
     }
 
-    // 2. Extract "Texto nos Balões" (supports PT:, EN:, or direct quotes)
+    // 2. Extrai texto dos balões
     const balloonHeaderRegex = /(?:Texto\s+(?:nos?\s+)?Bal(?:ão|ões)|Bal(?:ão|ões)|Diálogo|Dialogue)\s*[\:\n]([\s\S]*?)(?=(?:Prompt\s+de\s+Imagem[^\n\:]*|Image\s+Prompt|Visual\s+Prompt|Prompt\s*[\:\n]|$))/i;
     const balloonMatch = rawCleaned.match(balloonHeaderRegex);
     if (balloonMatch) {
       balloonText = balloonMatch[1].trim();
     }
 
-    // 3. Extract "Prompt de Imagem (Midjourney / Dall-E / etc):"
+    // 3. Extrai prompt de imagem
     const promptHeaderRegex = /(?:Prompt\s+de\s+Imagem[^\n\:]*|Image\s+Prompt|Visual\s+Prompt|Prompt)\s*[\:\n]\s*([\s\S]*)$/i;
     const promptMatch = rawCleaned.match(promptHeaderRegex);
     if (promptMatch) {
       imagePrompt = promptMatch[1].trim();
     } else {
-      // If no explicit prompt label was found, remove the balloon text part and keep the visual description
       if (balloonMatch) {
         imagePrompt = rawCleaned.replace(balloonMatch[0], '').replace(titleMatch ? titleMatch[0] : '', '').trim();
       } else {
@@ -436,7 +479,7 @@ class FlowPdfExtractor {
       }
     }
 
-    // 4. Extract Portuguese dialogue string specifically if available
+    // 4. Extrai fala em português
     let ptDialogue = '';
     if (balloonText) {
       const ptMatch = balloonText.match(/PT\s*:\s*["“]?([^"”\n\r]+)["”]?/i) || balloonText.match(/["“]([^"”]+)["”]/);
@@ -447,16 +490,17 @@ class FlowPdfExtractor {
       }
     }
 
-    // 5. Build full composite prompt for FLOW
-    // If image prompt has 'dialogue placeholder', automatically substitute dialogue
-    let finalPrompt = imagePrompt;
-    if (ptDialogue && finalPrompt.includes('dialogue placeholder')) {
-      finalPrompt = finalPrompt.replace(/'dialogue placeholder'/gi, `'${ptDialogue}'`)
-                               .replace(/"dialogue placeholder"/gi, `"${ptDialogue}"`)
-                               .replace(/dialogue placeholder/gi, `'${ptDialogue}'`);
+    // 5. Monta o prompt composto completo
+    imagePrompt = FlowPdfExtractor.cleanPrompt(imagePrompt);
+
+    let fullFormattedText = '';
+    if (ptDialogue) {
+      ptDialogue = ptDialogue.replace(/^["“'”]+|["“'”]+$/g, '').trim();
+      fullFormattedText = `Texto nos balões:\nPT: "${ptDialogue}"\n\nPrompt de Imagem (Midjourney / Dall-E):\n${imagePrompt}`;
+    } else {
+      fullFormattedText = imagePrompt || rawCleaned;
     }
 
-    // If title was default, generate a descriptive title from the dialogue
     if (title === `Slide #${index}` && ptDialogue) {
       const shortSnippet = ptDialogue.length > 35 ? ptDialogue.substring(0, 35) + '...' : ptDialogue;
       title = `Slide #${index} - "${shortSnippet}"`;
@@ -469,7 +513,7 @@ class FlowPdfExtractor {
       balloonText: balloonText,
       ptDialogue: ptDialogue,
       imagePrompt: imagePrompt,
-      fullText: finalPrompt || imagePrompt || blockText,
+      fullText: fullFormattedText,
       enabled: true,
       repeatCount: 1,
       completedRepeats: 0,
@@ -478,9 +522,155 @@ class FlowPdfExtractor {
       characters: []
     };
   }
+
+  /**
+   * Extrator Universal de texto compatível com PDF, DOCX, TXT, MD, JSON e CSV
+   * @param {File} file - Arquivo enviado pelo usuário
+   * @returns {Promise<string>} - Texto extraído do arquivo
+   */
+  static async extractTextFromAnyDocument(file) {
+    if (!file) return '';
+
+    const name = (file.name || '').toLowerCase();
+
+    // 1. Arquivos de texto puro / Markdown / JSON / CSV
+    if (name.endsWith('.txt') || name.endsWith('.md') || name.endsWith('.json') || name.endsWith('.csv') || name.endsWith('.rtf') || file.type?.startsWith('text/')) {
+      return await file.text();
+    }
+
+    // 2. Arquivos PDF
+    if (name.endsWith('.pdf') || file.type === 'application/pdf') {
+      const res = await FlowPdfExtractor.extractText(file);
+      return res.text || '';
+    }
+
+    // 3. Documentos do Microsoft Word (.docx)
+    if (name.endsWith('.docx') || file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+      return await FlowPdfExtractor.extractTextFromDocx(file);
+    }
+
+    // Fallback padrão: leitura como texto
+    try {
+      return await file.text();
+    } catch (e) {
+      return '';
+    }
+  }
+
+  /**
+   * Extrator leve em Javascript puro para arquivos DOCX (OpenXML)
+   * @param {File} file - Arquivo .docx
+   * @returns {Promise<string>} - Texto contido nas tags <w:t> do XML
+   */
+  static async extractTextFromDocx(file) {
+    try {
+      const buffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      const decoder = new TextDecoder('utf-8', { fatal: false });
+      const rawText = decoder.decode(bytes);
+
+      const textChunks = [];
+      const wtRegex = /<w:t(?:\s[^>]*)?>([^<]+)<\/w:t>/g;
+      let match;
+      while ((match = wtRegex.exec(rawText)) !== null) {
+        if (match[1]) textChunks.push(match[1]);
+      }
+
+      if (textChunks.length > 0) {
+        return textChunks.join('\n');
+      }
+
+      return '';
+    } catch (e) {
+      console.warn('[FLOW Extractor] extractTextFromDocx warning:', e);
+      return '';
+    }
+  }
+
+  /**
+   * Identifica e cataloga chaves de API de Inteligência Artificial inseridas pelo usuário
+   * Suporta Google Gemini, Groq e OpenRouter
+   * @param {string} rawText - Texto contendo as chaves coladas (uma por linha ou com prefixo)
+   * @returns {Array<Object>} - Lista de objetos de chaves de IA formatadas com provedor e modelo
+   */
+  static parseAIKeysFromText(rawText) {
+    if (!rawText || typeof rawText !== 'string') return [];
+
+    const lines = rawText.split(/[\r\n;,]+/);
+    const keys = [];
+    const seen = new Set();
+
+    for (let line of lines) {
+      line = line.trim();
+      if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+
+      // Detecta dicas de provedor no prefixo (ex: "gemini: AIza...", "groq: gsk_...")
+      let providerHint = '';
+      if (/^gemini[:=\s]/i.test(line)) {
+        providerHint = 'gemini';
+        line = line.replace(/^gemini[:=\s]+/i, '').trim();
+      } else if (/^groq[:=\s]/i.test(line)) {
+        providerHint = 'groq';
+        line = line.replace(/^groq[:=\s]+/i, '').trim();
+      } else if (/^openrouter[:=\s]/i.test(line)) {
+        providerHint = 'openrouter';
+        line = line.replace(/^openrouter[:=\s]+/i, '').trim();
+      }
+
+      // Remove aspas ou crases envolventes
+      line = line.replace(/^["'`]+|["'`]+$/g, '').trim();
+
+      // Extrai o token da chave
+      const keyToken = (line.match(/[A-Za-z0-9_-]{20,}/) || [])[0] || line;
+
+      if (!keyToken || keyToken.length < 15 || seen.has(keyToken)) continue;
+      seen.add(keyToken);
+
+      // Auto-identifica o provedor de IA pelo prefixo característico da chave
+      let provider = providerHint;
+      let model = 'gemini-2.5-flash';
+
+      if (!provider) {
+        if (keyToken.startsWith('gsk_')) {
+          provider = 'groq';
+          model = 'llama-3.3-70b-versatile';
+        } else if (keyToken.startsWith('AIzaSy') || keyToken.startsWith('AIza')) {
+          provider = 'gemini';
+          model = 'gemini-2.5-flash';
+        } else if (keyToken.startsWith('sk-or-v1-') || keyToken.startsWith('sk-or-')) {
+          provider = 'openrouter';
+          model = 'meta-llama/llama-3.2-3b-instruct:free';
+        } else if (keyToken.startsWith('sk-')) {
+          provider = 'openrouter';
+          model = 'meta-llama/llama-3.2-3b-instruct:free';
+        } else {
+          provider = 'gemini';
+          model = 'gemini-2.5-flash';
+        }
+      } else {
+        if (provider === 'groq') model = 'llama-3.3-70b-versatile';
+        else if (provider === 'openrouter') model = 'meta-llama/llama-3.2-3b-instruct:free';
+        else model = 'gemini-2.5-flash';
+      }
+
+      keys.push({
+        id: `ai_key_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        key: keyToken,
+        provider: provider,
+        model: model,
+        status: 'active', // Estados: 'active' | 'exhausted' | 'valid' | 'error'
+        label: `${provider.toUpperCase()} (${keyToken.substring(0, 7)}...${keyToken.slice(-4)})`,
+        enabled: true,
+        errorCount: 0,
+        lastUsed: null
+      });
+    }
+
+    return keys;
+  }
 }
 
-// Make available globally
+// Torna o extrator disponível globalmente no escopo do navegador
 if (typeof window !== 'undefined') {
   window.FlowPdfExtractor = FlowPdfExtractor;
 }

@@ -6,6 +6,7 @@
   "permissions": [
     "downloads",
     "storage",
+    "unlimitedStorage",
     "activeTab",
     "scripting"
   ],

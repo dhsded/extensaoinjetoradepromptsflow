@@ -1,18 +1,64 @@
-// FLOW Downloader Pro - Content Script
-// Automates high-resolution batch downloading and smart scrolling on FLOW (Google Labs / ImageFX)
+// ============================================================================
+// FLOW Downloader & Macro Studio Pro - Script de Conteúdo (Content Script)
+// Automação completa de download em lote e injeção de prompts no Google FLOW
+// ============================================================================
 
 (function () {
   'use strict';
 
-  // Prevent multiple injections in the same frame
+  // =========================================================================
+  // Proteção contra Falhas de Reconciliação do React 18 e Next.js
+  // Impede o erro clássico: "Failed to execute 'removeChild' on 'Node'"
+  // =========================================================================
+  try {
+    if (typeof Node !== 'undefined' && Node.prototype) {
+      const origRemoveChild = Node.prototype.removeChild;
+      Node.prototype.removeChild = function(child) {
+        if (child && child.parentNode !== this) {
+          return child;
+        }
+        return origRemoveChild.apply(this, arguments);
+      };
+
+      const origInsertBefore = Node.prototype.insertBefore;
+      Node.prototype.insertBefore = function(newNode, referenceNode) {
+        if (referenceNode && referenceNode.parentNode !== this) {
+          return this.appendChild(newNode);
+        }
+        return origInsertBefore.apply(this, arguments);
+      };
+    }
+  } catch (e) { /* ignora */ }
+
+  // Proteção contra erros de manipulação de nós no Slate.js
+  try {
+    window.addEventListener('error', (e) => {
+      if (e && e.message && (e.message.includes('Cannot resolve a Slate node') || e.message.includes('removeChild'))) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return true;
+      }
+    }, true);
+    window.addEventListener('unhandledrejection', (e) => {
+      if (e && e.reason && (String(e.reason).includes('Cannot resolve a Slate node') || String(e.reason).includes('removeChild'))) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return true;
+      }
+    }, true);
+  } catch (e) { /* ignora */ }
+
+  // Evita injeções múltiplas no mesmo frame da página
   if (window.__FLOW_DOWNLOADER_INITIALIZED__) return;
   window.__FLOW_DOWNLOADER_INITIALIZED__ = true;
 
-  console.log('[FLOW Downloader Pro] Script inicializado com sucesso.');
+  console.log('[FLOW Downloader Pro] Content Script inicializado com sucesso.');
 
-  // Extension State
+  // =========================================================================
+  // Estado Local da Extensão na Página
+  // =========================================================================
   let settings = {
-    autoDownload: false, // Default to FALSE as requested
+    autoDownload: false, // Download automático (padrão desligado para segurança)
     quality: '1k', // '1k', '2k', '4k', 'direct'
     downloadFolder: 'FLOW_Downloads',
     nameWithPrompt: true,
@@ -26,7 +72,12 @@
   let isScrollingAndDownloading = false;
   let cancelRequested = false;
 
-  // Simple Debounce Helper to prevent CPU thrashing
+  /**
+   * Função utilitária de debounce para evitar sobrecarga no DOM
+   * @param {Function} fn - Função a executar
+   * @param {number} wait - Tempo de espera em ms
+   * @returns {Function}
+   */
   function debounce(fn, wait = 300) {
     let timeout;
     return function (...args) {
@@ -35,7 +86,7 @@
     };
   }
 
-  // Load initial settings
+  // Carrega configurações iniciais salvas no Chrome Storage
   chrome.runtime.sendMessage({ action: 'GET_SETTINGS' }, (response) => {
     if (chrome.runtime.lastError) {
       chrome.storage.local.get(null, (data) => {
@@ -50,7 +101,7 @@
     init();
   });
 
-  // Listen for settings changes or commands from popup / background
+  // Ouvinte de mensagens enviadas pelo Popup ou pelo Background Worker
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'PING') {
       sendResponse({ success: true, alive: true });
@@ -77,6 +128,9 @@
     return true;
   });
 
+  /**
+   * Cancela o processo de download em lote e restaura os botões da interface
+   */
   function handleCancelTrigger() {
     cancelRequested = true;
     isScrollingAndDownloading = false;
@@ -84,21 +138,29 @@
     showToast('🛑 Downloads cancelados pelo usuário.', 'info');
   }
 
-  // Initialize UI & Observers
+  /**
+   * Inicializa o HUD flutuante, escaneia imagens e configura o MutationObserver
+   */
   function init() {
     createHud();
     scanAndInjectOverlayButtons();
     setupMutationObserver();
 
-    // Lightweight fallback interval (every 4s) to catch lazy dynamic inserts
+    // Intervalo de segurança (a cada 4s) para detectar carregamentos preguiçosos (lazy-load)
     setInterval(scanAndInjectOverlayButtons, 4000);
   }
 
   // ==========================================================================
-  // Helper: Find Project / Generation Prompt Text from Page
+  // Extração Inteligente de Título e Prompts do Projeto na Página
   // ==========================================================================
+
+  /**
+   * Extrai o prompt global do projeto a partir do título do cabeçalho ou do campo de texto
+   * @param {string} fallback - Texto padrão caso não encontre
+   * @returns {string} - Texto do prompt
+   */
   function extractPagePrompt(fallback = 'flow_image') {
-    // 1. Check title in top bar (e.g. "Characters embracing looking at...")
+    // 1. Verifica o título no cabeçalho superior do FLOW
     const headerTitle = document.querySelector('header h1, header [role="heading"], [role="banner"] span, [aria-label*="Título"], [aria-label*="Title"]');
     if (headerTitle) {
       const text = headerTitle.textContent.trim();
@@ -107,7 +169,7 @@
       }
     }
 
-    // 2. Check title / navigation links
+    // 2. Verifica links de navegação ou títulos de cards
     const titleCandidates = document.querySelectorAll('button span, div span, h1, h2');
     for (const el of titleCandidates) {
       const t = el.textContent.trim();
@@ -117,7 +179,7 @@
       }
     }
 
-    // 3. Check prompt input textarea / placeholder
+    // 3. Verifica o campo de prompt de texto
     const promptInput = document.querySelector('textarea, input[placeholder*="mudar"], input[placeholder*="prompt"], input[placeholder*="descrever"]');
     if (promptInput && promptInput.value && promptInput.value.trim().length > 3) {
       return promptInput.value.trim();
@@ -126,10 +188,16 @@
     return fallback;
   }
 
+  /**
+   * Extrai o prompt associado a um card de imagem específico
+   * @param {HTMLElement} cardOrElement - Elemento do card ou imagem
+   * @param {string} fallback - Texto padrão
+   * @returns {string}
+   */
   function extractPromptText(cardOrElement, fallback = 'flow_image') {
     if (!cardOrElement) return extractPagePrompt(fallback);
 
-    // 1. Check image alt attribute
+    // 1. Verifica atributo alt da imagem
     const img = cardOrElement.tagName && cardOrElement.tagName.toLowerCase() === 'img'
       ? cardOrElement
       : (cardOrElement.querySelector ? cardOrElement.querySelector('img') : null);
@@ -138,7 +206,7 @@
       return img.alt.trim();
     }
 
-    // 2. Check aria-label of element or container
+    // 2. Verifica aria-label do container
     if (cardOrElement.getAttribute) {
       const aria = (cardOrElement.getAttribute('aria-label') || '').trim();
       if (aria.length > 4 && !aria.toLowerCase().includes('download') && !aria.toLowerCase().includes('menu') && !aria.toLowerCase().includes('fechar')) {
@@ -150,8 +218,14 @@
   }
 
   // ==========================================================================
-  // Helper: Extract High-Resolution Image URL (Optimized for Google CDN / Labs)
+  // Extração e Normalização de URLs de Imagens em Alta Resolução (Google CDN)
   // ==========================================================================
+
+  /**
+   * Extrai a URL em resolução original (=s0) de um elemento ou card
+   * @param {HTMLElement} cardOrImg - Elemento DOM
+   * @returns {string|null} - URL normalizada
+   */
   function extractImageUrl(cardOrImg) {
     if (!cardOrImg) return null;
     const img = cardOrImg.tagName && cardOrImg.tagName.toLowerCase() === 'img'
@@ -173,10 +247,15 @@
     return normalizeImageUrl(src);
   }
 
+  /**
+   * Converte miniaturas do Google CDN na versão em resolução máxima original (=s0)
+   * @param {string} src - URL bruta da imagem
+   * @returns {string|null} - URL em alta resolução
+   */
   function normalizeImageUrl(src) {
     if (!src) return null;
 
-    // Filter out Google Account avatars and profile pictures
+    // Filtra fotos de perfil e avatares de contas do Google
     if (
       src.includes('/a/ACg8oc') ||
       src.includes('/ogw/') ||
@@ -188,7 +267,7 @@
       return null;
     }
 
-    // Upgrade Googleusercontent / Labs thumbnail URL to maximum raw resolution (=s0)
+    // Converte miniaturas do googleusercontent.com para a resolução nativa original (=s0)
     if (src.includes('googleusercontent.com')) {
       src = src.replace(/=w\d+-h\d+.*$/, '=s0')
                .replace(/=s\d+.*$/, '=s0')
@@ -203,8 +282,13 @@
   }
 
   // ==========================================================================
-  // Accurate Discovery of All Generated Image Items on Page
+  // Descoberta de Todas as Imagens Geradas Presentes na Página
   // ==========================================================================
+
+  /**
+   * Varre o documento e retorna todos os itens de imagens geradas válidas
+   * @returns {Array<Object>} - Lista de objetos de imagem
+   */
   function findFlowImages() {
     const images = Array.from(document.querySelectorAll('img'));
     const items = [];
@@ -215,7 +299,7 @@
       const img = images[i];
       const rawSrc = img.currentSrc || img.src || img.dataset.src || '';
 
-      // Skip invalid, svg, avatar, logo or tiny icon images
+      // Ignora SVGs, ícones pequenos e fotos de perfil
       if (
         !rawSrc ||
         rawSrc.startsWith('data:image/svg') ||
@@ -250,14 +334,19 @@
   }
 
   // ==========================================================================
-  // Find All Main Scrollable Containers on the Page
+  // Localização dos Containers com Rolagem Ativa na Página
   // ==========================================================================
+
+  /**
+   * Encontra todos os containers roláveis (feed principal, janela, listas)
+   * @returns {Array<Object>} - Lista de scrollers manipuláveis
+   */
   function findScrollContainers() {
     const containers = [];
     const docElem = document.documentElement;
     const body = document.body;
 
-    // Window / Document scroller
+    // Rolagem da janela/documento
     containers.push({
       element: window,
       isWindow: true,
@@ -268,7 +357,7 @@
       scrollTo: (top) => window.scrollTo({ top, behavior: 'smooth' })
     });
 
-    // Check all inner scrollable divs/sections/feeds
+    // Rolagem de divs e seções internas
     const allDivs = document.querySelectorAll('main, [role="main"], [role="feed"], #main-content, section, div');
     for (const el of allDivs) {
       if (el.scrollHeight > el.clientHeight + 80 && el.clientHeight > 200) {
@@ -291,8 +380,13 @@
   }
 
   // ==========================================================================
-  // Single Card Download Function (1-Click Overlay Button)
+  // Função de Download Individual por Card (Botão de 1-Clique na Imagem)
   // ==========================================================================
+
+  /**
+   * Baixa a imagem de um card específico ao clicar no botão de overlay
+   * @param {HTMLElement} card - Card que contém a imagem
+   */
   function downloadCardImage(card) {
     if (!card) return;
 
@@ -319,7 +413,7 @@
       },
       (res) => {
         if (chrome.runtime.lastError) {
-          console.warn('[FLOW Downloader] Download send error:', chrome.runtime.lastError.message);
+          console.warn('[FLOW Downloader] Erro ao enviar download:', chrome.runtime.lastError.message);
           return;
         }
         if (res && res.success) {
@@ -333,6 +427,10 @@
     );
   }
 
+  /**
+   * Marca o card visualmente como já baixado
+   * @param {HTMLElement} card - Card da imagem
+   */
   function markCardAsDownloaded(card) {
     if (!card) return;
     const btn = card.querySelector ? card.querySelector('.fd-card-overlay-btn') : null;
@@ -348,8 +446,14 @@
   }
 
   // ==========================================================================
-  // Folder Name Prompt Dialog (Modal Interativo para Nomear Pasta)
+  // Diálogo Interativo para Nomear a Pasta de Download
   // ==========================================================================
+
+  /**
+   * Exibe um modal para o usuário digitar ou confirmar a pasta de destino
+   * @param {string} defaultFolder - Nome padrão da pasta
+   * @returns {Promise<string|null>} - Nome confirmado ou null se cancelado
+   */
   function promptForFolderName(defaultFolder = 'FLOW_Downloads') {
     return new Promise((resolve) => {
       let modalOverlay = document.getElementById('fd-folder-modal');
@@ -435,21 +539,25 @@
   }
 
   // ==========================================================================
-  // Auto-Scroll to Bottom & Direct Batch Download of ALL Discovered Images
+  // Rolagem Automática Inteligente e Download em Lote de TODAS as Imagens
   // ==========================================================================
+
+  /**
+   * Rola a página progressivamente até o fim e envia todas as imagens em lote
+   * @param {string|null} customFolder - Pasta personalizada
+   */
   async function startScrollAndBatchDownload(customFolder = null) {
     if (isScrollingAndDownloading) {
       showToast('⚠️ Processo de download já em andamento...', 'info');
       return;
     }
 
-    // Let user name or confirm the destination folder before proceeding
+    // Solicita confirmação do nome da pasta antes de iniciar
     let targetFolder = customFolder;
     if (!targetFolder) {
       targetFolder = await promptForFolderName(settings.downloadFolder || 'FLOW_Downloads');
       if (!targetFolder) {
-        // Cancelled by user
-        return;
+        return; // Cancelado pelo usuário
       }
       settings.downloadFolder = targetFolder;
       chrome.storage.local.set({ downloadFolder: targetFolder });
@@ -464,7 +572,6 @@
     isScrollingAndDownloading = true;
     cancelRequested = false;
 
-    // Show cancel button in HUD and update download button
     const hudBtn = document.getElementById('fd-btn-download-all');
     const hudCancelBtn = document.getElementById('fd-btn-cancel');
 
@@ -496,8 +603,8 @@
     const primaryScroller = scrollers[0];
     const initialTop = primaryScroller.getScrollTop();
 
-    // Map to accumulate discovered images during scrolling (ensures virtual lists don't drop items)
-    const collectedMap = new Map(); // Key: url, Value: { url, prompt, card }
+    // Mapa para acumular imagens descobertas durante a rolagem (previne perdas em virtual lists)
+    const collectedMap = new Map();
 
     function collectAllVisible() {
       const items = findFlowImages();
@@ -509,10 +616,10 @@
       updateImageCountBadge(collectedMap.size);
     }
 
-    // Initial collection
+    // Coleta inicial
     collectAllVisible();
 
-    // 1. Thorough, Progressive Scrolling Loop with Verification
+    // 1. Loop de rolagem progressiva com verificação de fim de página
     let lastHeight = 0;
     let lastImageCount = collectedMap.size;
     let bottomConfirmationCount = 0;
@@ -526,12 +633,12 @@
         return;
       }
 
-      // Scroll all active containers by 550px
+      // Rola todos os containers ativos em 550px
       for (const scroller of scrollers) {
         scroller.scrollBy(550);
       }
 
-      // Scroll horizontal carousels/filmstrips if present
+      // Rola carrosséis horizontais se existirem
       const horizontalStrips = document.querySelectorAll('[style*="overflow-x"], div, section');
       for (const el of horizontalStrips) {
         if (el.scrollWidth > el.clientWidth + 50) {
@@ -539,7 +646,7 @@
         }
       }
 
-      // Wait 850ms per step to ensure network fetches and DOM insertions complete
+      // Aguarda 850ms por passo para o DOM e as requisições de rede renderizarem
       await new Promise(r => setTimeout(r, 850));
 
       if (cancelRequested) {
@@ -553,16 +660,14 @@
       const currentHeight = primaryScroller.getScrollHeight();
       const currentCount = collectedMap.size;
 
-      // Check if new images or new height were added
+      // Verifica se novos conteúdos foram carregados
       if (currentHeight > lastHeight + 10 || currentCount > lastImageCount) {
-        // Content is still expanding, reset confirmation counter
         bottomConfirmationCount = 0;
         lastHeight = currentHeight;
         lastImageCount = currentCount;
       } else {
-        // No new content added in this step
         bottomConfirmationCount++;
-        // Verify 4 consecutive checks (4 * 850ms = 3.4 seconds of stable bottom)
+        // Confirma 4 verificações consecutivas sem mudanças para decretar o fim da página
         if (bottomConfirmationCount >= 4) {
           console.log('[FLOW Downloader] Fim definitivo da página verificado com sucesso.');
           break;
@@ -576,15 +681,15 @@
       return;
     }
 
-    // Final wait at the bottom for any last image render
+    // Aguarda 600ms no fundo da página para carregamento das últimas imagens
     await new Promise(r => setTimeout(r, 600));
     collectAllVisible();
 
-    // 2. Smoothly restore initial scroll position
+    // 2. Retorna a rolagem para a posição inicial de forma suave
     primaryScroller.scrollTo(initialTop);
     await new Promise(r => setTimeout(r, 300));
 
-    // 3. Prepare full batch array
+    // 3. Prepara a lista consolidada de todas as imagens encontradas
     const allDiscovered = Array.from(collectedMap.values());
     const totalFound = allDiscovered.length;
 
@@ -613,7 +718,7 @@
       `;
     }
 
-    // 4. Build batch items with unique indexed filenames
+    // 4. Monta os itens do lote com nomes de arquivo únicos e indexados
     const pagePrompt = extractPagePrompt('flow_image').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').slice(0, 50);
     const dateStamp = Date.now().toString().slice(-4);
 
@@ -630,7 +735,7 @@
       };
     });
 
-    // 5. Send complete batch to background download queue
+    // 5. Envia o lote completo para a fila de download no background worker
     chrome.runtime.sendMessage(
       {
         action: 'DOWNLOAD_BATCH',
@@ -639,10 +744,10 @@
       },
       (response) => {
         if (chrome.runtime.lastError) {
-          console.warn('[FLOW Downloader] Batch error:', chrome.runtime.lastError.message);
+          console.warn('[FLOW Downloader] Erro no lote:', chrome.runtime.lastError.message);
         }
 
-        // Mark visible cards as downloaded
+        // Marca visualmente os cards presentes na tela como salvos
         for (const item of allDiscovered) {
           if (item.card) markCardAsDownloaded(item.card);
           processedImageIds.add(item.url);
@@ -655,6 +760,9 @@
     );
   }
 
+  /**
+   * Restaura o estado e visual padrão dos botões do HUD após finalizar ou cancelar
+   */
   function resetHudButtons() {
     const btn = document.getElementById('fd-btn-download-all');
     const cancelBtn = document.getElementById('fd-btn-cancel');
@@ -677,10 +785,13 @@
   }
 
   // ==========================================================================
-  // Optimized Overlay Button Injection (No Reflow Thrashing)
+  // Injeção de Botões de Download nos Cards de Imagem (Overlay de 1-Clique)
   // ==========================================================================
   const debouncedScanAndInject = debounce(scanAndInjectOverlayButtons, 300);
 
+  /**
+   * Varre todos os cards de imagem do FLOW e injeta o botão de download direto
+   */
   function scanAndInjectOverlayButtons() {
     if (isScrollingAndDownloading) return;
 
@@ -694,6 +805,7 @@
       if (card && !card.dataset.fdProcessed) {
         card.dataset.fdProcessed = 'true';
 
+        // Cria o botão flutuante no canto do card se habilitado nas opções
         if (!card.querySelector('.fd-card-overlay-btn') && settings.showOverlayButtons) {
           const btn = document.createElement('button');
           btn.className = 'fd-card-overlay-btn';
@@ -716,6 +828,7 @@
           card.appendChild(btn);
         }
 
+        // Se download automático estiver ativo, dispara o salvamento
         if (settings.autoDownload) {
           const imgUrl = item.url;
           if (imgUrl && !processedImageIds.has(item.id)) {
@@ -728,8 +841,12 @@
   }
 
   // ==========================================================================
-  // Real-time Mutation Observer (With Debounce & Self-Mutation Filter)
+  // MutationObserver em Tempo Real para Detectar Novas Gerações de Imagem
   // ==========================================================================
+
+  /**
+   * Observa alterações no DOM do FLOW para injetar botões automaticamente quando novas imagens são geradas
+   */
   function setupMutationObserver() {
     const observer = new MutationObserver((mutations) => {
       let shouldScan = false;
@@ -737,6 +854,7 @@
         const mutation = mutations[i];
         if (mutation.addedNodes.length > 0) {
           const target = mutation.target;
+          // Ignora mutações geradas pelos próprios componentes da extensão
           if (
             target &&
             target.closest &&
@@ -761,8 +879,12 @@
   }
 
   // ==========================================================================
-  // Floating HUD (Interface Flutuante na Página)
+  // Floating HUD (Interface de Controle Flutuante na Página)
   // ==========================================================================
+
+  /**
+   * Cria o painel flutuante de controle na página do FLOW
+   */
   function createHud() {
     if (document.getElementById('flow-downloader-hud')) return;
 
@@ -771,7 +893,7 @@
     hudElement.style.display = settings.showFloatingHud ? 'block' : 'none';
 
     hudElement.innerHTML = `
-      <!-- Expanded HUD -->
+      <!-- HUD Expandido -->
       <div class="fd-hud-container" id="fd-main-hud">
         <div class="fd-hud-header" id="fd-drag-handle">
           <div class="fd-brand">
@@ -802,7 +924,7 @@
             </div>
           </div>
 
-          <!-- Auto-Download Toggle -->
+          <!-- Alternador de Download Automático -->
           <div class="fd-row">
             <span class="fd-label">
               🔄 Baixar Automaticamente
@@ -813,7 +935,7 @@
             </label>
           </div>
 
-          <!-- Quality Selector -->
+          <!-- Seletor de Resolução de Download -->
           <div class="fd-row">
             <span class="fd-label">
               🎯 Resolução
@@ -826,7 +948,7 @@
             </select>
           </div>
 
-          <!-- Batch Download & Macro Studio Button Group -->
+          <!-- Grupo de Botões de Ação do HUD -->
           <div class="fd-button-group">
             <button class="fd-btn-primary" id="fd-btn-open-macro" style="background: linear-gradient(135deg, #6366f1 0%, #06b6d4 100%); margin-bottom: 8px; box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -855,7 +977,7 @@
         </div>
       </div>
 
-      <!-- Minimized Bubble Trigger -->
+      <!-- Gatilho de Bolha Flutuante Minimizada -->
       <div class="fd-minimized-trigger" id="fd-minimized-bubble" style="display: none;" title="Abrir FLOW Studio">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
           <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
@@ -866,7 +988,7 @@
 
     document.body.appendChild(hudElement);
 
-    // Event Bindings for HUD
+    // Associação de Eventos dos Controles do HUD
     const mainHud = document.getElementById('fd-main-hud');
     const minBubble = document.getElementById('fd-minimized-bubble');
     const btnMin = document.getElementById('fd-btn-minimize');
@@ -901,7 +1023,7 @@
         settings: { autoDownload: val }
       }, () => {
         if (chrome.runtime.lastError) {
-          // Safe consume
+          // Consumo seguro de retorno
         }
       });
       updateHudUI();
@@ -918,7 +1040,7 @@
         settings: { quality: val }
       }, () => {
         if (chrome.runtime.lastError) {
-          // Safe consume
+          // Consumo seguro de retorno
         }
       });
       showToast(`🎯 Resolução alterada para: ${val.toUpperCase()}`, 'info');
@@ -932,16 +1054,19 @@
       cancelRequested = true;
       isScrollingAndDownloading = false;
       chrome.runtime.sendMessage({ action: 'CANCEL_DOWNLOADS' }, () => {
-        if (chrome.runtime.lastError) { /* ignore */ }
+        if (chrome.runtime.lastError) { /* ignora */ }
       });
       resetHudButtons();
       showToast('🛑 Downloads cancelados pelo usuário.', 'info');
     });
 
-    // Make HUD Draggable
+    // Torna o painel HUD arrastável pela tela
     setupDraggableHud(hudElement, document.getElementById('fd-drag-handle'));
   }
 
+  /**
+   * Atualiza os elementos visuais do HUD com as configurações atuais
+   */
   function updateHudUI() {
     const toggle = document.getElementById('fd-toggle-auto');
     const dot = document.getElementById('fd-status-dot');
@@ -963,6 +1088,10 @@
     if (quality) quality.value = settings.quality || '1k';
   }
 
+  /**
+   * Atualiza o contador de imagens detectadas na página
+   * @param {number} count - Total de imagens
+   */
   function updateImageCountBadge(count) {
     const badge = document.getElementById('fd-img-counter');
     const minBadge = document.getElementById('fd-min-badge');
@@ -973,8 +1102,14 @@
   }
 
   // ==========================================================================
-  // Draggable HUD Implementation
+  // Implementação de Painel Arrastável (Draggable HUD)
   // ==========================================================================
+
+  /**
+   * Permite que o usuário arraste e reposicione o HUD na tela
+   * @param {HTMLElement} el - Container principal
+   * @param {HTMLElement} handle - Alça de clique/arrasto
+   */
   function setupDraggableHud(el, handle) {
     if (!el || !handle) return;
     let isDragging = false;
@@ -1015,9 +1150,16 @@
   }
 
   // ==========================================================================
-  // Toast Notifications
+  // Notificações Toast Flutuantes na Tela
   // ==========================================================================
+
   let toastContainer = null;
+
+  /**
+   * Exibe uma notificação toast animada com mensagem e ícone
+   * @param {string} message - Texto da mensagem
+   * @param {string} type - Tipo visual ('info' | 'success' | 'warning' | 'error')
+   */
   function showToast(message, type = 'info') {
     if (!toastContainer) {
       toastContainer = document.createElement('div');
@@ -1047,10 +1189,13 @@
   }
 
   // ==========================================================================
-  // FLOW Macro Studio Pro - Modal UI & Orchestrator
+  // FLOW Macro Studio Pro - Interface Modal Completa e Orquestrador
   // ==========================================================================
   let macroModalElement = null;
 
+  /**
+   * Abre a janela modal do Macro Studio Pro na página do FLOW
+   */
   function openMacroStudioModal() {
     if (document.getElementById('fd-macro-studio-modal')) {
       const existing = document.getElementById('fd-macro-studio-modal');
@@ -1208,14 +1353,23 @@
 
           <!-- TAB 2: Characters -->
           <div class="fd-tab-pane" id="pane-characters">
-            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap; gap: 8px;">
               <div>
                 <h3 style="margin: 0; font-size: 14px; font-weight: 700; color: #fff;">Personagens Pré-definidos</h3>
-                <span style="font-size: 12px; color: var(--fd-text-muted);">Defina avatares e descrições para manter a consistência visual em cada geração.</span>
+                <span style="font-size: 12px; color: var(--fd-text-muted);">Defina avatares e descrições para manter a consistência visual. Salvos automaticamente na memória.</span>
               </div>
-              <button class="fd-modal-btn-confirm" id="fd-btn-add-char" style="padding: 7px 14px; font-size: 12px;">
-                + Novo Personagem
-              </button>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <input type="file" id="fd-input-import-chars-json" accept=".json" style="display: none;">
+                <button class="fd-modal-btn-cancel" id="fd-btn-import-chars-json" title="Restaurar backup de personagens de um arquivo .json" style="padding: 6px 12px; font-size: 11px;">
+                  📥 Importar JSON
+                </button>
+                <button class="fd-modal-btn-cancel" id="fd-btn-export-chars-json" title="Baixar backup de todos os personagens e fotos em arquivo .json" style="padding: 6px 12px; font-size: 11px;">
+                  💾 Exportar Backup
+                </button>
+                <button class="fd-modal-btn-confirm" id="fd-btn-add-char" style="padding: 7px 14px; font-size: 12px;">
+                  + Novo Personagem
+                </button>
+              </div>
             </div>
 
             <!-- Characters Grid -->
@@ -1294,7 +1448,7 @@
               <!-- Delay, Repetitions and Extra Config -->
               <div style="margin-top: 16px; display: flex; flex-direction: column; gap: 12px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px;">
                 <div style="display: flex; align-items: center; justify-content: space-between;">
-                  <span style="font-size: 12px; color: var(--fd-text-muted);">🔁 Repetições Padrão por Prompt:</span>
+                  <span style="font-size: 12px; color: var(--fd-text-muted);">🔁 Repetições por Prompt:</span>
                   <div style="display: flex; align-items: center; gap: 6px;">
                     <input type="number" id="fd-config-repeat-per-prompt" min="1" max="50" value="${engine.config.repeatPerPrompt || 1}" class="fd-modal-input" style="width: 55px; text-align: center; background: rgba(0,0,0,0.3); border: 1px solid var(--fd-border); border-radius: 6px; padding: 4px;">
                     <span style="font-size: 12px; color: var(--fd-text-muted);">vez(es)</span>
@@ -1302,10 +1456,35 @@
                 </div>
 
                 <div style="display: flex; align-items: center; justify-content: space-between;">
-                  <span style="font-size: 12px; color: var(--fd-text-muted);">⏳ Intervalo entre Envios:</span>
+                  <div style="display: flex; flex-direction: column;">
+                    <span style="font-size: 12px; font-weight: 600; color: #fff;">⏳ Intervalo entre Prompts / Slides:</span>
+                    <span style="font-size: 10px; color: var(--fd-text-muted);">Pausa para geração no FLOW (Padrão: 15 segundos)</span>
+                  </div>
                   <div style="display: flex; align-items: center; gap: 6px;">
-                    <input type="number" id="fd-config-delay" min="3" max="120" value="${engine.config.delaySeconds || 8}" class="fd-modal-input" style="width: 55px; text-align: center; background: rgba(0,0,0,0.3); border: 1px solid var(--fd-border); border-radius: 6px; padding: 4px;">
+                    <input type="number" id="fd-config-delay" min="3" max="300" value="${engine.config.delaySeconds || 15}" class="fd-modal-input" style="width: 55px; text-align: center; background: rgba(0,0,0,0.3); border: 1px solid var(--fd-border); border-radius: 6px; padding: 4px; color: #38bdf8; font-weight: 700;">
                     <span style="font-size: 12px; color: var(--fd-text-muted);">seg</span>
+                  </div>
+                </div>
+
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                  <div style="display: flex; flex-direction: column;">
+                    <span style="font-size: 12px; font-weight: 600; color: #fff;">⏳ Intervalo entre Carrosséis:</span>
+                    <span style="font-size: 10px; color: var(--fd-text-muted);">Pausa entre o fim de um carrossel e o próximo (Padrão: 25 segundos)</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <input type="number" id="fd-config-carousel-delay" min="5" max="600" value="${engine.config.carouselDelaySeconds || 25}" class="fd-modal-input" style="width: 55px; text-align: center; background: rgba(0,0,0,0.3); border: 1px solid var(--fd-border); border-radius: 6px; padding: 4px; color: #38bdf8; font-weight: 700;">
+                    <span style="font-size: 12px; color: var(--fd-text-muted);">seg</span>
+                  </div>
+                </div>
+
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                  <div style="display: flex; flex-direction: column;">
+                    <span style="font-size: 12px; color: var(--fd-text-muted);">⚡ Delay entre Micro-Ações:</span>
+                    <span style="font-size: 10px; color: var(--fd-text-muted);">Tempo entre cliques e seleções no DOM (Padrão: 500ms)</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <input type="number" id="fd-config-action-delay" min="100" max="3000" step="50" value="${engine.config.actionDelayMs || 500}" class="fd-modal-input" style="width: 55px; text-align: center; background: rgba(0,0,0,0.3); border: 1px solid var(--fd-border); border-radius: 6px; padding: 4px;">
+                    <span style="font-size: 12px; color: var(--fd-text-muted);">ms</span>
                   </div>
                 </div>
 
@@ -1319,7 +1498,7 @@
 
                 <div style="display: flex; align-items: center; justify-content: space-between;">
                   <div style="display: flex; flex-direction: column;">
-                    <span style="font-size: 12px; font-weight: 600; color: #fff;">🔁 Reutilizar Comando (Manter Personagens):</span>
+                    <span style="font-size: 12px; font-weight: 600; color: #fff;">🔁 Reutilizar Comando (Passo 7):</span>
                     <span style="font-size: 10px; color: var(--fd-text-muted);">Clica no botão ↪ do FLOW para reaproveitar personagens e trocar apenas o prompt</span>
                   </div>
                   <label class="fd-switch">
@@ -1330,13 +1509,25 @@
 
                 <div style="display: flex; align-items: center; justify-content: space-between;">
                   <div style="display: flex; flex-direction: column;">
-                    <span style="font-size: 12px; font-weight: 600; color: #fff;">📁 Novo Projeto a Cada Carrossel:</span>
+                    <span style="font-size: 12px; font-weight: 600; color: #fff;">📁 Novo Projeto a Cada Carrossel (Passo A):</span>
                     <span style="font-size: 10px; color: var(--fd-text-muted);">Clica em "+ Novo projeto" no FLOW automaticamente ao concluir cada carrossel</span>
                   </div>
                   <label class="fd-switch">
                     <input type="checkbox" id="fd-toggle-new-proj-per-carousel" name="fd_toggle_new_proj_per_carousel" ${engine.config.autoCreateNewProjectPerCarousel !== false ? 'checked' : ''} autocomplete="off">
                     <span class="fd-slider"></span>
                   </label>
+                </div>
+
+                <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 10px; border-top: 1px dashed rgba(255,255,255,0.08); margin-top: 6px;">
+                  <div style="display: flex; flex-direction: column;">
+                    <span style="font-size: 12px; font-weight: 600; color: #fff;">🧭 Detecção de Página do FLOW:</span>
+                    <span style="font-size: 11px; color: ${FlowMacroEngine.isFlowProjectPage() ? '#34d399' : '#38bdf8'}; font-weight: 600;">
+                      ${FlowMacroEngine.isFlowProjectPage() ? '📍 Dentro de um Projeto (' + (FlowMacroEngine.getCurrentProjectId() || 'Ativo') + ')' : '🏠 Hub do FLOW (Página Inicial / Iniciar Novo Projeto)'}
+                    </span>
+                  </div>
+                  <button type="button" id="fd-btn-manual-new-project" style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.4); color: #38bdf8; border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 4px; transition: all 0.2s ease;">
+                    <span>➕ Criar Novo Projeto</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -1367,6 +1558,33 @@
               </button>
             </div>
 
+            <!-- Real-Time Time Tracking & Status Card -->
+            <div class="fd-timer-dashboard">
+              <div class="fd-timer-tile">
+                <span class="fd-timer-tile-title">⏱️ Tempo Decorrido</span>
+                <span class="fd-timer-tile-value ${engine.state === 'running' ? 'active' : ''}" id="fd-timer-elapsed-val">
+                  ${engine.elapsedFormatted || '00:00'}
+                </span>
+              </div>
+              <div class="fd-timer-tile">
+                <span class="fd-timer-tile-title">⏳ Status / Ação Atual</span>
+                <span class="fd-timer-tile-value countdown" id="fd-timer-action-val" style="font-size: 13px; font-weight: 700;">
+                  ${engine.currentAction || (engine.state === 'running' ? 'Executando...' : 'Pronto')}
+                </span>
+              </div>
+            </div>
+
+            <!-- Active Countdown Bar (shows during slide/carousel delays) -->
+            <div class="fd-countdown-box" id="fd-countdown-container" style="display: ${engine.countdown.remaining > 0 ? 'flex' : 'none'};">
+              <div class="fd-countdown-header">
+                <span id="fd-countdown-label">⏳ ${engine.countdown.label || 'Aguardando próxima ação'}:</span>
+                <span id="fd-countdown-seconds" style="color: #38bdf8; font-size: 13px; font-family: monospace;">${engine.countdown.remaining}s</span>
+              </div>
+              <div class="fd-countdown-track">
+                <div class="fd-countdown-bar-fill" id="fd-countdown-bar-fill" style="width: ${engine.countdown.total > 0 ? Math.round((engine.countdown.remaining / engine.countdown.total) * 100) : 0}%;"></div>
+              </div>
+            </div>
+
             <!-- Progress Bar -->
             <div class="fd-progress-box">
               <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px;">
@@ -1383,28 +1601,160 @@
 
             <!-- Live Logs Console -->
             <div style="display: flex; flex-direction: column; gap: 6px;">
-              <span style="font-size: 12px; font-weight: 600; color: var(--fd-text-muted);">Console de Execução em Tempo Real:</span>
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span style="font-size: 12px; font-weight: 600; color: var(--fd-text-muted);">Console de Execução em Tempo Real:</span>
+                <button class="fd-modal-btn-cancel" id="fd-btn-clear-logs" title="Limpar todos os registros do console" style="padding: 3px 10px; font-size: 11px; display: flex; align-items: center; gap: 4px;">
+                  🧹 Limpar Console
+                </button>
+              </div>
               <div class="fd-logs-console" id="fd-logs-console">
                 <!-- Log items rendered dynamically -->
               </div>
             </div>
           </div>
 
-          <!-- TAB 5: FLOW Inspector / Espião de Elementos -->
+          <!-- TAB 5: FLOW Inspector / Espião de Elementos com I.A -->
           <div class="fd-tab-pane" id="pane-inspector">
-            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap; gap: 8px;">
               <div>
-                <h3 style="margin: 0; font-size: 14px; font-weight: 700; color: #fff;">🔍 Espião e Diagnóstico de Elementos do FLOW</h3>
-                <span style="font-size: 12px; color: var(--fd-text-muted);">Varredura em tempo real dos seletores e componentes encontrados no site do FLOW.</span>
+                <h3 style="margin: 0; font-size: 14px; font-weight: 700; color: #fff;">🔍 Espião e Diagnóstico Inteligente com I.A</h3>
+                <span style="font-size: 12px; color: var(--fd-text-muted);">Varredura de elementos em tempo real + Análise e Auto-Recuperação via Gemini, Groq ou OpenRouter.</span>
               </div>
-              <button class="fd-modal-btn-confirm" id="fd-btn-refresh-inspector" style="padding: 6px 14px; font-size: 12px;">
-                🔄 Atualizar Varredura
-              </button>
+              <div style="display: flex; gap: 6px;">
+                <button class="fd-modal-btn-cancel" id="fd-btn-refresh-inspector" style="padding: 6px 12px; font-size: 12px;">
+                  🔄 Varredura DOM
+                </button>
+                <button class="fd-modal-btn-confirm" id="fd-btn-run-ai-diag" style="padding: 6px 14px; font-size: 12px; background: linear-gradient(135deg, #6366f1, #8b5cf6);">
+                  🤖 Analisar com I.A Agora
+                </button>
+              </div>
             </div>
 
-            <!-- Inspector Grid -->
+            <!-- AI Configuration & Multi-Key Pool Card -->
+            <div style="background: rgba(99, 102, 241, 0.07); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 10px; padding: 12px; margin-bottom: 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; flex-wrap: wrap; gap: 6px;">
+                <div>
+                  <span style="font-size: 12px; font-weight: 700; color: #c7d2fe; display: flex; align-items: center; gap: 6px;">
+                    <span>🔑 Pool de Chaves de I.A com Rotação Automática</span>
+                    <span class="fd-badge-status" id="fd-badge-keys-count" style="background: rgba(99, 102, 241, 0.2); color: #818cf8;">${engine.aiKeysPool.length} Chaves</span>
+                  </span>
+                  <div style="font-size: 11px; color: var(--fd-text-muted); margin-top: 2px;">
+                    Carregue múltiplas chaves gratuitas (Gemini, Groq, OpenRouter). Quando uma esgotar a cota, a próxima assume instantaneamente.
+                  </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11px; color: var(--fd-text-muted);" title="Alterna para a próxima chave quando a cota acabar">
+                    <input type="checkbox" id="fd-toggle-ai-autorotate" ${engine.config.aiAutoRotateKeys !== false ? 'checked' : ''} style="cursor: pointer;">
+                    <span>Rotação Automática</span>
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11px; color: var(--fd-text-muted);">
+                    <input type="checkbox" id="fd-toggle-ai-autoheal" ${engine.config.aiAutoHeal !== false ? 'checked' : ''} style="cursor: pointer;">
+                    <span>Auto-Recuperação</span>
+                  </label>
+                </div>
+              </div>
+
+              <!-- Key Import Actions Bar -->
+              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; background: rgba(0,0,0,0.3); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--fd-border);">
+                <input type="file" id="fd-input-import-keys-file" accept=".pdf,.txt,.docx,.json,.md,.csv,.rtf" style="display: none;">
+                <button type="button" class="fd-modal-btn-confirm" id="fd-btn-upload-keys-file" style="padding: 5px 12px; font-size: 11px; display: flex; align-items: center; gap: 4px;">
+                  📂 Carregar Arquivo (PDF, TXT, DOCX, etc.)
+                </button>
+                <button type="button" class="fd-modal-btn-cancel" id="fd-btn-paste-keys-list" style="padding: 5px 10px; font-size: 11px;">
+                  📋 Colar Lista
+                </button>
+                <button type="button" class="fd-modal-btn-cancel" id="fd-btn-reset-keys-status" style="padding: 5px 10px; font-size: 11px;" title="Redefinir status de todas as chaves para Ativa">
+                  🔄 Resetar Cotas
+                </button>
+                <button type="button" class="fd-modal-btn-cancel" id="fd-btn-clear-keys-pool" style="padding: 5px 10px; font-size: 11px; color: #f87171;" title="Remover todas as chaves do pool">
+                  🗑️ Limpar Pool
+                </button>
+              </div>
+
+              <!-- Quick Single Key Add Inputs -->
+              <div style="display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 8px; align-items: center; margin-bottom: 10px;">
+                <div>
+                  <select id="fd-select-ai-provider" style="width: 100%; background: rgba(0,0,0,0.5); border: 1px solid var(--fd-border); border-radius: 6px; color: #fff; padding: 5px 8px; font-size: 11px;">
+                    <option value="gemini" ${engine.config.aiProvider === 'gemini' ? 'selected' : ''}>🟢 Google Gemini (Grátis)</option>
+                    <option value="groq" ${engine.config.aiProvider === 'groq' ? 'selected' : ''}>⚡ Groq (Ultrarrápido)</option>
+                    <option value="openrouter" ${engine.config.aiProvider === 'openrouter' ? 'selected' : ''}>🌐 OpenRouter</option>
+                  </select>
+                </div>
+                <div>
+                  <input type="password" id="fd-input-ai-key" value="${engine.config.aiApiKey || ''}" placeholder="Adicionar chave individual..." style="width: 100%; background: rgba(0,0,0,0.5); border: 1px solid var(--fd-border); border-radius: 6px; color: #fff; padding: 5px 8px; font-size: 11px; box-sizing: border-box;">
+                </div>
+                <div style="display: flex; gap: 4px;">
+                  <button type="button" id="fd-btn-add-single-key" style="flex: 1; padding: 5px 8px; background: rgba(99, 102, 241, 0.3); border: 1px solid rgba(99, 102, 241, 0.5); border-radius: 6px; color: #fff; font-size: 11px; cursor: pointer; font-weight: 600;">
+                    + Adicionar
+                  </button>
+                  <button type="button" id="fd-btn-test-ai-key" style="padding: 5px 8px; background: rgba(255,255,255,0.08); border: 1px solid var(--fd-border); border-radius: 6px; color: #fff; font-size: 11px; cursor: pointer;">
+                    🧪 Testar
+                  </button>
+                </div>
+              </div>
+
+              <!-- Keys Pool List Table -->
+              <div id="fd-ai-keys-pool-container" style="background: rgba(0,0,0,0.4); border: 1px solid var(--fd-border); border-radius: 8px; max-height: 140px; overflow-y: auto; padding: 4px 6px;">
+                <!-- Rendered dynamically -->
+              </div>
+
+              <!-- AI Real-Time Result Box -->
+              <div id="fd-ai-result-box" style="display: none; margin-top: 10px; background: rgba(0,0,0,0.6); border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 8px; padding: 10px 12px; font-size: 11px; color: #e2e8f0; line-height: 1.5; max-height: 150px; overflow-y: auto;">
+                <!-- AI Output Rendered Dynamically -->
+              </div>
+            </div>
+
+            <!-- Inspector DOM Grid -->
             <div class="fd-inspector-grid" id="fd-inspector-grid">
               <!-- Rendered dynamically -->
+            </div>
+
+            <!-- Real-Time Telemetry & Event Recorder Panel -->
+            <div class="fd-telemetry-panel">
+              <div class="fd-telemetry-header">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span class="fd-live-indicator ${engine.isRecordingTelemetry ? '' : 'paused'}" id="fd-telemetry-live-badge">
+                    <span class="fd-live-dot"></span>
+                    <span id="fd-telemetry-live-text">${engine.isRecordingTelemetry ? 'GRAVAÇÃO ATIVA' : 'GRAVAÇÃO PAUSADA'}</span>
+                  </span>
+                  <span style="font-size: 11px; color: var(--fd-text-muted);" id="fd-telemetry-count-text">
+                    ${engine.telemetryEvents.length} eventos | ${Object.keys(engine.learnedSelectors).length} seletores aprendidos
+                  </span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                  <button type="button" class="fd-modal-btn-confirm" id="fd-btn-inspect-element-click" style="padding: 5px 10px; font-size: 11px; background: linear-gradient(135deg, #0284c7, #0369a1);" title="Clique em qualquer botão ou input do FLOW para capturar o seletor exato">
+                    🎯 Inspecionar Elemento
+                  </button>
+                  <button type="button" class="fd-modal-btn-cancel" id="fd-btn-toggle-recording" style="padding: 5px 10px; font-size: 11px;">
+                    ${engine.isRecordingTelemetry ? '⏸️ Pausar' : '🔴 Gravar'}
+                  </button>
+                  <button type="button" class="fd-modal-btn-cancel" id="fd-btn-export-telemetry" style="padding: 5px 10px; font-size: 11px;" title="Exportar histórico de telemetria, cliques e seletores em JSON">
+                    📥 Exportar (.json)
+                  </button>
+                  <button type="button" class="fd-modal-btn-cancel" id="fd-btn-clear-telemetry" style="padding: 5px 10px; font-size: 11px; color: #f87171;" title="Limpar lista de eventos em tempo real">
+                    🗑️ Limpar
+                  </button>
+                  <button type="button" class="fd-modal-btn-cancel" id="fd-btn-reset-learned-selectors" style="padding: 5px 10px; font-size: 11px;" title="Redefinir memória de seletores aprendidos">
+                    🧠 Resetar Cache
+                  </button>
+                </div>
+              </div>
+
+              <!-- Filter chips -->
+              <div class="fd-telemetry-filters" id="fd-telemetry-filters">
+                <span class="fd-telemetry-chip active" data-filter="all">Todos</span>
+                <span class="fd-telemetry-chip" data-filter="CLICK">Cliques</span>
+                <span class="fd-telemetry-chip" data-filter="MACRO">Macro</span>
+                <span class="fd-telemetry-chip" data-filter="INPUT">Inputs</span>
+                <span class="fd-telemetry-chip" data-filter="NAVIGATION">Navegação</span>
+                <span class="fd-telemetry-chip" data-filter="DOM_MUTATION">Mutações</span>
+                <span class="fd-telemetry-chip" data-filter="LEARNED_SELECTOR">Aprendizado</span>
+              </div>
+
+              <!-- Live Event Stream Feed -->
+              <div class="fd-telemetry-feed" id="fd-telemetry-live-feed">
+                <!-- Rendered dynamically -->
+              </div>
             </div>
           </div>
         </div>
@@ -1414,34 +1764,37 @@
     document.body.appendChild(macroModalElement);
 
     // =========================================================================
-    // UI Event Wiring & Interactions
+    // Vinculação de Eventos da Interface do Usuário (UI)
     // =========================================================================
     
-    // Header actions: Close, Transparent Mode, PIP Mode
+    // Ações do cabeçalho: Fechar, Modo Transparente e Modo PIP (Picture-in-Picture)
     const btnClose = macroModalElement.querySelector('#fd-macro-btn-close');
     const btnTransparent = macroModalElement.querySelector('#fd-macro-btn-transparent');
     const btnPip = macroModalElement.querySelector('#fd-macro-btn-pip');
     const windowEl = macroModalElement.querySelector('#fd-macro-window');
     const dragHandle = macroModalElement.querySelector('#fd-macro-drag-handle');
 
+    // Botão de fechar a janela do Studio
     btnClose.addEventListener('click', () => {
       macroModalElement.style.display = 'none';
     });
 
+    // Alterna o modo transparente para permitir ao usuário enxergar o FLOW através do painel
     btnTransparent.addEventListener('click', () => {
       macroModalElement.classList.toggle('transparent-mode');
       const isTrans = macroModalElement.classList.contains('transparent-mode');
       showToast(isTrans ? '👁️ Modo Transparente ativado (Você pode ver o FLOW atrás)' : 'Modo Padrão restaurado', 'info');
     });
 
+    // Minimiza o Studio para a barra flutuante compacta (Mini Runner)
     btnPip.addEventListener('click', () => {
       enableMiniRunnerMode(true);
     });
 
-    // Make Studio Window Draggable
+    // Configura o painel do Studio para ser arrastável
     setupDraggableModal(windowEl, dragHandle);
 
-    // Resize handle - drag left edge to resize panel width
+    // Alça de redimensionamento na borda esquerda do painel
     const resizeHandle = macroModalElement.querySelector('#fd-resize-handle');
     if (resizeHandle) {
       let isResizing = false;
@@ -1478,7 +1831,7 @@
       });
     }
 
-    // Tab switching
+    // Alternância entre as abas do Studio (Sequência, Personagens, Formato, Execução, Espião)
     const tabButtons = macroModalElement.querySelectorAll('.fd-macro-tab');
     const panes = macroModalElement.querySelectorAll('.fd-tab-pane');
 
@@ -1495,7 +1848,7 @@
       });
     });
 
-    // Dropzone & File Upload
+    // Área de upload por Drag & Drop para PDFs e arquivos de texto/roteiro
     const dropzone = macroModalElement.querySelector('#fd-dropzone');
     const fileInput = macroModalElement.querySelector('#fd-file-input');
 
@@ -1519,6 +1872,10 @@
       }
     });
 
+    /**
+     * Processa o arquivo carregado (PDF ou texto) e extrai os carrosséis e slides
+     * @param {File} file - Arquivo recebido
+     */
     async function processUploadedFile(file) {
       showToast(`📄 Lendo arquivo: ${file.name}...`, 'info');
       try {
@@ -1547,12 +1904,12 @@
           showToast('⚠️ Não foi possível identificar prompts no texto.', 'warning');
         }
       } catch (err) {
-        console.error('[FLOW Macro Studio] File error:', err);
+        console.error('[FLOW Macro Studio] Erro no arquivo:', err);
         showToast(`❌ Erro ao ler arquivo: ${err.message}`, 'info');
       }
     }
 
-    // Paste Script / Text Modal Trigger
+    // Botão para colar roteiro diretamente em formato de texto
     const btnPasteScript = macroModalElement.querySelector('#fd-btn-paste-script');
     btnPasteScript.addEventListener('click', () => {
       const rawText = prompt('Cole aqui o texto do roteiro ou lista de prompts:');
@@ -1567,7 +1924,7 @@
       }
     });
 
-    // Add Prompt Manual Button
+    // Botão para adicionar um prompt manual individual
     const btnAddPrompt = macroModalElement.querySelector('#fd-btn-add-prompt');
     btnAddPrompt.addEventListener('click', () => {
       const text = prompt('Digite o novo Prompt de Imagem:');
@@ -1582,7 +1939,7 @@
       }
     });
 
-    // Global Repeat Input in Tab 1
+    // Campo de repetição global na Aba 1
     const inputGlobalRepeat = macroModalElement.querySelector('#fd-input-global-repeat');
     if (inputGlobalRepeat) {
       inputGlobalRepeat.addEventListener('change', (e) => {
@@ -1595,7 +1952,7 @@
       });
     }
 
-    // Reset Statuses Button
+    // Botão de redefinição de status para "Pendente"
     const btnResetStatus = macroModalElement.querySelector('#fd-btn-reset-status');
     btnResetStatus.addEventListener('click', () => {
       engine.resetPromptStatuses();
@@ -1603,7 +1960,7 @@
       showToast('🔄 Status e repetições redefinidos para Pendente.', 'info');
     });
 
-    // Clear Prompts Button
+    // Botão para limpar a lista completa de prompts
     const btnClearPrompts = macroModalElement.querySelector('#fd-btn-clear-prompts');
     btnClearPrompts.addEventListener('click', () => {
       if (confirm('Deseja realmente limpar todos os prompts da lista?')) {
@@ -1613,10 +1970,10 @@
     });
 
     // =========================================================================
-    // Format Tab Controls (Screenshot-Matched 1:1)
+    // Controles da Aba de Formato e Geração (Configurações do Nano Banana Pro)
     // =========================================================================
     
-    // Media buttons
+    // Botões de tipo de mídia (Imagem / Vídeo)
     const mediaBtns = macroModalElement.querySelectorAll('.fd-media-btn');
     mediaBtns.forEach(btn => {
       btn.addEventListener('click', () => {
@@ -1627,7 +1984,7 @@
       });
     });
 
-    // Aspect ratio buttons
+    // Botões de proporção (16:9, 4:3, 1:1, 3:4, 9:16)
     const aspectBtns = macroModalElement.querySelectorAll('.fd-aspect-btn');
     aspectBtns.forEach(btn => {
       btn.addEventListener('click', () => {
@@ -1639,7 +1996,7 @@
       });
     });
 
-    // Quantity buttons
+    // Botões de quantidade por prompt (x1, x2, x3, x4)
     const qtyBtns = macroModalElement.querySelectorAll('.fd-quantity-btn');
     qtyBtns.forEach(btn => {
       btn.addEventListener('click', () => {
@@ -1651,13 +2008,37 @@
       });
     });
 
-    // Delay, Repeat per prompt & Toggle
+    // Intervalo entre slides (padrão: 15s)
     const inputDelay = macroModalElement.querySelector('#fd-config-delay');
-    inputDelay.addEventListener('change', (e) => {
-      const val = parseInt(e.target.value, 10) || 8;
-      engine.updateConfig({ delaySeconds: val });
-    });
+    if (inputDelay) {
+      inputDelay.addEventListener('change', (e) => {
+        const val = Math.max(3, parseInt(e.target.value, 10) || 15);
+        engine.updateConfig({ delaySeconds: val });
+        showToast(`⏳ Intervalo entre slides: ${val}s`, 'info');
+      });
+    }
 
+    // Intervalo entre carrosséis (padrão: 25s)
+    const inputCarouselDelay = macroModalElement.querySelector('#fd-config-carousel-delay');
+    if (inputCarouselDelay) {
+      inputCarouselDelay.addEventListener('change', (e) => {
+        const val = Math.max(5, parseInt(e.target.value, 10) || 25);
+        engine.updateConfig({ carouselDelaySeconds: val });
+        showToast(`⏳ Intervalo entre carrosséis: ${val}s`, 'info');
+      });
+    }
+
+    // Micro-delay entre ações no DOM (padrão: 500ms)
+    const inputActionDelay = macroModalElement.querySelector('#fd-config-action-delay');
+    if (inputActionDelay) {
+      inputActionDelay.addEventListener('change', (e) => {
+        const val = Math.max(100, parseInt(e.target.value, 10) || 500);
+        engine.updateConfig({ actionDelayMs: val });
+        showToast(`⚡ Micro-delay entre ações: ${val}ms`, 'info');
+      });
+    }
+
+    // Repetições padrão por prompt
     const inputConfigRepeat = macroModalElement.querySelector('#fd-config-repeat-per-prompt');
     if (inputConfigRepeat) {
       inputConfigRepeat.addEventListener('change', (e) => {
@@ -1669,6 +2050,7 @@
       });
     }
 
+    // Toggle de aplicação automática de personagens
     const toggleApplyChars = macroModalElement.querySelector('#fd-toggle-apply-chars');
     if (toggleApplyChars) {
       toggleApplyChars.addEventListener('change', (e) => {
@@ -1676,6 +2058,7 @@
       });
     }
 
+    // Toggle de reaproveitamento de comando (Passo 7)
     const toggleReuseCmd = macroModalElement.querySelector('#fd-toggle-reuse-command');
     if (toggleReuseCmd) {
       toggleReuseCmd.addEventListener('change', (e) => {
@@ -1684,6 +2067,7 @@
       });
     }
 
+    // Toggle de criação automática de novo projeto por carrossel (Passo A)
     const toggleNewProj = macroModalElement.querySelector('#fd-toggle-new-proj-per-carousel');
     if (toggleNewProj) {
       toggleNewProj.addEventListener('change', (e) => {
@@ -1693,7 +2077,7 @@
     }
 
     // =========================================================================
-    // Character Management Tab Controls (Com Upload de Imagens Reais)
+    // Gerenciamento de Personagens com Upload de Imagens e Backup JSON
     // =========================================================================
     const btnAddChar = macroModalElement.querySelector('#fd-btn-add-char');
     if (btnAddChar) {
@@ -1703,8 +2087,52 @@
       });
     }
 
+    // Exportar personagens para backup em arquivo .JSON
+    const btnExportChars = macroModalElement.querySelector('#fd-btn-export-chars-json');
+    if (btnExportChars) {
+      btnExportChars.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (engine.characters.length === 0) {
+          showToast('⚠️ Nenhum personagem cadastrado para exportar.', 'warning');
+          return;
+        }
+        const ok = engine.exportCharactersToJson();
+        if (ok) showToast('💾 Backup de personagens exportado com sucesso!', 'success');
+      });
+    }
+
+    // Importar personagens a partir de um backup .JSON
+    const btnImportChars = macroModalElement.querySelector('#fd-btn-import-chars-json');
+    const inputImportChars = macroModalElement.querySelector('#fd-input-import-chars-json');
+    if (btnImportChars && inputImportChars) {
+      btnImportChars.addEventListener('click', (e) => {
+        e.preventDefault();
+        inputImportChars.click();
+      });
+
+      inputImportChars.addEventListener('change', (e) => {
+        if (e.target.files && e.target.files[0]) {
+          const file = e.target.files[0];
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            const ok = engine.importCharactersFromJson(ev.target.result);
+            if (ok) {
+              renderCharactersList();
+              showToast(`📥 Personagens importados com sucesso! Total: ${engine.characters.length}`, 'success');
+            } else {
+              showToast('❌ Arquivo de backup inválido.', 'error');
+            }
+          };
+          reader.readAsText(file);
+          inputImportChars.value = '';
+        }
+      });
+    }
+
+    /**
+     * Abre a janela modal para cadastrar novo personagem com nome, foto e tag
+     */
     function openAddCharacterDialog() {
-      // Remove any previously opened character dialog
       const existing = document.getElementById('fd-char-creator-modal');
       if (existing) existing.remove();
 
@@ -1735,7 +2163,7 @@
               <input type="text" id="fd-input-char-name" name="fd_character_name" autocomplete="off" data-lpignore="true" class="fd-modal-input" placeholder="Ex: Personagem 1 - Robô Cérebro" style="background: rgba(0,0,0,0.3); border: 1px solid var(--fd-border); border-radius: 8px; padding: 8px 12px; margin-top: 4px;">
             </div>
 
-            <!-- Image File Upload Dropzone -->
+            <!-- Área de Upload de Foto do Personagem -->
             <div>
               <label style="font-size: 12px; font-weight: 600; color: var(--fd-text-muted);">Foto / Imagem de Referência do Personagem:</label>
               <div class="fd-dropzone" id="fd-char-img-dropzone" style="padding: 18px; margin-top: 4px; cursor: pointer; border: 2px dashed rgba(99, 102, 241, 0.4); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;">
@@ -1748,7 +2176,7 @@
                     <polyline points="21 15 16 10 5 21"></polyline>
                   </svg>
                   <span style="font-size: 13px; font-weight: 600; color: #fff;">Clique ou arraste a imagem do personagem aqui</span>
-                  <span style="font-size: 11px; color: var(--fd-text-muted);">PNG, JPG, WEBP (Será enviada aos slots do FLOW)</span>
+                  <span style="font-size: 11px; color: var(--fd-text-muted);">PNG, JPG, WEBP (Será salva na memória e enviada ao FLOW)</span>
                 </div>
                 <button type="button" class="fd-modal-btn-cancel" id="fd-btn-select-char-file" style="padding: 5px 12px; font-size: 11px; margin-top: 4px;">
                   📁 Escolher Arquivo do PC
@@ -1778,7 +2206,6 @@
       const dropPrompt = dialog.querySelector('#fd-char-drop-prompt');
       const btnPickFile = dialog.querySelector('#fd-btn-select-char-file');
 
-      // Dropzone click triggers file input safely
       dropzone.addEventListener('click', (e) => {
         if (e.target !== fileInput) {
           fileInput.click();
@@ -1822,6 +2249,10 @@
         }
       });
 
+      /**
+       * Otimiza a imagem do personagem usando Canvas para salvar no Chrome Storage e injetar no FLOW
+       * @param {File} file - Arquivo de imagem
+       */
       function handleImageFile(file) {
         if (!file.type.startsWith('image/')) {
           showToast('⚠️ Por favor selecione um arquivo de imagem válido (PNG, JPG, WEBP).', 'warning');
@@ -1829,11 +2260,45 @@
         }
         const reader = new FileReader();
         reader.onload = (ev) => {
-          selectedAvatarDataUrl = ev.target.result;
-          previewImg.src = selectedAvatarDataUrl;
-          previewImg.style.display = 'block';
-          dropPrompt.querySelector('span').innerText = `✅ ${file.name}`;
-          showToast('📸 Foto do personagem carregada!', 'success');
+          const rawDataUrl = ev.target.result;
+
+          const img = new Image();
+          img.onload = () => {
+            try {
+              const maxDim = 640;
+              let w = img.width;
+              let h = img.height;
+              if (w > maxDim || h > maxDim) {
+                if (w > h) {
+                  h = Math.round((h * maxDim) / w);
+                  w = maxDim;
+                } else {
+                  w = Math.round((w * maxDim) / h);
+                  h = maxDim;
+                }
+              }
+              const canvas = document.createElement('canvas');
+              canvas.width = w;
+              canvas.height = h;
+              const ctx = canvas.getContext('2d');
+              ctx.drawImage(img, 0, 0, w, h);
+              selectedAvatarDataUrl = canvas.toDataURL('image/png');
+            } catch (err) {
+              selectedAvatarDataUrl = rawDataUrl;
+            }
+
+            previewImg.src = selectedAvatarDataUrl;
+            previewImg.style.display = 'block';
+            dropPrompt.querySelector('span').innerText = `✅ ${file.name}`;
+            showToast('📸 Foto do personagem otimizada e pronta para persistência!', 'success');
+          };
+          img.onerror = () => {
+            selectedAvatarDataUrl = rawDataUrl;
+            previewImg.src = selectedAvatarDataUrl;
+            previewImg.style.display = 'block';
+            dropPrompt.querySelector('span').innerText = `✅ ${file.name}`;
+          };
+          img.src = rawDataUrl;
         };
         reader.readAsDataURL(file);
       }
@@ -1846,23 +2311,37 @@
         const tag = dialog.querySelector('#fd-input-char-tag').value.trim();
         engine.addCharacter(name, selectedAvatarDataUrl, tag);
         renderCharactersList();
-        showToast(`🎭 Personagem "${name}" salvo com sucesso!`, 'success');
+        showToast(`🎭 Personagem "${name}" salvo com sucesso na memória!`, 'success');
         dialog.remove();
       });
 
-      // Auto focus name input
       const nameInput = dialog.querySelector('#fd-input-char-name');
       if (nameInput) setTimeout(() => nameInput.focus(), 100);
     }
 
     // =========================================================================
-    // Execution Tab Controls
+    // Controles da Aba de Execução (Iniciar, Pausar, Parar e Novo Projeto)
     // =========================================================================
     const btnRunMacro = macroModalElement.querySelector('#fd-btn-run-macro');
     const btnPauseMacro = macroModalElement.querySelector('#fd-btn-pause-macro');
     const btnStopMacro = macroModalElement.querySelector('#fd-btn-stop-macro');
 
+    // Botão Principal: Iniciar / Retomar Execução do Macro
     btnRunMacro.addEventListener('click', () => {
+      // Sincroniza todos os slides dos carrosséis habilitados
+      if (engine.carousels && engine.carousels.length > 0) {
+        const activeCarousels = engine.carousels.filter(c => c.enabled !== false);
+        const allSlides = [];
+        activeCarousels.forEach(c => {
+          if (c.slides && Array.isArray(c.slides)) {
+            c.slides.filter(s => s.enabled !== false).forEach(s => allSlides.push(s));
+          }
+        });
+        if (allSlides.length > 0) {
+          engine.prompts = allSlides;
+        }
+      }
+
       if (engine.prompts.length === 0) {
         showToast('⚠️ Adicione ao menos um prompt ou carregue um PDF antes de iniciar.', 'warning');
         return;
@@ -1876,28 +2355,352 @@
       }
     });
 
+    // Botão de Pausar o Macro
     btnPauseMacro.addEventListener('click', () => engine.pause());
-    btnStopMacro.addEventListener('click', () => engine.stop());
+
+    // Botão de Parar totalmente o Macro e resetar o progresso
+    btnStopMacro.addEventListener('click', () => {
+      engine.stop();
+      enableMiniRunnerMode(false);
+      showToast('⏹️ Macro totalmente encerrada e progresso resetado!', 'info');
+    });
+
+    // Botão para limpar console de logs ao vivo
+    const btnClearLogs = macroModalElement.querySelector('#fd-btn-clear-logs');
+    if (btnClearLogs) {
+      btnClearLogs.addEventListener('click', () => {
+        engine.clearLogs();
+        renderLogs();
+        showToast('🧹 Console de logs limpo com sucesso!', 'info');
+      });
+    }
+
+    // Botão para disparar criação manual de um novo projeto no FLOW
+    const btnManualNewProject = macroModalElement.querySelector('#fd-btn-manual-new-project');
+    if (btnManualNewProject) {
+      btnManualNewProject.addEventListener('click', async () => {
+        btnManualNewProject.disabled = true;
+        btnManualNewProject.innerHTML = '<span>⏳ Abrindo...</span>';
+        showToast('📁 Abrindo novo projeto no FLOW...', 'info');
+        await engine.createNewFlowProject();
+        btnManualNewProject.disabled = false;
+        btnManualNewProject.innerHTML = '<span>➕ Criar Novo Projeto</span>';
+      });
+    }
 
     // =========================================================================
-    // FLOW Inspector / Espião de Elementos Tab
+    // Espião FLOW: Diagnóstico DOM, Pool de Chaves de I.A e Rotação
     // =========================================================================
+    const selectAiProvider = macroModalElement.querySelector('#fd-select-ai-provider');
+    const inputAiKey = macroModalElement.querySelector('#fd-input-ai-key');
+    const toggleAiAutoheal = macroModalElement.querySelector('#fd-toggle-ai-autoheal');
+    const toggleAiAutorotate = macroModalElement.querySelector('#fd-toggle-ai-autorotate');
+    const btnAddSingleKey = macroModalElement.querySelector('#fd-btn-add-single-key');
+    const btnTestAiKey = macroModalElement.querySelector('#fd-btn-test-ai-key');
+    const btnRunAiDiag = macroModalElement.querySelector('#fd-btn-run-ai-diag');
+    const btnUploadKeysFile = macroModalElement.querySelector('#fd-btn-upload-keys-file');
+    const inputImportKeysFile = macroModalElement.querySelector('#fd-input-import-keys-file');
+    const btnPasteKeysList = macroModalElement.querySelector('#fd-btn-paste-keys-list');
+    const btnResetKeysStatus = macroModalElement.querySelector('#fd-btn-reset-keys-status');
+    const btnClearKeysPool = macroModalElement.querySelector('#fd-btn-clear-keys-pool');
+    const aiKeysContainer = macroModalElement.querySelector('#fd-ai-keys-pool-container');
+    const badgeKeysCount = macroModalElement.querySelector('#fd-badge-keys-count');
+    const aiResultBox = macroModalElement.querySelector('#fd-ai-result-box');
+
+    /**
+     * Renderiza a tabela de chaves de IA cadastradas no Pool
+     */
+    function renderAIKeysPool() {
+      if (badgeKeysCount) {
+        badgeKeysCount.innerText = `${engine.aiKeysPool.length} Chaves`;
+      }
+      if (!aiKeysContainer) return;
+
+      if (engine.aiKeysPool.length === 0) {
+        aiKeysContainer.innerHTML = `
+          <div style="padding: 10px; text-align: center; color: var(--fd-text-muted); font-size: 11px;">
+            Nenhuma chave carregada no Pool. Carregue um <strong>PDF, TXT, DOCX</strong> ou adicione acima.
+          </div>
+        `;
+        return;
+      }
+
+      aiKeysContainer.innerHTML = engine.aiKeysPool.map((k, idx) => {
+        let providerBadge = '<span style="background: rgba(16,185,129,0.2); color: #34d399; padding: 2px 6px; border-radius: 4px; font-weight:700; font-size: 10px;">🟢 Gemini</span>';
+        if (k.provider === 'groq') {
+          providerBadge = '<span style="background: rgba(245,158,11,0.2); color: #fbbf24; padding: 2px 6px; border-radius: 4px; font-weight:700; font-size: 10px;">⚡ Groq</span>';
+        } else if (k.provider === 'openrouter') {
+          providerBadge = '<span style="background: rgba(99,102,241,0.2); color: #818cf8; padding: 2px 6px; border-radius: 4px; font-weight:700; font-size: 10px;">🌐 OpenRouter</span>';
+        }
+
+        let statusBadge = '<span class="fd-badge-status" style="background: rgba(16,185,129,0.15); color: #10b981;">Ativa</span>';
+        if (k.status === 'exhausted') {
+          statusBadge = '<span class="fd-badge-status" style="background: rgba(239,68,68,0.2); color: #f87171;">⏳ Cota Esgotada</span>';
+        } else if (k.status === 'valid') {
+          statusBadge = '<span class="fd-badge-status" style="background: rgba(59,130,246,0.2); color: #60a5fa;">✓ Validada</span>';
+        } else if (k.status === 'error') {
+          statusBadge = '<span class="fd-badge-status" style="background: rgba(239,68,68,0.2); color: #f87171;">Erro</span>';
+        }
+
+        const maskedKey = `${k.key.substring(0, 8)}...${k.key.slice(-4)}`;
+
+        return `
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 11px; gap: 6px;">
+            <div style="display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              <span style="color: var(--fd-text-muted); font-size: 10px; width: 14px;">#${idx + 1}</span>
+              ${providerBadge}
+              <code style="color: #cbd5e1; font-family: monospace; font-size: 10px;">${maskedKey}</code>
+              ${statusBadge}
+            </div>
+            <div style="display: flex; align-items: center; gap: 4px;">
+              <button class="fd-btn-test-single-pool-key" data-id="${k.id}" style="padding: 2px 6px; background: rgba(255,255,255,0.08); border: 1px solid var(--fd-border); border-radius: 4px; color: #fff; font-size: 10px; cursor: pointer;" title="Testar esta chave">
+                🧪
+              </button>
+              <button class="fd-btn-remove-pool-key" data-id="${k.id}" style="padding: 2px 6px; background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); border-radius: 4px; color: #f87171; font-size: 10px; cursor: pointer;" title="Remover chave">
+                🗑️
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      // Associa botões de teste individual por chave
+      aiKeysContainer.querySelectorAll('.fd-btn-test-single-pool-key').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const id = btn.getAttribute('data-id');
+          const targetKey = engine.aiKeysPool.find(k => k.id === id);
+          if (!targetKey) return;
+          btn.textContent = '⏳';
+          showToast(`🧪 Testando chave [${targetKey.provider.toUpperCase()}]...`, 'info');
+
+          // Testa a chave individual diretamente via motor
+          const prevKey = engine.config.aiApiKey;
+          const prevProv = engine.config.aiProvider;
+          engine.config.aiApiKey = targetKey.key;
+          engine.config.aiProvider = targetKey.provider;
+
+          const res = await engine.callAIDiagnostics('Responda apenas: Chave operacional!');
+          engine.config.aiApiKey = prevKey;
+          engine.config.aiProvider = prevProv;
+
+          btn.textContent = '🧪';
+          if (res.success) {
+            targetKey.status = 'valid';
+            showToast(`✅ Chave [${targetKey.provider.toUpperCase()}] válida e pronta!`, 'success');
+          } else {
+            targetKey.status = 'exhausted';
+            showToast(`❌ Falha: ${res.error}`, 'error');
+          }
+          engine.saveState();
+          renderAIKeysPool();
+        });
+      });
+
+      // Associa botões de exclusão de chave
+      aiKeysContainer.querySelectorAll('.fd-btn-remove-pool-key').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const id = btn.getAttribute('data-id');
+          engine.removeAIKey(id);
+          renderAIKeysPool();
+          showToast('Chave removida do pool.', 'info');
+        });
+      });
+    }
+
+    // Renderização inicial do Pool de Chaves
+    renderAIKeysPool();
+
+    // 1. Upload de Arquivo com Chaves (PDF, TXT, DOCX, etc.)
+    if (btnUploadKeysFile && inputImportKeysFile) {
+      btnUploadKeysFile.addEventListener('click', () => {
+        inputImportKeysFile.click();
+      });
+
+      inputImportKeysFile.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        showToast('⏳ Extraindo chaves de I.A do documento...', 'info');
+        try {
+          const text = await FlowPdfExtractor.extractTextFromAnyDocument(file);
+          const keys = FlowPdfExtractor.parseAIKeysFromText(text);
+          if (keys.length > 0) {
+            const count = engine.importAIKeys(keys);
+            showToast(`🎉 ${count} nova(s) chave(s) de I.A adicionada(s) ao Pool!`, 'success');
+            renderAIKeysPool();
+          } else {
+            showToast('⚠️ Nenhuma chave de API reconhecida no documento.', 'warning');
+          }
+        } catch (err) {
+          showToast(`❌ Erro ao ler documento: ${err.message}`, 'error');
+        }
+        inputImportKeysFile.value = '';
+      });
+    }
+
+    // 2. Colar Lista de Chaves
+    if (btnPasteKeysList) {
+      btnPasteKeysList.addEventListener('click', () => {
+        const pasted = prompt('📋 Cole sua lista de chaves de I.A (uma por linha):\nFormatos aceitos: AIzaSy..., gsk_..., sk-or-..., ou gemini: AIza...');
+        if (pasted && pasted.trim()) {
+          const keys = FlowPdfExtractor.parseAIKeysFromText(pasted);
+          if (keys.length > 0) {
+            const count = engine.importAIKeys(keys);
+            showToast(`🎉 ${count} chave(s) adicionada(s) ao Pool!`, 'success');
+            renderAIKeysPool();
+          } else {
+            showToast('⚠️ Nenhuma chave válida detectada no texto colado.', 'warning');
+          }
+        }
+      });
+    }
+
+    // 3. Resetar Cotas de Todas as Chaves
+    if (btnResetKeysStatus) {
+      btnResetKeysStatus.addEventListener('click', () => {
+        engine.resetAIKeysStatus();
+        renderAIKeysPool();
+        showToast('🔄 Status e cotas de todas as chaves redefinidos para Ativa!', 'success');
+      });
+    }
+
+    // 4. Limpar Todo o Pool de Chaves
+    if (btnClearKeysPool) {
+      btnClearKeysPool.addEventListener('click', () => {
+        if (confirm('Deseja realmente limpar todo o pool de chaves?')) {
+          engine.clearAIKeysPool();
+          renderAIKeysPool();
+          showToast('🗑️ Pool de chaves limpo.', 'info');
+        }
+      });
+    }
+
+    // 5. Adicionar Chave Individual Manual
+    if (btnAddSingleKey) {
+      btnAddSingleKey.addEventListener('click', () => {
+        const key = inputAiKey ? inputAiKey.value.trim() : '';
+        const provider = selectAiProvider ? selectAiProvider.value : 'gemini';
+        if (!key) {
+          showToast('⚠️ Por favor, insira a chave no campo.', 'warning');
+          return;
+        }
+        const added = engine.addAIKey(key, provider);
+        if (added) {
+          showToast(`✅ Chave [${added.provider.toUpperCase()}] adicionada ao Pool!`, 'success');
+          inputAiKey.value = '';
+          renderAIKeysPool();
+        } else {
+          showToast('⚠️ Chave inválida.', 'warning');
+        }
+      });
+    }
+
+    if (selectAiProvider) {
+      selectAiProvider.addEventListener('change', (e) => {
+        engine.updateConfig({ aiProvider: e.target.value });
+      });
+    }
+
+    if (inputAiKey) {
+      inputAiKey.addEventListener('input', (e) => {
+        engine.updateConfig({ aiApiKey: e.target.value.trim() });
+      });
+    }
+
+    if (toggleAiAutoheal) {
+      toggleAiAutoheal.addEventListener('change', (e) => {
+        engine.updateConfig({ aiAutoHeal: e.target.checked });
+        showToast(e.target.checked ? '🛡️ Auto-Recuperação Inteligente ativada.' : 'Auto-Recuperação desativada.', 'info');
+      });
+    }
+
+    if (toggleAiAutorotate) {
+      toggleAiAutorotate.addEventListener('change', (e) => {
+        engine.updateConfig({ aiAutoRotateKeys: e.target.checked });
+        showToast(e.target.checked ? '🔄 Rotação Automática de Chaves ativada.' : 'Rotação Automática desativada.', 'info');
+      });
+    }
+
+    if (btnTestAiKey) {
+      btnTestAiKey.addEventListener('click', async () => {
+        btnTestAiKey.disabled = true;
+        btnTestAiKey.textContent = '⏳...';
+        showToast('🤖 Testando conexão com a I.A do Pool...', 'info');
+
+        const res = await engine.callAIDiagnostics('Responda em uma linha: Conexão com o FLOW Macro Studio realizada com sucesso!');
+        btnTestAiKey.disabled = false;
+        btnTestAiKey.textContent = '🧪 Testar';
+
+        if (res.success) {
+          showToast(`✅ I.A (${res.provider.toUpperCase()}) conectada com sucesso!`, 'success');
+          if (aiResultBox) {
+            aiResultBox.style.display = 'block';
+            aiResultBox.innerHTML = `<strong>✅ Conexão Bem-Sucedida [${res.provider.toUpperCase()} - ${res.keyUsed}]:</strong><br>${res.analysis}`;
+          }
+          renderAIKeysPool();
+        } else {
+          showToast(`❌ Falha: ${res.error}`, 'error');
+          if (aiResultBox) {
+            aiResultBox.style.display = 'block';
+            aiResultBox.innerHTML = `<strong>❌ Erro na Conexão:</strong><br>${res.error}`;
+          }
+          renderAIKeysPool();
+        }
+      });
+    }
+
+    if (btnRunAiDiag) {
+      btnRunAiDiag.addEventListener('click', async () => {
+        btnRunAiDiag.disabled = true;
+        btnRunAiDiag.textContent = '🤖 Analisando...';
+        if (aiResultBox) {
+          aiResultBox.style.display = 'block';
+          aiResultBox.innerHTML = '<em>🔍 Capturando snapshot do DOM e analisando em tempo real com I.A...</em>';
+        }
+
+        const res = await engine.callAIDiagnostics('Faça um diagnóstico completo do estado atual do FLOW, dos seletores, botões e do progresso.');
+        btnRunAiDiag.disabled = false;
+        btnRunAiDiag.textContent = '🤖 Analisar com I.A Agora';
+
+        if (res.success) {
+          showToast('💡 Diagnóstico com I.A concluído!', 'success');
+          if (aiResultBox) {
+            aiResultBox.style.display = 'block';
+            aiResultBox.innerHTML = `<strong>🤖 Diagnóstico Inteligente (${res.provider.toUpperCase()} - ${res.keyUsed}):</strong><br><div style="margin-top: 6px; white-space: pre-wrap;">${res.analysis}</div>`;
+          }
+          renderAIKeysPool();
+        } else {
+          showToast(`❌ Erro: ${res.error}`, 'error');
+          if (aiResultBox) {
+            aiResultBox.style.display = 'block';
+            aiResultBox.innerHTML = `<strong>❌ Falha no Diagnóstico:</strong><br>${res.error}`;
+          }
+          renderAIKeysPool();
+        }
+      });
+    }
+
     const btnRefreshInspector = macroModalElement.querySelector('#fd-btn-refresh-inspector');
     if (btnRefreshInspector) {
       btnRefreshInspector.addEventListener('click', () => {
         renderInspectorTab();
+        renderAIKeysPool();
         showToast('🔍 Varredura do FLOW atualizada!', 'info');
       });
     }
 
+    /**
+     * Renderiza o grid de diagnóstico dos elementos do DOM do FLOW
+     */
     function renderInspectorTab() {
       const grid = macroModalElement.querySelector('#fd-inspector-grid');
-      if (!grid) return;
+      if (!grid || grid.offsetParent === null) return;
 
       const diag = engine.diagnoseFlowDOM();
 
       grid.innerHTML = `
-        <!-- Prompt Input Diagnosis -->
+        <!-- Diagnóstico do Campo de Prompt -->
         <div class="fd-inspector-card ${diag.promptInput.found ? 'found' : 'missing'}">
           <div class="fd-inspector-header">
             <span class="fd-inspector-name">📝 Campo de Prompt</span>
@@ -1912,7 +2715,7 @@
           ${diag.promptInput.found ? '<button class="fd-modal-btn-cancel fd-btn-highlight-prompt" style="padding: 4px 10px; font-size: 11px; margin-top: 4px;">🎯 Destacar no FLOW</button>' : ''}
         </div>
 
-        <!-- Submit Button Diagnosis -->
+        <!-- Diagnóstico do Botão Enviar -->
         <div class="fd-inspector-card ${diag.submitButton.found ? 'found' : 'missing'}">
           <div class="fd-inspector-header">
             <span class="fd-inspector-name">🚀 Botão de Enviar (➔)</span>
@@ -1927,7 +2730,7 @@
           ${diag.submitButton.found ? '<button class="fd-modal-btn-cancel fd-btn-highlight-submit" style="padding: 4px 10px; font-size: 11px; margin-top: 4px;">🎯 Destacar no FLOW</button>' : ''}
         </div>
 
-        <!-- Reuse Command Diagnosis (Botão ↪) -->
+        <!-- Diagnóstico de Reutilizar Comando (Passo 7) -->
         <div class="fd-inspector-card ${diag.reuseCommand && diag.reuseCommand.found ? 'found' : 'missing'}">
           <div class="fd-inspector-header">
             <span class="fd-inspector-name">🔁 Reutilizar Comando (↪)</span>
@@ -1942,7 +2745,7 @@
           ${diag.reuseCommand && diag.reuseCommand.found ? '<button class="fd-modal-btn-confirm fd-btn-test-reuse" style="padding: 4px 10px; font-size: 11px; margin-top: 4px; background: #6366f1;">🧪 Testar Reutilizar Comando</button>' : ''}
         </div>
 
-        <!-- Aspect Ratio Diagnosis -->
+        <!-- Diagnóstico de Proporção -->
         <div class="fd-inspector-card found">
           <div class="fd-inspector-header">
             <span class="fd-inspector-name">📐 Seletores de Proporção</span>
@@ -1957,7 +2760,7 @@
           </div>
         </div>
 
-        <!-- Quantity Diagnosis -->
+        <!-- Diagnóstico de Quantidade -->
         <div class="fd-inspector-card found">
           <div class="fd-inspector-header">
             <span class="fd-inspector-name">🔢 Seletores de Quantidade</span>
@@ -1972,22 +2775,37 @@
           </div>
         </div>
 
-        <!-- Character Attachment Slot Diagnosis -->
-        <div class="fd-inspector-card ${diag.characterUploadSlot.found ? 'found' : 'missing'}">
+        <!-- Diagnóstico de Anexo de Personagens / Botão "+" -->
+        <div class="fd-inspector-card ${diag.plusButton && diag.plusButton.found ? 'found' : (diag.characterUploadSlot.found ? 'found' : 'missing')}">
           <div class="fd-inspector-header">
-            <span class="fd-inspector-name">🎭 Entrada de Personagens</span>
-            <span class="fd-inspector-badge ${diag.characterUploadSlot.found ? 'ok' : 'warn'}">
-              ${diag.characterUploadSlot.found ? 'INPUT PRONTO' : 'VIA DRAG & DROP'}
+            <span class="fd-inspector-name">🎭 Botão "+" / Recursos da Biblioteca</span>
+            <span class="fd-inspector-badge ${diag.plusButton && diag.plusButton.found ? 'ok' : (diag.characterUploadSlot.found ? 'ok' : 'warn')}">
+              ${diag.plusButton && diag.plusButton.found ? 'ENCONTRADO' : 'NÃO DETECTADO'}
             </span>
           </div>
-          <div class="fd-inspector-selector">${diag.characterUploadSlot.type}</div>
+          <div class="fd-inspector-selector">${diag.plusButton ? diag.plusButton.text : diag.characterUploadSlot.type}</div>
           <div style="font-size: 11px; color: var(--fd-text-muted);">
-            Injeta imagens dos personagens com simulação de drag-and-drop e upload nativo.
+            Permite abrir a biblioteca do FLOW e anexar personagens/elementos como referência.
+          </div>
+          ${diag.plusButton && diag.plusButton.found ? '<button class="fd-modal-btn-cancel fd-btn-highlight-plus" style="padding: 4px 10px; font-size: 11px; margin-top: 4px;">🎯 Destacar no FLOW</button>' : ''}
+        </div>
+
+        <!-- Diagnóstico de Chips de Personagem Ativos no Prompt -->
+        <div class="fd-inspector-card ${diag.attachedChips && diag.attachedChips.found ? 'found' : 'missing'}">
+          <div class="fd-inspector-header">
+            <span class="fd-inspector-name">🏷️ Personagens Ativos no Prompt</span>
+            <span class="fd-inspector-badge ${diag.attachedChips && diag.attachedChips.found ? 'ok' : 'warn'}">
+              ${diag.attachedChips && diag.attachedChips.found ? 'CHIPS ANEXADOS' : 'NENHUM CHIP'}
+            </span>
+          </div>
+          <div class="fd-inspector-selector">${diag.attachedChips ? diag.attachedChips.label : 'Status de Chips'}</div>
+          <div style="font-size: 11px; color: var(--fd-text-muted);">
+            Indica se os personagens já estão presentes na barra de comando para os próximos slides.
           </div>
         </div>
       `;
 
-      // Highlight prompt button
+      // Destacar campo de prompt na tela
       const btnHlPrompt = grid.querySelector('.fd-btn-highlight-prompt');
       if (btnHlPrompt) {
         btnHlPrompt.addEventListener('click', () => {
@@ -1996,7 +2814,7 @@
         });
       }
 
-      // Highlight submit button
+      // Destacar botão enviar na tela
       const btnHlSubmit = grid.querySelector('.fd-btn-highlight-submit');
       if (btnHlSubmit) {
         btnHlSubmit.addEventListener('click', () => {
@@ -2005,7 +2823,16 @@
         });
       }
 
-      // Test Reuse Command button
+      // Destacar botão mais na tela
+      const btnHlPlus = grid.querySelector('.fd-btn-highlight-plus');
+      if (btnHlPlus) {
+        btnHlPlus.addEventListener('click', () => {
+          const btn = engine.findPlusButton();
+          highlightElementOnPage(btn);
+        });
+      }
+
+      // Testar reaproveitamento de comando
       const btnTestReuse = grid.querySelector('.fd-btn-test-reuse');
       if (btnTestReuse) {
         btnTestReuse.addEventListener('click', async () => {
@@ -2017,8 +2844,346 @@
           }
         });
       }
+
+      renderTelemetryFeed();
     }
 
+    // =========================================================================
+    // Painel de Telemetria e Gravador de Ações em Tempo Real
+    // =========================================================================
+
+    /**
+     * Renderiza o feed de eventos capturados pela telemetria
+     */
+    function renderTelemetryFeed() {
+      const feed = macroModalElement ? macroModalElement.querySelector('#fd-telemetry-live-feed') : null;
+      if (!feed) return;
+
+      const badge = macroModalElement.querySelector('#fd-telemetry-live-badge');
+      const badgeText = macroModalElement.querySelector('#fd-telemetry-live-text');
+      const countText = macroModalElement.querySelector('#fd-telemetry-count-text');
+
+      if (badge && badgeText) {
+        if (engine.isRecordingTelemetry) {
+          badge.classList.remove('paused');
+          badgeText.innerText = 'GRAVAÇÃO ATIVA';
+        } else {
+          badge.classList.add('paused');
+          badgeText.innerText = 'GRAVAÇÃO PAUSADA';
+        }
+      }
+
+      if (countText) {
+        countText.innerText = `${engine.telemetryEvents.length} eventos | ${Object.keys(engine.learnedSelectors).length} seletores aprendidos`;
+      }
+
+      const activeFilter = engine.telemetryFilter || 'all';
+      const eventsToDisplay = activeFilter === 'all'
+        ? engine.telemetryEvents
+        : engine.telemetryEvents.filter(e => e.type === activeFilter);
+
+      if (eventsToDisplay.length === 0) {
+        feed.innerHTML = `
+          <div style="padding: 16px; text-align: center; color: var(--fd-text-muted); font-size: 11px;">
+            ${engine.isRecordingTelemetry ? '📡 Aguardando interações no FLOW... Clique ou digite algo na página para gravar em tempo real!' : '⏸️ Gravação pausada. Clique em "🔴 Gravar" para retomar a detecção.'}
+          </div>
+        `;
+        return;
+      }
+
+      feed.innerHTML = eventsToDisplay.slice(0, 50).map((item, idx) => {
+        let typeClass = 'click';
+        if (item.type === 'MACRO') typeClass = 'macro';
+        else if (item.type === 'INPUT') typeClass = 'input';
+        else if (item.type === 'NAVIGATION') typeClass = 'navigation';
+        else if (item.type === 'DOM_MUTATION') typeClass = 'mutation';
+        else if (item.type === 'ERROR') typeClass = 'error';
+
+        return `
+          <div class="fd-telemetry-item" data-id="${item.id}">
+            <div class="fd-telemetry-item-top">
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <span class="fd-telemetry-type ${typeClass}">${item.type}</span>
+                <span style="font-weight: 700; color: #f1f5f9;">${item.action || item.tag || 'Evento'}</span>
+              </div>
+              <span class="fd-telemetry-time">${item.time}</span>
+            </div>
+            ${item.selector ? `<div class="fd-telemetry-selector">${item.selector}</div>` : ''}
+            ${item.text ? `<div class="fd-telemetry-text">"${item.text}"</div>` : ''}
+            <div style="display: flex; justify-content: flex-end; gap: 4px; margin-top: 2px;">
+              ${item.selector ? `<button type="button" class="fd-btn-hl-telemetry" data-idx="${idx}" style="background: rgba(56,189,248,0.15); border: 1px solid rgba(56,189,248,0.3); color: #38bdf8; border-radius: 4px; padding: 2px 6px; font-size: 10px; cursor: pointer;">🎯 Destacar</button>` : ''}
+              ${item.selector ? `<button type="button" class="fd-btn-copy-selector" data-idx="${idx}" style="background: rgba(255,255,255,0.05); border: 1px solid var(--fd-border); color: #94a3b8; border-radius: 4px; padding: 2px 6px; font-size: 10px; cursor: pointer;">📋 Copiar</button>` : ''}
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      // Destacar elemento a partir do log de telemetria
+      feed.querySelectorAll('.fd-btn-hl-telemetry').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const idx = parseInt(btn.getAttribute('data-idx'), 10);
+          const item = eventsToDisplay[idx];
+          if (item && item.selector) {
+            try {
+              const el = document.querySelector(item.selector);
+              if (el) highlightElementOnPage(el);
+              else showToast('⚠️ Elemento não encontrado no DOM atual.', 'warning');
+            } catch (err) {
+              showToast('⚠️ Seletor inválido no DOM.', 'warning');
+            }
+          }
+        });
+      });
+
+      // Copiar seletor capturado para a área de transferência
+      feed.querySelectorAll('.fd-btn-copy-selector').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const idx = parseInt(btn.getAttribute('data-idx'), 10);
+          const item = eventsToDisplay[idx];
+          if (item && item.selector && navigator.clipboard) {
+            navigator.clipboard.writeText(item.selector);
+            showToast('📋 Seletor copiado para a área de transferência!', 'success');
+          }
+        });
+      });
+    }
+
+    // Controles de telemetria: Gravar/Pausar, Exportar, Limpar, Resetar Seletores
+    const btnToggleRecording = macroModalElement.querySelector('#fd-btn-toggle-recording');
+    if (btnToggleRecording) {
+      btnToggleRecording.addEventListener('click', () => {
+        engine.isRecordingTelemetry = !engine.isRecordingTelemetry;
+        btnToggleRecording.innerText = engine.isRecordingTelemetry ? '⏸️ Pausar' : '🔴 Gravar';
+        renderTelemetryFeed();
+        showToast(engine.isRecordingTelemetry ? '🔴 Gravação de telemetria ativada!' : '⏸️ Gravação de telemetria pausada.', 'info');
+      });
+    }
+
+    const btnExportTelemetry = macroModalElement.querySelector('#fd-btn-export-telemetry');
+    if (btnExportTelemetry) {
+      btnExportTelemetry.addEventListener('click', () => {
+        engine.exportTelemetryReport();
+      });
+    }
+
+    const btnClearTelemetry = macroModalElement.querySelector('#fd-btn-clear-telemetry');
+    if (btnClearTelemetry) {
+      btnClearTelemetry.addEventListener('click', () => {
+        engine.clearTelemetry();
+        renderTelemetryFeed();
+        showToast('🗑️ Eventos de telemetria limpos.', 'info');
+      });
+    }
+
+    const btnResetLearned = macroModalElement.querySelector('#fd-btn-reset-learned-selectors');
+    if (btnResetLearned) {
+      btnResetLearned.addEventListener('click', () => {
+        engine.clearLearnedSelectors();
+        renderInspectorTab();
+        showToast('🧹 Cache de seletores aprendidos foi redefinido.', 'info');
+      });
+    }
+
+    // Filtros de tipo de evento da telemetria
+    const filterContainer = macroModalElement.querySelector('#fd-telemetry-filters');
+    if (filterContainer) {
+      filterContainer.querySelectorAll('.fd-telemetry-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+          filterContainer.querySelectorAll('.fd-telemetry-chip').forEach(c => c.classList.remove('active'));
+          chip.classList.add('active');
+          engine.telemetryFilter = chip.getAttribute('data-filter') || 'all';
+          renderTelemetryFeed();
+        });
+      });
+    }
+
+    // Modo Inspetor Interativo (Clique para Capturar Elemento do FLOW)
+    const btnInspectElement = macroModalElement.querySelector('#fd-btn-inspect-element-click');
+    if (btnInspectElement) {
+      btnInspectElement.addEventListener('click', () => {
+        startInteractiveInspector();
+      });
+    }
+
+    let isInspectorModeActive = false;
+    let hoverBox = null;
+    let hoverTooltip = null;
+
+    /**
+     * Inicia o modo de inspeção interativo que permite clicar em qualquer elemento da página
+     */
+    function startInteractiveInspector() {
+      if (isInspectorModeActive) return;
+      isInspectorModeActive = true;
+
+      // Torna a janela do Studio temporariamente transparente
+      macroModalElement.classList.add('transparent-mode');
+      showToast('🎯 Modo Inspetor Ativo! Mova o mouse sobre qualquer elemento no FLOW e clique para capturar.', 'info');
+
+      if (!hoverBox) {
+        hoverBox = document.createElement('div');
+        hoverBox.className = 'fd-hover-inspector-highlight';
+        hoverBox.style.position = 'fixed';
+        hoverBox.style.pointerEvents = 'none';
+        hoverBox.style.zIndex = '999998';
+        hoverBox.style.display = 'none';
+        document.body.appendChild(hoverBox);
+      }
+
+      if (!hoverTooltip) {
+        hoverTooltip = document.createElement('div');
+        hoverTooltip.className = 'fd-hover-inspector-tooltip';
+        hoverTooltip.style.display = 'none';
+        document.body.appendChild(hoverTooltip);
+      }
+
+      const onMouseMove = (e) => {
+        if (!isInspectorModeActive) return;
+        const target = document.elementFromPoint(e.clientX, e.clientY);
+        if (!target || (target.closest && target.closest('[id*="fd-"], [class*="fd-"]'))) {
+          hoverBox.style.display = 'none';
+          hoverTooltip.style.display = 'none';
+          return;
+        }
+
+        const rect = target.getBoundingClientRect();
+        hoverBox.style.display = 'block';
+        hoverBox.style.left = rect.left + 'px';
+        hoverBox.style.top = rect.top + 'px';
+        hoverBox.style.width = rect.width + 'px';
+        hoverBox.style.height = rect.height + 'px';
+
+        const tag = target.tagName.toLowerCase();
+        const cls = (target.className || '').toString().slice(0, 30);
+        const aria = target.getAttribute('aria-label') || '';
+        hoverTooltip.style.display = 'block';
+        hoverTooltip.style.left = Math.min(window.innerWidth - 240, Math.max(10, rect.left)) + 'px';
+        hoverTooltip.style.top = Math.max(10, rect.top - 30) + 'px';
+        hoverTooltip.innerHTML = `<strong>&lt;${tag}&gt;</strong> ${aria ? `[${aria}]` : (cls ? `.${cls}` : '')} <span style="color:#10b981;">(Clique para vincular)</span>`;
+      };
+
+      const onClick = (e) => {
+        if (!isInspectorModeActive) return;
+        const target = e.target;
+        if (!target || (target.closest && target.closest('[id*="fd-"], [class*="fd-"]'))) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        stopInteractiveInspector();
+
+        const fp = engine.captureElementFingerprint(target);
+        engine.recordTelemetry('CLICK', {
+          action: 'inspector_manual_capture',
+          tag: fp.tag,
+          selector: fp.selector,
+          xpath: fp.xpath,
+          text: fp.text,
+          aria: fp.ariaLabel || fp.title || '',
+          reactProps: fp.reactPropsSummary
+        });
+
+        // Exibe o diálogo para vincular papel funcional ao elemento capturado
+        showBindActionModal(target, fp);
+      };
+
+      const onKeyDown = (e) => {
+        if (e.key === 'Escape') {
+          stopInteractiveInspector();
+          showToast('Inspetor cancelado.', 'info');
+        }
+      };
+
+      function stopInteractiveInspector() {
+        isInspectorModeActive = false;
+        macroModalElement.classList.remove('transparent-mode');
+        if (hoverBox) hoverBox.style.display = 'none';
+        if (hoverTooltip) hoverTooltip.style.display = 'none';
+        window.removeEventListener('mousemove', onMouseMove, true);
+        window.removeEventListener('click', onClick, true);
+        window.removeEventListener('keydown', onKeyDown, true);
+      }
+
+      window.addEventListener('mousemove', onMouseMove, true);
+      window.addEventListener('click', onClick, true);
+      window.addEventListener('keydown', onKeyDown, true);
+    }
+
+    /**
+     * Exibe o diálogo modal para vincular um papel funcional ao elemento inspecionado
+     * @param {HTMLElement} target - Elemento clicado no DOM
+     * @param {Object} fp - Fingerprint estrutural do elemento
+     */
+    function showBindActionModal(target, fp) {
+      const modal = document.createElement('div');
+      modal.className = 'fd-modal-overlay';
+      modal.style.zIndex = '9999999';
+      modal.innerHTML = `
+        <div class="fd-modal-content" style="max-width: 480px;">
+          <div class="fd-modal-header">
+            <h3>🎯 Elemento Capturado no FLOW</h3>
+            <button class="fd-modal-close" id="fd-btn-close-bind-modal">&times;</button>
+          </div>
+          <div class="fd-modal-body" style="display: flex; flex-direction: column; gap: 10px;">
+            <div style="background: rgba(0,0,0,0.4); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--fd-border); font-size: 11px;">
+              <div><strong>Tag:</strong> &lt;${fp.tag.toLowerCase()}&gt;</div>
+              <div><strong>Seletor:</strong> <code style="color: #38bdf8;">${fp.selector}</code></div>
+              ${fp.text ? `<div><strong>Texto:</strong> "${fp.text}"</div>` : ''}
+              ${fp.ariaLabel ? `<div><strong>Aria:</strong> "${fp.ariaLabel}"</div>` : ''}
+            </div>
+
+            <label style="font-size: 12px; font-weight: 700; color: #fff;">Vincular como seletor mestre do Macro:</label>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+              <button class="fd-modal-btn-cancel fd-btn-bind-role" data-role="promptInput" style="padding: 8px; text-align: left; font-size: 11px;">
+                📝 Campo de Prompt
+              </button>
+              <button class="fd-modal-btn-cancel fd-btn-bind-role" data-role="submitButton" style="padding: 8px; text-align: left; font-size: 11px;">
+                🚀 Botão Enviar / Gerar
+              </button>
+              <button class="fd-modal-btn-cancel fd-btn-bind-role" data-role="plusButton" style="padding: 8px; text-align: left; font-size: 11px;">
+                🎭 Botão "+" (Elementos)
+              </button>
+              <button class="fd-modal-btn-cancel fd-btn-bind-role" data-role="reuseButton" style="padding: 8px; text-align: left; font-size: 11px;">
+                🔁 Reutilizar Comando
+              </button>
+              <button class="fd-modal-btn-cancel fd-btn-bind-role" data-role="newProjectButton" style="padding: 8px; text-align: left; font-size: 11px;">
+                📁 Novo Projeto (Hub)
+              </button>
+              <button class="fd-modal-btn-cancel fd-btn-bind-role" data-role="telemetryOnly" style="padding: 8px; text-align: left; font-size: 11px; color: var(--fd-text-muted);">
+                📡 Apenas Gravar Telemetria
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(modal);
+
+      modal.querySelector('#fd-btn-close-bind-modal').addEventListener('click', () => {
+        modal.remove();
+      });
+
+      modal.querySelectorAll('.fd-btn-bind-role').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const role = btn.getAttribute('data-role');
+          if (role && role !== 'telemetryOnly') {
+            engine.learnSelector(role, target);
+            showToast(`✨ Elemento vinculado com sucesso como: ${role}!`, 'success');
+          } else {
+            showToast('📡 Elemento gravado na telemetria.', 'info');
+          }
+          modal.remove();
+          renderInspectorTab();
+        });
+      });
+    }
+
+    /**
+     * Rola e destaca visualmente um elemento na página com contorno e brilho
+     * @param {HTMLElement} el - Elemento alvo
+     */
     function highlightElementOnPage(el) {
       if (!el) return;
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -2036,10 +3201,15 @@
     }
 
     // =========================================================================
-    // Mini Runner Bar (PIP Mode - Permite ver o FLOW 100% livre)
+    // Barra Flutuante Compacta (Mini Runner / Modo PIP)
+    // Permite acompanhar o progresso em tempo real sem cobrir a tela do FLOW
     // =========================================================================
     let miniRunnerElement = null;
 
+    /**
+     * Alterna entre a janela completa do Studio e a barra flutuante compacta (PIP)
+     * @param {boolean} enable - Ativar modo compacto
+     */
     function enableMiniRunnerMode(enable) {
       if (enable) {
         macroModalElement.style.display = 'none';
@@ -2059,6 +3229,10 @@
       }
     }
 
+    /**
+     * Atualiza os indicadores de progresso, contador regressivo e botões da barra PIP
+     * @param {Object} state - Estado do motor
+     */
     function updateMiniRunnerUI(state) {
       if (!miniRunnerElement || miniRunnerElement.style.display === 'none') return;
 
@@ -2067,14 +3241,19 @@
       const pct = totalGens > 0 ? Math.round((compGens / totalGens) * 100) : 0;
       const curPrompt = (state.currentIndex >= 0 && state.prompts[state.currentIndex]) ? state.prompts[state.currentIndex] : null;
 
-      const title = curPrompt ? `${curPrompt.title} (Rep ${(curPrompt.completedRepeats || 0) + 1}/${curPrompt.repeatCount || 1})` : 'Macro Aguardando...';
+      const title = curPrompt ? `${curPrompt.title} (Rep ${(curPrompt.completedRepeats || 0) + 1}/${curPrompt.repeatCount || 1})` : (state.currentAction || 'Macro Aguardando...');
+      const timerStr = state.elapsedFormatted || '00:00';
+      const countdownStr = (state.countdown && state.countdown.remaining > 0) ? ` • ⏳ ${state.countdown.remaining}s` : '';
 
       miniRunnerElement.innerHTML = `
         <div class="fd-mini-pulse ${state.state === 'paused' ? 'paused' : ''}"></div>
         <div class="fd-mini-info">
           <div class="fd-mini-title-row">
             <span class="fd-mini-task-title" title="${title}">${title}</span>
-            <span class="fd-mini-progress-pct">${pct}% (${compGens}/${totalGens})</span>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-family: monospace; font-size: 10px; color: #38bdf8; font-weight: 700;">⏱️ ${timerStr}${countdownStr}</span>
+              <span class="fd-mini-progress-pct">${pct}% (${compGens}/${totalGens})</span>
+            </div>
           </div>
           <div class="fd-mini-progress-bar-bg">
             <div class="fd-mini-progress-bar-fill" style="width: ${pct}%;"></div>
@@ -2103,6 +3282,8 @@
 
       miniRunnerElement.querySelector('#fd-mini-btn-stop').addEventListener('click', () => {
         engine.stop();
+        enableMiniRunnerMode(false);
+        showToast('⏹️ Macro totalmente encerrada e progresso resetado!', 'info');
       });
 
       miniRunnerElement.querySelector('#fd-mini-btn-expand').addEventListener('click', () => {
@@ -2110,6 +3291,10 @@
       });
     }
 
+    /**
+     * Configura o comportamento de arrasto para a barra Mini Runner PIP
+     * @param {HTMLElement} el - Elemento da barra PIP
+     */
     function setupDraggableMiniRunner(el) {
       let isDragging = false;
       let startX, startY, initialLeft, initialTop;
@@ -2148,6 +3333,11 @@
       });
     }
 
+    /**
+     * Configura o comportamento de arrasto da janela modal principal
+     * @param {HTMLElement} windowEl - Janela do Studio
+     * @param {HTMLElement} handle - Alça de arrasto
+     */
     function setupDraggableModal(windowEl, handle) {
       if (!windowEl || !handle) return;
       let isDragging = false;
@@ -2188,9 +3378,12 @@
     }
 
     // =========================================================================
-    // Dynamic Renderers for Lists & State
+    // Renderizadores Dinâmicos de Conteúdo da Interface (DOM Binding)
     // =========================================================================
     
+    /**
+     * Renderiza a barra seletora de carrosséis (Carrossel 1 a 11 e filtro "Todos")
+     */
     function renderCarouselsSelector() {
       const container = macroModalElement.querySelector('#fd-carousels-selector-container');
       const badge = macroModalElement.querySelector('#fd-carousels-count-badge');
@@ -2229,6 +3422,9 @@
       });
     }
 
+    /**
+     * Renderiza a lista de prompts e slides com títulos, balões e botões de repetição
+     */
     function renderPromptsList() {
       const container = macroModalElement.querySelector('#fd-prompts-list');
       if (!container) return;
@@ -2242,7 +3438,7 @@
         return;
       }
 
-      // Filter prompts if a specific carousel is selected
+      // Filtra prompts se um carrossel individual estiver selecionado
       const displayPrompts = engine.selectedCarouselId === 'all'
         ? engine.prompts
         : engine.prompts.filter(p => p.carouselIndex === parseInt(engine.selectedCarouselId.replace('carousel_', ''), 10) || p.enabled !== false);
@@ -2260,7 +3456,7 @@
           statusBadgeText = `Concluído (${repeats}x)`;
         }
 
-        // Render Carousel Header group divider if there are multiple carousels
+        // Renderiza divisores agrupadores quando houver múltiplos carrosséis
         if (p.carouselTitle && p.carouselTitle !== currentCarouselHeader && engine.carousels && engine.carousels.length > 1) {
           currentCarouselHeader = p.carouselTitle;
           html += `
@@ -2303,7 +3499,7 @@
 
       container.innerHTML = html;
 
-      // Bind row events
+      // Associa eventos de clique e inputs nas linhas de prompt
       container.querySelectorAll('.fd-prompt-row').forEach(row => {
         const id = row.getAttribute('data-id');
         const chk = row.querySelector('.fd-prompt-toggle');
@@ -2326,7 +3522,15 @@
       });
     }
 
+    /**
+     * Renderiza a grade de cards de personagens cadastrados
+     */
     function renderCharactersList() {
+      const charTabSpan = macroModalElement ? macroModalElement.querySelector('.fd-macro-tab[data-tab="characters"] span') : null;
+      if (charTabSpan) {
+        charTabSpan.innerText = `Personagens (${engine.characters.length})`;
+      }
+
       const container = macroModalElement.querySelector('#fd-chars-list');
       if (!container) return;
 
@@ -2385,20 +3589,27 @@
       });
     }
 
+    /**
+     * Renderiza as mensagens no console de logs ao vivo
+     */
     function renderLogs() {
       const consoleEl = macroModalElement.querySelector('#fd-logs-console');
       if (!consoleEl) return;
 
       consoleEl.innerHTML = engine.logs.map(l => `
         <div class="fd-log-entry ${l.type}">
-          <span class="fd-log-time">[${l.time}]</span>
+          <span class="fd-log-time" style="font-family: monospace; font-size: 10px; color: #64748b;">${l.timeDisplay || `[${l.time}]`}</span>
           <span>${l.message}</span>
         </div>
       `).join('');
     }
 
+    /**
+     * Atualiza o estado global da interface visual (badges, botões, cronômetros, barras de progresso)
+     * @param {Object} state - Estado fornecido pelo FlowMacroEngine
+     */
     function updateMacroStateUI(state) {
-      // Update header badge
+      // Atualiza o badge do cabeçalho
       const headerStatus = macroModalElement.querySelector('#fd-macro-header-status');
       const totalGens = state.totalGenerations || state.totalPrompts;
       const compGens = state.completedGenerations || state.completedCount;
@@ -2410,26 +3621,68 @@
           : (state.state === 'paused' ? 'Pausado' : 'Pronto');
       }
 
-      // Update button text
+      // Atualiza texto do botão iniciar/pausar
       const runBtnText = macroModalElement.querySelector('#fd-run-btn-text');
       if (runBtnText) {
         runBtnText.innerText = state.state === 'running' ? 'Pausar' : 'Iniciar Macro';
       }
 
-      // Update progress
+      // Atualiza tiles do cronômetro em tempo real
+      const elapsedValEl = macroModalElement.querySelector('#fd-timer-elapsed-val');
+      if (elapsedValEl) {
+        elapsedValEl.innerText = state.elapsedFormatted || '00:00';
+        if (state.state === 'running') elapsedValEl.classList.add('active');
+        else elapsedValEl.classList.remove('active');
+      }
+
+      const actionValEl = macroModalElement.querySelector('#fd-timer-action-val');
+      if (actionValEl) {
+        actionValEl.innerText = state.currentAction || (state.state === 'running' ? 'Executando...' : 'Pronto');
+      }
+
+      // Atualiza a barra de contagem regressiva ativa (delay entre slides / carrosséis)
+      const countdownBox = macroModalElement.querySelector('#fd-countdown-container');
+      const countdownLabel = macroModalElement.querySelector('#fd-countdown-label');
+      const countdownSeconds = macroModalElement.querySelector('#fd-countdown-seconds');
+      const countdownFill = macroModalElement.querySelector('#fd-countdown-bar-fill');
+
+      if (countdownBox && state.countdown && state.countdown.remaining > 0) {
+        countdownBox.style.display = 'flex';
+        if (countdownLabel) countdownLabel.innerText = `⏳ ${state.countdown.label || 'Aguardando'}:`;
+        if (countdownSeconds) countdownSeconds.innerText = `${state.countdown.remaining}s`;
+        if (countdownFill) {
+          const total = Math.max(1, state.countdown.total || state.countdown.remaining);
+          const pct = Math.round((state.countdown.remaining / total) * 100);
+          countdownFill.style.width = `${pct}%`;
+        }
+      } else if (countdownBox) {
+        countdownBox.style.display = 'none';
+      }
+
+      // Atualiza a barra de progresso global
       const progressLabel = macroModalElement.querySelector('#fd-progress-label');
       const progressPct = macroModalElement.querySelector('#fd-progress-pct');
       const progressFill = macroModalElement.querySelector('#fd-progress-fill');
       const currentTask = macroModalElement.querySelector('#fd-current-task-name');
 
-      const pct = totalGens > 0 ? Math.round((compGens / totalGens) * 100) : 0;
-      if (progressLabel) progressLabel.innerText = `Progresso: ${compGens} / ${totalGens} gerações (${state.completedCount}/${state.totalPrompts} prompts)`;
+      const isExecuting = state.state === 'running' || state.state === 'paused';
+      const pct = (isExecuting && totalGens > 0) ? Math.round((compGens / totalGens) * 100) : 0;
+
+      if (progressLabel) {
+        progressLabel.innerText = isExecuting
+          ? `Progresso: ${compGens} / ${totalGens} gerações (${state.completedCount}/${state.totalPrompts} prompts)`
+          : 'Aguardando início...';
+      }
       if (progressPct) progressPct.innerText = `${pct}%`;
       if (progressFill) progressFill.style.width = `${pct}%`;
 
-      if (currentTask && state.currentIndex >= 0 && state.prompts[state.currentIndex]) {
-        const curItem = state.prompts[state.currentIndex];
-        currentTask.innerText = `Prompt atual: ${curItem.title} (Repetição ${(curItem.completedRepeats || 0) + 1}/${curItem.repeatCount || 1})`;
+      if (currentTask) {
+        if (isExecuting && state.currentIndex >= 0 && state.prompts[state.currentIndex]) {
+          const curItem = state.prompts[state.currentIndex];
+          currentTask.innerText = `Prompt atual: ${curItem.title} (Repetição ${(curItem.completedRepeats || 0) + 1}/${curItem.repeatCount || 1})`;
+        } else {
+          currentTask.innerText = 'Nenhuma execução em andamento.';
+        }
       }
 
       renderPromptsList();
@@ -2438,16 +3691,25 @@
       updateMiniRunnerUI(state);
     }
 
-    // Subscribe to engine state updates
+    // Inscreve o observador de atualizações de estado do motor
     engine.subscribe(updateMacroStateUI);
 
-    // Initial render
+    // Renderização inicial dos componentes da interface
     renderCarouselsSelector();
     renderPromptsList();
     renderCharactersList();
     renderLogs();
     renderInspectorTab();
     updateMacroStateUI(engine.getState());
+
+    // Explicitly reload from dual storage to guarantee characters and state are fully restored
+    engine.loadState().then(() => {
+      renderCarouselsSelector();
+      renderPromptsList();
+      renderCharactersList();
+      renderLogs();
+      renderInspectorTab();
+    });
   }
 })();
 

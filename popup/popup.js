@@ -1,24 +1,33 @@
-// FLOW Downloader Pro - Popup Logic
+// ============================================================================
+// FLOW Downloader Pro - Lógica da Interface Popup (Janela de Configurações)
+// ============================================================================
+// Este arquivo controla os botões, checkboxes, selects e estatísticas da janela
+// popup que abre ao clicar no ícone da extensão na barra de ferramentas do Chrome.
+// ============================================================================
 
 document.addEventListener('DOMContentLoaded', async () => {
-  // Elements
-  const toggleAuto = document.getElementById('toggle-auto');
-  const selectQuality = document.getElementById('select-quality');
-  const inputFolder = document.getElementById('input-folder');
-  const togglePromptName = document.getElementById('toggle-prompt-name');
-  const toggleOverlayBtn = document.getElementById('toggle-overlay-btn');
-  const toggleHud = document.getElementById('toggle-hud');
-  const btnDownloadTab = document.getElementById('btn-download-tab');
-  const btnCancelDownloads = document.getElementById('btn-cancel-downloads');
-  const btnClearHistory = document.getElementById('btn-clear-history');
-  const statDownloaded = document.getElementById('stat-downloaded');
-  const statusLabel = document.getElementById('status-label');
-  const statusDot = document.getElementById('status-dot');
+  // ==========================================================================
+  // 1. Mapeamento dos Elementos Visuais do DOM no popup.html
+  // ==========================================================================
+  const toggleAuto = document.getElementById('toggle-auto');                   // Checkbox de Download Automático
+  const selectQuality = document.getElementById('select-quality');             // Dropdown de Resolução (1K, 2K, 4K)
+  const inputFolder = document.getElementById('input-folder');                 // Campo de texto com o nome da subpasta de destino
+  const togglePromptName = document.getElementById('toggle-prompt-name');       // Checkbox para incluir o prompt no nome do arquivo
+  const toggleOverlayBtn = document.getElementById('toggle-overlay-btn');       // Checkbox para mostrar botões sobre os cards no FLOW
+  const toggleHud = document.getElementById('toggle-hud');                     // Checkbox para exibir a barra flutuante de automação
+  const btnDownloadTab = document.getElementById('btn-download-tab');           // Botão "Baixar Todas da Aba Ativa"
+  const btnCancelDownloads = document.getElementById('btn-cancel-downloads');   // Botão para cancelar downloads em andamento
+  const btnClearHistory = document.getElementById('btn-clear-history');         // Botão para resetar contador e histórico
+  const statDownloaded = document.getElementById('stat-downloaded');           // Elemento de texto com o total de downloads
+  const statusLabel = document.getElementById('status-label');                 // Texto de status da conexão com a aba
+  const statusDot = document.getElementById('status-dot');                     // Ponto colorido de status (verde, azul, cinza)
 
-  // Load Settings and download state
+  // ==========================================================================
+  // 2. Carregamento das Configurações Salvas do chrome.storage.local
+  // ==========================================================================
   chrome.storage.local.get(null, (data) => {
     if (chrome.runtime.lastError) {
-      console.warn('[FLOW Downloader] Storage read:', chrome.runtime.lastError.message);
+      console.warn('[FLOW Downloader] Erro ao ler storage:', chrome.runtime.lastError.message);
       return;
     }
     const s = data || {};
@@ -30,15 +39,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     toggleHud.checked = s.showFloatingHud !== false;
     statDownloaded.innerText = (s.totalDownloadedCount || 0).toString();
 
+    // Atualiza o visual do botão de download de acordo com o estado atual da fila
     updateDownloadButtonState(s.isDownloading, s.queueRemaining);
   });
 
-  // Listen for storage changes in real-time
+  // ==========================================================================
+  // 3. Monitoramento em Tempo Real das Alterações no Storage
+  // ==========================================================================
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'local') {
+      // Atualiza o contador de imagens baixadas se ele mudar
       if (changes.totalDownloadedCount) {
         statDownloaded.innerText = (changes.totalDownloadedCount.newValue || 0).toString();
       }
+      // Atualiza o botão de download se o status da fila mudar
       if (changes.isDownloading !== undefined || changes.queueRemaining !== undefined) {
         chrome.storage.local.get(['isDownloading', 'queueRemaining'], (d) => {
           updateDownloadButtonState(d.isDownloading, d.queueRemaining);
@@ -47,6 +61,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  /**
+   * Atualiza visualmente o botão de download caso haja uma operação em andamento
+   * @param {boolean} isDownloading - Se há downloads sendo executados
+   * @param {number} queueRemaining - Quantidade de itens restantes na fila
+   */
   function updateDownloadButtonState(isDownloading, queueRemaining) {
     if (isDownloading) {
       btnCancelDownloads.style.display = 'flex';
@@ -68,7 +87,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Query Active Tab
+  // ==========================================================================
+  // 4. Identificação da Aba Ativa no Navegador
+  // ==========================================================================
   let activeTab = null;
   try {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -76,10 +97,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       activeTab = tabs[0];
     }
   } catch (e) {
-    console.warn('[FLOW Downloader] Tab query error:', e);
+    console.warn('[FLOW Downloader] Erro ao consultar abas:', e);
   }
 
-  // Check and update tab status
+  // Verifica a URL da aba ativa e atualiza o indicador de conexão
   if (activeTab && activeTab.url) {
     const url = activeTab.url.toLowerCase();
     if (url.startsWith('chrome://') || url.startsWith('edge://') || url.startsWith('brave://') || url.startsWith('about:')) {
@@ -97,7 +118,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Save Settings Helper
+  // ==========================================================================
+  // 5. Função de Salvamento Automático das Configurações
+  // ==========================================================================
   function saveCurrentSettings() {
     const updated = {
       autoDownload: toggleAuto.checked,
@@ -108,24 +131,25 @@ document.addEventListener('DOMContentLoaded', async () => {
       showFloatingHud: toggleHud.checked
     };
 
+    // Grava no storage local
     chrome.storage.local.set(updated, () => {
       if (chrome.runtime.lastError) {
-        console.warn('[FLOW Downloader] Error saving settings:', chrome.runtime.lastError.message);
+        console.warn('[FLOW Downloader] Erro ao salvar configurações:', chrome.runtime.lastError.message);
       }
     });
 
-    // Notify service worker safely
+    // Envia mensagem ao Service Worker para propagar as alterações a todas as abas
     chrome.runtime.sendMessage({
       action: 'SAVE_SETTINGS',
       settings: updated
     }, () => {
       if (chrome.runtime.lastError) {
-        // No-op
+        // Ignora erros de canal fechado
       }
     });
   }
 
-  // Event Listeners for Controls
+  // Registra os ouvintes de evento nos controles de configuração
   toggleAuto.addEventListener('change', saveCurrentSettings);
   selectQuality.addEventListener('change', saveCurrentSettings);
   inputFolder.addEventListener('input', saveCurrentSettings);
@@ -133,24 +157,34 @@ document.addEventListener('DOMContentLoaded', async () => {
   toggleOverlayBtn.addEventListener('change', saveCurrentSettings);
   toggleHud.addEventListener('change', saveCurrentSettings);
 
+  // ==========================================================================
+  // 6. Botão para Abrir o Macro Studio no FLOW
+  // ==========================================================================
   const btnOpenMacroStudio = document.getElementById('btn-open-macro-studio');
   if (btnOpenMacroStudio) {
     btnOpenMacroStudio.addEventListener('click', async () => {
       if (!activeTab || !activeTab.id) {
-        alert('Abra a página do FLOW para usar o Macro Studio.');
+        alert('Abra a página do Google FLOW para usar o Macro Studio.');
         return;
       }
+      // Garante que o content script está injetado na aba do FLOW
       await ensureContentScriptInjected(activeTab.id);
+      // Envia comando para abrir a janela do Macro Studio
       chrome.tabs.sendMessage(activeTab.id, { action: 'OPEN_MACRO_STUDIO' }, () => {
         if (chrome.runtime.lastError) {
-          console.warn('[FLOW Popup] Could not message active tab directly:', chrome.runtime.lastError.message);
+          console.warn('[FLOW Popup] Não foi possível enviar mensagem para a aba:', chrome.runtime.lastError.message);
         }
       });
-      window.close();
+      window.close(); // Fecha a janelinha do popup
     });
   }
 
-  // Helper to ensure content script is injected in the active tab
+  /**
+   * Garante que os scripts de conteúdo (content.js, macro_engine.js, pdf_extractor.js, content.css)
+   * estejam injetados e ativos na aba informada
+   * @param {number} tabId - ID da aba do navegador
+   * @returns {Promise<boolean>}
+   */
   async function ensureContentScriptInjected(tabId) {
     if (!tabId) return false;
     return new Promise((resolve) => {
@@ -172,7 +206,7 @@ document.addEventListener('DOMContentLoaded', async () => {
               resolve(false);
             }
           } catch (err) {
-            console.warn('[FLOW Downloader] Injection error:', err);
+            console.warn('[FLOW Downloader] Erro de injeção:', err);
             resolve(false);
           }
         } else {
@@ -182,7 +216,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // Download All Button
+  // ==========================================================================
+  // 7. Botão "Baixar Todas da Aba Ativa"
+  // ==========================================================================
   btnDownloadTab.addEventListener('click', async () => {
     if (!activeTab || !activeTab.id) {
       alert('Nenhuma aba ativa encontrada.');
@@ -200,10 +236,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnDownloadTab.innerHTML = `<span>Iniciando...</span>`;
     btnCancelDownloads.style.display = 'flex';
 
-    // Ensure content script is present
+    // Garante presença dos scripts
     await ensureContentScriptInjected(activeTab.id);
 
-    // Send download command to tab with folder name
+    // Envia o comando de download em lote para o content script da aba
     const folderName = inputFolder.value.trim() || 'FLOW_Downloads';
     chrome.tabs.sendMessage(activeTab.id, { action: 'DOWNLOAD_ALL_TRIGGER', folder: folderName }, (res) => {
       if (chrome.runtime.lastError) {
@@ -216,15 +252,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
-  // Cancel Downloads Button
+  // ==========================================================================
+  // 8. Botão "Cancelar Downloads"
+  // ==========================================================================
   btnCancelDownloads.addEventListener('click', () => {
+    // Notifica o Background Script para cancelar a fila de downloads
     chrome.runtime.sendMessage({ action: 'CANCEL_DOWNLOADS' }, () => {
-      if (chrome.runtime.lastError) { /* ignore */ }
+      if (chrome.runtime.lastError) { /* ignora */ }
     });
 
+    // Notifica também o Content Script na aba
     if (activeTab && activeTab.id) {
       chrome.tabs.sendMessage(activeTab.id, { action: 'CANCEL_DOWNLOAD_TRIGGER' }, () => {
-        if (chrome.runtime.lastError) { /* ignore */ }
+        if (chrome.runtime.lastError) { /* ignora */ }
       });
     }
 
@@ -241,7 +281,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     `;
   });
 
-  // Clear History / Cache
+  // ==========================================================================
+  // 9. Botão "Limpar Histórico"
+  // ==========================================================================
   btnClearHistory.addEventListener('click', () => {
     if (confirm('Deseja redefinir o contador e o cache de imagens baixadas?')) {
       chrome.storage.local.set({ downloadedIds: [], totalDownloadedCount: 0 }, () => {
@@ -249,7 +291,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
       chrome.runtime.sendMessage({ action: 'CLEAR_HISTORY' }, () => {
         if (chrome.runtime.lastError) {
-          // Consume safely
+          // Ignora
         }
       });
     }
