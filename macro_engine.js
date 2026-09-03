@@ -57,6 +57,7 @@ class FlowMacroEngine {
     this.countdown = { remaining: 0, total: 0, label: '' }; // Objeto da contagem regressiva ao vivo
     this.settingsConfiguredForProject = false; // Flag de controle: configurações do Passo 1 rodam apenas 1x por projeto
     this.lastConfiguredProjectId = null;       // ID do último projeto onde as configurações de formato foram aplicadas
+    this.uploadedAvatarsInFlow = new Set();    // Conjunto de avatares já enviados nesta sessão para evitar uploads duplicados
 
     // ------------------------------------------------------------------------
     // Configurações Globais de Automação (Parâmetros que o usuário pode alterar)
@@ -1764,13 +1765,22 @@ class FlowMacroEngine {
         await this.stepDelay(null, 'Modal aberto. Buscando personagem na biblioteca...');
 
         // =========================================================================
-        // Passo 3: Carregar imagem na biblioteca do FLOW (se houver avatar)
-        // Regra do Usuário: "basta que ele carrega a imagem, espere, depois de um
-        // tempo clique na imagem carregada dentro da biblioteca ou detecte a palavra
-        // 'incluir no comando' para clicar no botão."
+        // Passo 3: Carregar imagem na biblioteca do FLOW (Apenas se ainda não estiver na biblioteca)
+        // Regra do Usuário: Não reenviar se a biblioteca já tiver a imagem.
         // =========================================================================
 
-        if (avatarData && avatarData.startsWith('data:')) {
+        // 3.0: Verifica se já existem itens/imagens na lista de recursos (Virtuoso)
+        const virtuosoItems = Array.from(dialogContainer.querySelectorAll([
+          '[data-testid="virtuoso-item-list"] > div',
+          '[data-testid="virtuoso-item-list"] div.sc-b0e5-14',
+          'div.sc-b0e5-14',
+          'div.sc-a0e2840-0'
+        ].join(', '))).filter(el => FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]'));
+
+        const libraryHasItems = virtuosoItems.length > 0;
+        const alreadyUploadedThisSession = this.uploadedAvatarsInFlow && this.uploadedAvatarsInFlow.has(char.name);
+
+        if (avatarData && avatarData.startsWith('data:') && !libraryHasItems && !alreadyUploadedThisSession) {
           try {
             // Localiza ou abre o seletor de arquivos (input[type="file"])
             const uploadBtn = Array.from(dialogContainer.querySelectorAll('button, [role="button"]')).find(b => {
@@ -1786,7 +1796,7 @@ class FlowMacroEngine {
 
             const fileInput = dialogContainer.querySelector('input[type="file"]') || document.querySelector('body > input[type="file"], input[type="file"]');
             if (fileInput) {
-              this.addLog(`📤 [Passo 3] Enviando imagem de [${char.name}] para o FLOW...`, 'info');
+              this.addLog(`📤 [Passo 3] Enviando imagem de [${char.name}] para o FLOW (1ª vez)...`, 'info');
               const blob = await fetch(avatarData).then(r => r.blob());
               const file = new File([blob], `${char.name || 'char'}_${cIdx + 1}.jpeg`, { type: blob.type || 'image/jpeg' });
               const dt = new DataTransfer();
@@ -1795,146 +1805,146 @@ class FlowMacroEngine {
               fileInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
               fileInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
 
-              // ESPERA SILENCIOSA: Não clica em nada na tela enquanto o FLOW processa o upload
-              this.addLog('⏳ [Passo 3] Imagem enviada! Aguardando o FLOW processar e exibir na galeria...', 'info');
-              await new Promise(r => setTimeout(r, 3500));
+              // Marca como enviado nesta sessão para nunca reenviar
+              if (!this.uploadedAvatarsInFlow) this.uploadedAvatarsInFlow = new Set();
+              this.uploadedAvatarsInFlow.add(char.name);
+
+              // ESPERA SILENCIOSA: Aguarda o FLOW processar e renderizar
+              this.addLog('⏳ [Passo 3] Imagem enviada! Aguardando o FLOW exibir na biblioteca...', 'info');
+              await new Promise(r => setTimeout(r, 3000));
             }
           } catch (err) {
             console.warn('[FLOW Macro] Aviso no upload de avatar:', err);
           }
+        } else if (libraryHasItems || alreadyUploadedThisSession) {
+          this.addLog(`ℹ️ [Passo 3] Imagem de [${char.name}] já disponível na biblioteca do FLOW. Pulando upload repetido.`, 'info');
+          await new Promise(r => setTimeout(r, 500));
         } else {
-          // Sem upload pendente, aguarda 1s para os cards estarem visíveis
-          await new Promise(r => setTimeout(r, 1000));
+          await new Promise(r => setTimeout(r, 600));
         }
 
         // =========================================================================
-        // Passo 4: Clicar na imagem carregada dentro da biblioteca
+        // Passo 4: Clicar no card do personagem na biblioteca (DevTools Recorder exato)
+        // Seletor gravado: [data-testid='virtuoso-item-list'] > div:nth-of-type(1) div.sc-b0e5-14
         // =========================================================================
 
-        // 4.1: Localiza exclusivamente as imagens reais (thumbnails) da galeria do modal
-        let targetImg = null;
-        for (let imgWait = 0; imgWait < 12; imgWait++) {
+        let targetCard = null;
+        for (let cWait = 0; cWait < 15; cWait++) {
+          const cardCandidateSelectors = [
+            `[data-testid='virtuoso-item-list'] > div:nth-of-type(${cIdx + 1}) div.sc-b0e5-14`,
+            `[data-testid='virtuoso-item-list'] > div:nth-of-type(${cIdx + 1})`,
+            `[data-testid='virtuoso-item-list'] div.sc-b0e5-14`,
+            `[data-testid='virtuoso-item-list'] > div:nth-of-type(1) div.sc-b0e5-14`,
+            `[data-testid='virtuoso-item-list'] > div:nth-of-type(1)`,
+            `div.sc-b0e5-14`,
+            `[data-testid='virtuoso-item-list'] img`
+          ];
+
+          for (const sel of cardCandidateSelectors) {
+            const el = dialogContainer.querySelector(sel);
+            if (el && FlowMacroEngine.isElementVisible(el)) {
+              targetCard = el;
+              break;
+            }
+          }
+
+          if (targetCard) break;
+
+          // Fallback: primeira imagem visível da biblioteca
           const libraryImgs = Array.from(dialogContainer.querySelectorAll('img')).filter(img => {
             if (!FlowMacroEngine.isElementVisible(img)) return false;
             if (img.closest('[id*="fd-"], [class*="fd-"]')) return false;
             const rect = img.getBoundingClientRect();
-            // Ignora ícones pequenos (< 35px) e avatares da conta Google
             if (rect.width < 35 || rect.height < 35) return false;
             const src = (img.src || '').toLowerCase();
-            if (src.includes('googleusercontent.com/a/') || src.includes('avatar')) return false;
-            return true;
+            return !src.includes('googleusercontent.com/a/') && !src.includes('avatar');
           });
 
           if (libraryImgs.length > 0) {
-            // A imagem mais recente do upload fica no início da galeria
-            targetImg = libraryImgs[cIdx] || libraryImgs[0];
+            targetCard = libraryImgs[cIdx] || libraryImgs[0];
             break;
           }
-          await new Promise(r => setTimeout(r, 400));
+
+          await new Promise(r => setTimeout(r, 300));
         }
 
-        // 4.2: Função auxiliar para selecionar com precisão o card da imagem
-        const selectCardElement = () => {
-          if (!targetImg) return;
-          targetImg.scrollIntoView({ behavior: 'instant', block: 'center' });
-          targetImg.click();
-          this.simulateClick(targetImg);
+        if (targetCard) {
+          this.addLog(`🎯 [Passo 4] Clicando com botão esquerdo no card de [${char.name}] na biblioteca...`, 'info');
+          targetCard.scrollIntoView({ behavior: 'instant', block: 'center' });
+          if (targetCard.focus) targetCard.focus();
 
-          // Clica no container direto do card (div ou button)
-          const cardContainer = targetImg.closest('button, [role="button"], div[class*="card" i], div[tabindex], div[role="listitem"]') || targetImg.parentElement;
-          if (cardContainer && cardContainer !== dialogContainer) {
-            try { cardContainer.click(); } catch (e) {}
-            this.simulateClick(cardContainer);
+          // Dispara clique com botão esquerdo uma única vez (conforme gravação do usuário)
+          targetCard.click();
+          this.simulateClick(targetCard);
 
-            // Clica no overlay do card se existir (necessário no styled-components do FLOW)
-            const cardOverlay = cardContainer.querySelector('[data-type="button-overlay"], div[class*="overlay" i]');
-            if (cardOverlay) {
-              try { cardOverlay.click(); } catch (e) {}
-              this.simulateClick(cardOverlay);
-            }
+          // Clica também no elemento interno se for container
+          const innerEl = targetCard.querySelector('div.sc-b0e5-14, img');
+          if (innerEl && innerEl !== targetCard) {
+            try { innerEl.click(); } catch (e) {}
+            this.simulateClick(innerEl);
           }
-        };
 
-        if (targetImg) {
-          this.addLog(`🎯 [Passo 4] Selecionando imagem carregada de [${char.name}] na biblioteca...`, 'info');
-          selectCardElement();
           await new Promise(r => setTimeout(r, 600));
         } else {
-          this.addLog(`ℹ️ [Passo 4] Nenhuma miniatura de imagem detectada na biblioteca.`, 'info');
+          this.addLog(`⚠️ [Passo 4] Card de imagem não localizado na biblioteca do FLOW.`, 'warning');
         }
 
         // =========================================================================
-        // 4.3: POLLING ATIVO: Aguarda e detecta o botão com o texto "Incluir no comando"
+        // 4.3: Detectar e clicar no botão "Incluir no comando" (DevTools Recorder: div.sc-4da33547-5 button)
         // =========================================================================
-        this.addLog('⏳ [Passo 4] Aguardando botão "Incluir no comando"...', 'info');
         let includeBtn = null;
-
-        const findIncludeBtn = () => {
-          // 1. Classes oficiais informadas do botão "Incluir no comando" no FLOW
+        for (let bWait = 0; bWait < 8; bWait++) {
           const exactBtn = document.querySelector([
+            'div.sc-4da33547-5 button',
             'button.gecFQL',
             'button.dnFqQq',
             'button.jHjHyn',
             'button.fPutAP',
             'button.sc-64c4dea-4',
-            'button.sc-e7a64add-3',
             'button[aria-label*="incluir no comando" i]',
             'button[aria-label*="incluir no prompt" i]'
           ].join(', '));
+
           if (exactBtn && FlowMacroEngine.isElementVisible(exactBtn) && !exactBtn.disabled) {
-            return exactBtn;
+            includeBtn = exactBtn;
+            break;
           }
 
-          // 2. Busca textual universal por "incluir no comando" em todos os botões visíveis
+          // Fallback textual universal
           const allButtons = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
             if (!FlowMacroEngine.isElementVisible(b)) return false;
             if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
             return true;
           });
 
-          return allButtons.find(b => {
+          includeBtn = allButtons.find(b => {
             const t = (b.textContent || b.innerText || '').toLowerCase().trim();
             const aria = (b.getAttribute('aria-label') || '').toLowerCase();
             return (
               t.includes('incluir no comando') || aria.includes('incluir no comando') ||
               t.includes('incluir no prompt') || aria.includes('incluir no prompt') ||
-              t.includes('adicionar ao comando') || aria.includes('adicionar ao comando') ||
-              t.includes('incluir no') || aria.includes('incluir no') ||
-              (t.includes('incluir') && (t.includes('comando') || t.includes('prompt') || t.includes('command')))
+              t.includes('adicionar ao comando') || aria.includes('adicionar ao comando')
             );
           });
-        };
 
-        // Aguarda até 6 segundos (15 iterações de 400ms) para o botão aparecer
-        for (let bWait = 0; bWait < 15; bWait++) {
-          includeBtn = findIncludeBtn();
-          if (includeBtn && !includeBtn.disabled && includeBtn.getAttribute('aria-disabled') !== 'true') {
-            break;
-          }
-
-          // Se após 1.2s ou 2.4s o botão ainda não apareceu, re-clica no card para ativar a seleção
-          if ((bWait === 3 || bWait === 6) && targetImg) {
-            this.addLog('🔄 [Passo 4] Re-selecionando card do personagem na biblioteca...', 'info');
-            selectCardElement();
-          }
-
-          await new Promise(r => setTimeout(r, 400));
+          if (includeBtn) break;
+          await new Promise(r => setTimeout(r, 300));
         }
 
         if (includeBtn) {
           this.addLog(`✨ [Passo 4] Botão "Incluir no comando" detectado! Clicando...`, 'success');
           includeBtn.scrollIntoView({ behavior: 'instant', block: 'center' });
-          includeBtn.focus();
+          if (includeBtn.focus) includeBtn.focus();
 
           const overlay = includeBtn.querySelector('[data-type="button-overlay"]');
           if (overlay) {
-            try { overlay.click(); } catch(e) {}
+            try { overlay.click(); } catch (e) {}
             this.simulateClick(overlay);
           }
-          try { includeBtn.click(); } catch(e) {}
+          try { includeBtn.click(); } catch (e) {}
           this.simulateClick(includeBtn);
 
-          // Aciona handler React caso presente
+          // Dispara também o handler React
           [includeBtn, overlay].filter(Boolean).forEach(el => {
             try {
               const propKey = Object.keys(el).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
@@ -1944,23 +1954,28 @@ class FlowMacroEngine {
             } catch (e) {}
           });
 
-          await new Promise(r => setTimeout(r, 1200));
+          await new Promise(r => setTimeout(r, 800));
         } else {
-          this.addLog(`ℹ️ [Passo 4] Botão "Incluir no comando" não visível (validando anexo direto da imagem)...`, 'info');
+          this.addLog(`ℹ️ [Passo 4] Imagem anexada diretamente pelo clique no card.`, 'info');
         }
 
         // =========================================================================
-        // 4.4: Validação do chip na barra de prompt
+        // 4.4: Validação se o personagem foi anexado à barra de comando
         // =========================================================================
         this.addLog(`⏳ [Passo 4] Validando anexo do personagem [${char.name}] na barra de comando...`, 'info');
         let chipAttached = false;
 
-        for (let chk = 0; chk < 14; chk++) {
-          const promptContainer = this.getPromptContainer();
-          const searchRoots = [promptContainer, document.querySelector('form'), document.querySelector('footer')].filter(Boolean);
+        for (let chk = 0; chk < 12; chk++) {
+          // 1. Se o modal/drawer fechou automaticamente após o clique, confirma o anexo!
+          if (!FlowMacroEngine.isElementVisible(dialogContainer)) {
+            chipAttached = true;
+            break;
+          }
 
-          for (const root of searchRoots) {
-            const chips = Array.from(root.querySelectorAll([
+          // 2. Verifica se chips ou miniaturas apareceram na barra de comando
+          const promptContainer = this.getPromptContainer() || document.querySelector('form, footer, div.sc-5c3af813-1');
+          if (promptContainer) {
+            const promptChips = Array.from(promptContainer.querySelectorAll([
               '[data-slate-node="element"]:has(img)',
               '[data-type*="ingredient" i]',
               '[data-type*="mention" i]',
@@ -1976,38 +1991,35 @@ class FlowMacroEngine {
               'img[src*="googleusercontent"]'
             ].join(', '))).filter(el => {
               if (!FlowMacroEngine.isElementVisible(el)) return false;
-              // SEGURANÇA: Não conta imagens dentro do modal de recursos
               if (dialogContainer && dialogContainer.contains(el)) return false;
               if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
               if (el.closest('button[aria-label*="Criar" i]') || el.closest('button[aria-label*="add" i]')) return false;
-              if (el.tagName === 'BUTTON' && !el.querySelector('img')) return false;
               return true;
             });
 
-            if (chips.length >= (cIdx + 1)) {
+            if (promptChips.length >= (cIdx + 1) || promptChips.length > 0) {
               chipAttached = true;
               break;
             }
           }
 
-          if (chipAttached) break;
-          await new Promise(r => setTimeout(r, 500));
+          await new Promise(r => setTimeout(r, 400));
         }
 
         if (chipAttached) {
           this.addLog(`✅ [Passo 4 Concluído] Personagem [${char.name}] anexado com sucesso ao comando!`, 'success');
           chipConfirmedForChar = true;
 
-          // Fecha o modal caso ainda esteja visível (via botão Fechar / X)
+          // Se o modal ainda estiver visível, fecha com segurança
           this.closeResourceModal(dialogContainer);
-          await new Promise(r => setTimeout(r, 600));
-          break; // Sai do retry loop — este personagem foi anexado com sucesso
+          await new Promise(r => setTimeout(r, 500));
+          break; // Sai do retry loop com sucesso!
         } else {
-          this.addLog(`⚠️ [Passo 4] Chip de [${char.name}] NÃO detectado na barra de prompt. Tentativa ${attempt + 1}/3.`, 'warning');
+          this.addLog(`⚠️ [Passo 4] Anexo de [${char.name}] não confirmado na barra de prompt. Tentativa ${attempt + 1}/3.`, 'warning');
 
           // Fecha o modal antes de re-tentar
           this.closeResourceModal(dialogContainer);
-          await new Promise(r => setTimeout(r, 600));
+          await new Promise(r => setTimeout(r, 500));
         }
       } // fim do retry loop (3 tentativas)
 
