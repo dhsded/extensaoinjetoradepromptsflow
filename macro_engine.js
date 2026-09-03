@@ -1833,57 +1833,120 @@ class FlowMacroEngine {
           await new Promise(r => setTimeout(r, 400));
         }
 
-        // 4.2: Clica diretamente na imagem carregada (sem clicar em containers aleatórios)
-        if (targetImg) {
-          this.addLog(`🎯 [Passo 4] Clicando na imagem carregada de [${char.name}] na biblioteca...`, 'info');
+        // 4.2: Função auxiliar para selecionar com precisão o card da imagem
+        const selectCardElement = () => {
+          if (!targetImg) return;
           targetImg.scrollIntoView({ behavior: 'instant', block: 'center' });
           targetImg.click();
           this.simulateClick(targetImg);
 
-          // Se a imagem estiver dentro de um botão ou card direto, clica nele também
-          const parentBtn = targetImg.closest('button, [role="button"], [role="option"], [role="listitem"]');
-          if (parentBtn && parentBtn !== dialogContainer) {
-            try { parentBtn.click(); } catch(e) {}
-          }
+          // Clica no container direto do card (div ou button)
+          const cardContainer = targetImg.closest('button, [role="button"], div[class*="card" i], div[tabindex], div[role="listitem"]') || targetImg.parentElement;
+          if (cardContainer && cardContainer !== dialogContainer) {
+            try { cardContainer.click(); } catch (e) {}
+            this.simulateClick(cardContainer);
 
-          // Aguarda o FLOW atualizar o estado
-          await new Promise(r => setTimeout(r, 800));
+            // Clica no overlay do card se existir (necessário no styled-components do FLOW)
+            const cardOverlay = cardContainer.querySelector('[data-type="button-overlay"], div[class*="overlay" i]');
+            if (cardOverlay) {
+              try { cardOverlay.click(); } catch (e) {}
+              this.simulateClick(cardOverlay);
+            }
+          }
+        };
+
+        if (targetImg) {
+          this.addLog(`🎯 [Passo 4] Selecionando imagem carregada de [${char.name}] na biblioteca...`, 'info');
+          selectCardElement();
+          await new Promise(r => setTimeout(r, 600));
         } else {
-          this.addLog(`ℹ️ [Passo 4] Nenhuma miniatura de imagem isolada detectada na biblioteca.`, 'info');
+          this.addLog(`ℹ️ [Passo 4] Nenhuma miniatura de imagem detectada na biblioteca.`, 'info');
         }
 
         // =========================================================================
-        // 4.3: Detectar e clicar no botão com a palavra "Incluir no comando"
+        // 4.3: POLLING ATIVO: Aguarda e detecta o botão com o texto "Incluir no comando"
         // =========================================================================
-        const allButtons = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
-          if (!FlowMacroEngine.isElementVisible(b)) return false;
-          if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
-          return true;
-        });
+        this.addLog('⏳ [Passo 4] Aguardando botão "Incluir no comando"...', 'info');
+        let includeBtn = null;
 
-        const includeBtn = allButtons.find(b => {
-          const t = (b.textContent || b.innerText || '').toLowerCase().trim();
-          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-          return t.includes('incluir no comando') || aria.includes('incluir no comando') ||
-                 t.includes('incluir no prompt') || aria.includes('incluir no prompt') ||
-                 t.includes('adicionar ao comando') || aria.includes('adicionar ao comando') ||
-                 (t.includes('incluir') && (t.includes('comando') || t.includes('prompt')));
-        });
+        const findIncludeBtn = () => {
+          // 1. Classes oficiais informadas do botão "Incluir no comando" no FLOW
+          const exactBtn = document.querySelector([
+            'button.gecFQL',
+            'button.dnFqQq',
+            'button.jHjHyn',
+            'button.fPutAP',
+            'button.sc-64c4dea-4',
+            'button.sc-e7a64add-3',
+            'button[aria-label*="incluir no comando" i]',
+            'button[aria-label*="incluir no prompt" i]'
+          ].join(', '));
+          if (exactBtn && FlowMacroEngine.isElementVisible(exactBtn) && !exactBtn.disabled) {
+            return exactBtn;
+          }
 
-        if (includeBtn && !includeBtn.disabled && includeBtn.getAttribute('aria-disabled') !== 'true') {
-          this.addLog(`✨ [Passo 4] Botão "Incluir no comando" detectado! Clicando...`, 'info');
+          // 2. Busca textual universal por "incluir no comando" em todos os botões visíveis
+          const allButtons = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
+            if (!FlowMacroEngine.isElementVisible(b)) return false;
+            if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
+            return true;
+          });
+
+          return allButtons.find(b => {
+            const t = (b.textContent || b.innerText || '').toLowerCase().trim();
+            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+            return (
+              t.includes('incluir no comando') || aria.includes('incluir no comando') ||
+              t.includes('incluir no prompt') || aria.includes('incluir no prompt') ||
+              t.includes('adicionar ao comando') || aria.includes('adicionar ao comando') ||
+              t.includes('incluir no') || aria.includes('incluir no') ||
+              (t.includes('incluir') && (t.includes('comando') || t.includes('prompt') || t.includes('command')))
+            );
+          });
+        };
+
+        // Aguarda até 6 segundos (15 iterações de 400ms) para o botão aparecer
+        for (let bWait = 0; bWait < 15; bWait++) {
+          includeBtn = findIncludeBtn();
+          if (includeBtn && !includeBtn.disabled && includeBtn.getAttribute('aria-disabled') !== 'true') {
+            break;
+          }
+
+          // Se após 1.2s ou 2.4s o botão ainda não apareceu, re-clica no card para ativar a seleção
+          if ((bWait === 3 || bWait === 6) && targetImg) {
+            this.addLog('🔄 [Passo 4] Re-selecionando card do personagem na biblioteca...', 'info');
+            selectCardElement();
+          }
+
+          await new Promise(r => setTimeout(r, 400));
+        }
+
+        if (includeBtn) {
+          this.addLog(`✨ [Passo 4] Botão "Incluir no comando" detectado! Clicando...`, 'success');
           includeBtn.scrollIntoView({ behavior: 'instant', block: 'center' });
+          includeBtn.focus();
 
           const overlay = includeBtn.querySelector('[data-type="button-overlay"]');
           if (overlay) {
             try { overlay.click(); } catch(e) {}
+            this.simulateClick(overlay);
           }
           try { includeBtn.click(); } catch(e) {}
           this.simulateClick(includeBtn);
 
-          await new Promise(r => setTimeout(r, 800));
+          // Aciona handler React caso presente
+          [includeBtn, overlay].filter(Boolean).forEach(el => {
+            try {
+              const propKey = Object.keys(el).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
+              if (propKey && el[propKey] && typeof el[propKey].onClick === 'function') {
+                el[propKey].onClick({ preventDefault: () => {}, stopPropagation: () => {}, target: el, currentTarget: el });
+              }
+            } catch (e) {}
+          });
+
+          await new Promise(r => setTimeout(r, 1200));
         } else {
-          this.addLog(`ℹ️ [Passo 4] Botão "Incluir no comando" não visível (imagem anexada diretamente pelo clique).`, 'info');
+          this.addLog(`ℹ️ [Passo 4] Botão "Incluir no comando" não visível (validando anexo direto da imagem)...`, 'info');
         }
 
         // =========================================================================
@@ -1892,10 +1955,12 @@ class FlowMacroEngine {
         this.addLog(`⏳ [Passo 4] Validando anexo do personagem [${char.name}] na barra de comando...`, 'info');
         let chipAttached = false;
 
-        for (let chk = 0; chk < 12; chk++) {
+        for (let chk = 0; chk < 14; chk++) {
           const promptContainer = this.getPromptContainer();
-          if (promptContainer && promptContainer !== document.body) {
-            const chips = Array.from(promptContainer.querySelectorAll([
+          const searchRoots = [promptContainer, document.querySelector('form'), document.querySelector('footer')].filter(Boolean);
+
+          for (const root of searchRoots) {
+            const chips = Array.from(root.querySelectorAll([
               '[data-slate-node="element"]:has(img)',
               '[data-type*="ingredient" i]',
               '[data-type*="mention" i]',
@@ -1904,11 +1969,16 @@ class FlowMacroEngine {
               'div[class*="ingredient" i]',
               'div[class*="asset" i]:has(img)',
               'button[class*="chip" i]',
+              'span[class*="chip" i]:has(img)',
               'img[alt*="cerebro" i]',
               'img[alt*="cora" i]',
-              'img'
+              'img[alt*="char" i]',
+              'img[src*="googleusercontent"]'
             ].join(', '))).filter(el => {
               if (!FlowMacroEngine.isElementVisible(el)) return false;
+              // SEGURANÇA: Não conta imagens dentro do modal de recursos
+              if (dialogContainer && dialogContainer.contains(el)) return false;
+              if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
               if (el.closest('button[aria-label*="Criar" i]') || el.closest('button[aria-label*="add" i]')) return false;
               if (el.tagName === 'BUTTON' && !el.querySelector('img')) return false;
               return true;
@@ -1919,6 +1989,8 @@ class FlowMacroEngine {
               break;
             }
           }
+
+          if (chipAttached) break;
           await new Promise(r => setTimeout(r, 500));
         }
 
@@ -1928,14 +2000,14 @@ class FlowMacroEngine {
 
           // Fecha o modal caso ainda esteja visível (via botão Fechar / X)
           this.closeResourceModal(dialogContainer);
-          await new Promise(r => setTimeout(r, 400));
+          await new Promise(r => setTimeout(r, 600));
           break; // Sai do retry loop — este personagem foi anexado com sucesso
         } else {
           this.addLog(`⚠️ [Passo 4] Chip de [${char.name}] NÃO detectado na barra de prompt. Tentativa ${attempt + 1}/3.`, 'warning');
 
           // Fecha o modal antes de re-tentar
           this.closeResourceModal(dialogContainer);
-          await new Promise(r => setTimeout(r, 400));
+          await new Promise(r => setTimeout(r, 600));
         }
       } // fim do retry loop (3 tentativas)
 
