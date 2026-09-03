@@ -31,6 +31,15 @@
         "https://www.instagram.com/*",
         "https://instagram.com/*"
       ],
+      "js": ["instagram_main_world.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://www.instagram.com/*",
+        "https://instagram.com/*"
+      ],
       "js": ["instagram_downloader.js"],
       "css": ["instagram.css"],
       "run_at": "document_idle"

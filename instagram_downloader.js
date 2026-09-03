@@ -100,53 +100,88 @@
   }
 
   /**
-   * Tenta extrair a URL de vídeo original via React Fiber / Props
-   * caso a tag <video> use blob:
-   * @param {HTMLElement} element 
-   * @returns {string|null}
+   * Consulta o script injetado no mundo principal para extrair via React Fiber ou Cache
    */
-  function extractVideoUrlFromReactProps(element) {
-    if (!element) return null;
-    try {
-      // Busca chaves do React internas no elemento ou em pais próximos
-      let curr = element;
-      let depth = 0;
-      while (curr && depth < 6) {
-        const fiberKey = Object.keys(curr).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactProps$') || k.startsWith('__reactInternalInstance$'));
-        if (fiberKey && curr[fiberKey]) {
-          const checkObj = (obj, d = 0) => {
-            if (!obj || d > 4) return null;
-            if (typeof obj.video_url === 'string' && obj.video_url.startsWith('http')) return obj.video_url;
-            if (typeof obj.videoUrl === 'string' && obj.videoUrl.startsWith('http')) return obj.videoUrl;
-            if (typeof obj.progressive_download_url === 'string') return obj.progressive_download_url;
-            if (typeof obj.playback_url === 'string') return obj.playback_url;
-            if (obj.memoizedProps) {
-              const res = checkObj(obj.memoizedProps, d + 1);
-              if (res) return res;
-            }
-            if (obj.props) {
-              const res = checkObj(obj.props, d + 1);
-              if (res) return res;
-            }
-            return null;
-          };
-          const found = checkObj(curr[fiberKey]);
-          if (found) return found;
+  function queryMainWorldMedia(shortcode, elementId) {
+    return new Promise((resolve) => {
+      const requestId = 'req_' + Math.random().toString(36).slice(2, 9);
+      const timer = setTimeout(() => {
+        window.removeEventListener('INSTA_EXTRACT_RESPONSE', handler);
+        resolve(null);
+      }, 700);
+
+      const handler = (event) => {
+        if (event.detail && event.detail.requestId === requestId) {
+          clearTimeout(timer);
+          window.removeEventListener('INSTA_EXTRACT_RESPONSE', handler);
+          resolve(event.detail.result || null);
         }
-        curr = curr.parentElement;
-        depth++;
+      };
+
+      window.addEventListener('INSTA_EXTRACT_RESPONSE', handler);
+      window.dispatchEvent(new CustomEvent('INSTA_EXTRACT_REQUEST', {
+        detail: { requestId, shortcode, elementId }
+      }));
+    });
+  }
+
+  /**
+   * Busca URL de vídeo em performance entries recentes do navegador
+   */
+  function findVideoInPerformanceEntries() {
+    try {
+      const entries = performance.getEntriesByType('resource');
+      const videoEntries = entries.filter(e => {
+        const name = (e.name || '').toLowerCase();
+        const initiator = (e.initiatorType || '').toLowerCase();
+        const isCdn = name.includes('cdninstagram.com') || name.includes('fbcdn.net');
+        if (!isCdn) return false;
+        return name.includes('.mp4') || initiator === 'video' || initiator === 'media' || name.includes('/v/t') || name.includes('bytestart');
+      });
+
+      if (videoEntries.length > 0) {
+        const latest = videoEntries[videoEntries.length - 1];
+        let url = latest.name;
+        url = url.replace(/&bytestart=\d+&byteend=\d+/i, '').replace(/\?bytestart=\d+&byteend=\d+&?/i, '?');
+        return url;
       }
-    } catch (e) { /* ignora */ }
+    } catch (e) {}
+    return null;
+  }
+
+  /**
+   * Busca em tags script do documento por URLs de vídeo do post
+   */
+  function findVideoInDocumentScripts(shortcode) {
+    try {
+      const scripts = Array.from(document.querySelectorAll('script'));
+      for (const s of scripts) {
+        const text = s.textContent || '';
+        if (!text.includes('.mp4') && !text.includes('video_url')) continue;
+        if (shortcode && !text.includes(shortcode)) continue;
+
+        const matches = text.match(/https?:\\\/\\\/[^"\s]+\.mp4[^"\s]*/g) || text.match(/https?:\/\/[^"\s]+\.mp4[^"\s]*/g);
+        if (matches && matches.length > 0) {
+          return matches[0].replace(/\\\//g, '/').replace(/\\u0026/g, '&');
+        }
+      }
+    } catch (e) {}
     return null;
   }
 
   /**
    * Extrai os metadados e a melhor URL de mídia (Vídeo ou Imagem) de um post/container
    * @param {HTMLElement} postContainer 
-   * @returns {{ type: 'video'|'image', url: string, ext: 'mp4'|'jpg', filename: string } | null}
+   * @returns {Promise<{ type: 'video'|'image', url: string, ext: 'mp4'|'jpg', filename: string } | null>}
    */
-  function extractMediaFromContainer(postContainer) {
+  async function extractMediaFromContainer(postContainer) {
     if (!postContainer) return null;
+
+    // Garante um ID único para comunicação com o mundo principal
+    if (!postContainer.dataset.instaId) {
+      postContainer.dataset.instaId = 'card_' + Math.random().toString(36).slice(2, 9);
+    }
+    const elementId = postContainer.dataset.instaId;
 
     // 1. Identificação do Autor ou Shortcode para nomenclatura limpa
     let author = 'instagram';
@@ -171,8 +206,9 @@
     // 2. Procura primeiro por elemento de Vídeo (<video>)
     const videoEl = postContainer.querySelector('video');
     if (videoEl) {
+      // 2.1: src direto
       let videoUrl = videoEl.getAttribute('src');
-      if (videoUrl && videoUrl.startsWith('http')) {
+      if (videoUrl && videoUrl.startsWith('http') && !videoUrl.startsWith('blob:')) {
         return {
           type: 'video',
           url: videoUrl,
@@ -181,9 +217,9 @@
         };
       }
 
-      // Se o src for blob:, verifica <source>
+      // 2.2: <source> tag
       const sourceEl = videoEl.querySelector('source');
-      if (sourceEl && sourceEl.getAttribute('src') && sourceEl.getAttribute('src').startsWith('http')) {
+      if (sourceEl && sourceEl.getAttribute('src') && sourceEl.getAttribute('src').startsWith('http') && !sourceEl.getAttribute('src').startsWith('blob:')) {
         return {
           type: 'video',
           url: sourceEl.getAttribute('src'),
@@ -192,15 +228,57 @@
         };
       }
 
-      // Tenta recuperar do React Fiber
-      const reactVideoUrl = extractVideoUrlFromReactProps(videoEl) || extractVideoUrlFromReactProps(postContainer);
-      if (reactVideoUrl) {
+      // 2.3: Consulta o Main World Script (React Fiber + Fetch Sniffer)
+      const mainResult = await queryMainWorldMedia(shortcode, elementId);
+      if (mainResult && mainResult.url) {
+        return {
+          type: mainResult.type || 'video',
+          url: mainResult.url,
+          ext: mainResult.ext || 'mp4',
+          filename: `insta_video_${author}_${shortcode}`
+        };
+      }
+
+      // 2.4: Busca em Performance Entries do navegador
+      const perfUrl = findVideoInPerformanceEntries();
+      if (perfUrl) {
         return {
           type: 'video',
-          url: reactVideoUrl,
+          url: perfUrl,
           ext: 'mp4',
           filename: `insta_video_${author}_${shortcode}`
         };
+      }
+
+      // 2.5: Busca em scripts embutidos no documento
+      const scriptUrl = findVideoInDocumentScripts(shortcode);
+      if (scriptUrl) {
+        return {
+          type: 'video',
+          url: scriptUrl,
+          ext: 'mp4',
+          filename: `insta_video_${author}_${shortcode}`
+        };
+      }
+
+      // 2.6: Se o vídeo estiver pausado, inicia brevemente a reprodução para puxar o fluxo na rede
+      if (videoEl.paused) {
+        try {
+          const p = videoEl.play();
+          if (p && typeof p.then === 'function') {
+            p.then(() => setTimeout(() => videoEl.pause(), 200)).catch(() => {});
+          }
+          await new Promise(r => setTimeout(r, 450));
+          const retryPerfUrl = findVideoInPerformanceEntries();
+          if (retryPerfUrl) {
+            return {
+              type: 'video',
+              url: retryPerfUrl,
+              ext: 'mp4',
+              filename: `insta_video_${author}_${shortcode}`
+            };
+          }
+        } catch (e) {}
       }
     }
 
@@ -222,6 +300,17 @@
           filename: `insta_foto_${author}_${shortcode}`
         };
       }
+    }
+
+    // 4. Consulta final de fallback ao Main World
+    const fallbackMain = await queryMainWorldMedia(shortcode, elementId);
+    if (fallbackMain && fallbackMain.url) {
+      return {
+        type: fallbackMain.type || 'image',
+        url: fallbackMain.url,
+        ext: fallbackMain.ext || 'jpg',
+        filename: `insta_media_${author}_${shortcode}`
+      };
     }
 
     return null;
