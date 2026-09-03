@@ -137,6 +137,7 @@ class FlowMacroEngine {
         }
         if (data.flow_macro_learned_selectors && typeof data.flow_macro_learned_selectors === 'object') {
           this.learnedSelectors = data.flow_macro_learned_selectors;
+          delete this.learnedSelectors.newProjectButton;
         }
         if (data.flow_macro_config) {
           this.config = { ...this.config, ...data.flow_macro_config };
@@ -472,8 +473,8 @@ class FlowMacroEngine {
     else if (lowerAria.includes('reutilizar') || lowerText.includes('replay') || lowerText.includes('edit_note')) {
       this.learnSelector('reuseButton', el);
     }
-    // 5. Botão "+ Novo projeto" no Hub inicial
-    else if (FlowMacroEngine.isFlowHubPage() && (lowerText.includes('novo projeto') || lowerAria.includes('novo projeto'))) {
+    // 5. Botão "+ Novo projeto" no Hub inicial (somente botão real, nunca cards de projeto)
+    else if (FlowMacroEngine.isFlowHubPage() && el.tagName === 'BUTTON' && !el.querySelector('img') && !el.closest('[class*="card" i]') && (lowerText.includes('add_2') || lowerText.includes('add')) && lowerText.includes('novo projeto')) {
       this.learnSelector('newProjectButton', el);
     }
   }
@@ -3385,16 +3386,28 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
   }
 
   /**
-   * Detecta e cancela automaticamente modais perigosos (como "Deseja excluir este projeto?")
-   * Clica imediatamente em "Cancelar" para proteger os projetos do usuário
+   * Detecta e cancela automaticamente modais perigosos (como "Você quer mesmo excluir este projeto?")
+   * Clica imediatamente em "Cancelar" e envia Escape para proteger os projetos do usuário
    * @returns {boolean}
    */
   dismissDangerousModals() {
     try {
-      const dangerNodes = Array.from(document.querySelectorAll('h1, h2, h3, h4, div, p')).filter(el => {
+      const dangerNodes = Array.from(document.querySelectorAll([
+        '[role="dialog"]',
+        '[role="alertdialog"]',
+        'div[class*="modal" i]',
+        'div[class*="dialog" i]',
+        'h1, h2, h3, h4, div, p, span'
+      ].join(', '))).filter(el => {
         if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
         const t = (el.textContent || el.innerText || '').toLowerCase();
-        return t.includes('excluir este projeto') || t.includes('delete this project') || t.includes('excluir o projeto') || t.includes('deseja excluir');
+        return t.includes('excluir este projeto') ||
+               t.includes('você quer mesmo excluir') ||
+               t.includes('voce quer mesmo excluir') ||
+               t.includes('todos os seus clipes') ||
+               t.includes('delete this project') ||
+               t.includes('excluir o projeto') ||
+               t.includes('deseja excluir');
       });
 
       if (dangerNodes.length > 0) {
@@ -3402,14 +3415,20 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
           const t = (b.textContent || b.innerText || '').trim().toLowerCase();
           const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-          return t === 'cancelar' || t === 'cancel' || t.includes('cancelar') || aria.includes('cancelar');
+          return t === 'cancelar' || t === 'cancel' || aria.includes('cancelar') || aria.includes('cancel');
         });
 
         if (cancelBtn) {
+          cancelBtn.focus();
           cancelBtn.click();
-          this.addLog('🛡️ [Proteção Ativa] Modal de exclusão acidental detectado e CANCELADO com segurança!', 'warning');
-          return true;
+          this.simulateClick(cancelBtn);
+          this.addLog('🛡️ [Proteção Ativa] Modal "Você quer mesmo excluir este projeto?" detectado e CANCELADO imediatamente!', 'warning');
         }
+
+        // Garante fechamento enviando tecla Escape
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
+        return true;
       }
     } catch (e) { /* ignora */ }
     return false;
@@ -3417,7 +3436,13 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
 
   /**
    * Localiza o botão "+ Novo projeto" estritamente na tela do Hub inicial do Google FLOW
-   * NUNCA é executado dentro de um projeto aberto para evitar cliques acidentais em menus de exclusão
+   * NUNCA é executado dentro de um projeto aberto nem em cards de projetos existentes.
+   * Seletor exato no DOM do FLOW:
+   * <button class="sc-16c4830a-1 iofibh sc-a38764c7-0 cgdjfr">
+   *   <i class="sc-a39c2a59-0 bvvkYW google-symbols undefined">add_2</i>
+   *   Novo projeto
+   *   <div data-type="button-overlay" class="sc-16c4830a-0 cZvLor"></div>
+   * </button>
    * @returns {HTMLElement|null}
    */
   findNewProjectButton() {
@@ -3429,73 +3454,74 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       return null;
     }
 
-    // 1. Verifica seletor aprendido previamente
-    const learned = this.resolveLearnedSelector('newProjectButton');
-    if (learned && learned.offsetParent !== null) {
-      const href = (learned.getAttribute('href') || '').toLowerCase();
-      const text = (learned.textContent || learned.innerText || '').toLowerCase();
-      const aria = (learned.getAttribute('aria-label') || '').toLowerCase();
-      const isDangerous = text.includes('excluir') || text.includes('delete') || aria.includes('excluir') || aria.includes('delete');
-      if (!href.includes('/characters') && !href.includes('/assets') && !isDangerous) {
-        return learned;
+    // 1. PRIORIDADE MÁXIMA: Seletores exatos das classes do botão Novo Projeto no FLOW
+    const exactClassSelectors = [
+      'button.cgdjfr',
+      'button.iofibh',
+      'button.sc-16c4830a-1',
+      'button.sc-a38764c7-0',
+      'button.sc-1c6805c6-1'
+    ];
+
+    for (const sel of exactClassSelectors) {
+      const candidates = Array.from(document.querySelectorAll(sel)).filter(b => {
+        if (b.offsetParent === null) return false;
+        if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        // SEGURANÇA: Nunca pode conter imagem nem ser card de projeto
+        if (b.querySelector('img') || b.closest('[class*="card" i]:has(img), [role="gridcell"]')) return false;
+        const text = (b.textContent || b.innerText || '').toLowerCase();
+        return text.includes('novo projeto') || text.includes('new project') || text.includes('add_2');
+      });
+
+      if (candidates.length > 0) {
+        return candidates[0];
       }
     }
 
-    // Prioridade 1: Seletor exato gravado do botão Novo Projeto no DevTools do FLOW
-    const exactNewProj = Array.from(document.querySelectorAll('div.sc-1c6805c6-1 > div > div > button, button[aria-label*="Novo projeto" i], button[aria-label*="New project" i]')).find(b => {
-      if (b.offsetParent === null) return false;
-      if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
-      const t = (b.textContent || b.innerText || '').toLowerCase();
-      const a = (b.getAttribute('aria-label') || '').toLowerCase();
-      return !t.includes('excluir') && !a.includes('excluir') && !t.includes('personagem');
-    });
+    // 2. PRIORIDADE 2: Qualquer <button> no Hub com ícone 'add_2' / 'add' e texto 'Novo projeto'
+    const buttonsWithAdd = Array.from(document.querySelectorAll('button')).filter(btn => {
+      if (btn.offsetParent === null) return false;
+      if (btn.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      // NUNCA pode ter imagem (cards de projeto contêm thumbnails)
+      if (btn.querySelector('img')) return false;
+      // NUNCA pode estar dentro de um card de projeto da galeria
+      if (btn.closest('[class*="card" i]:has(img), [role="gridcell"], [class*="project-card" i]')) return false;
 
-    if (exactNewProj) {
-      return exactNewProj;
-    }
-
-    // Prioridade 2: Busca por botões contendo o texto "novo projeto"
-    const allButtons = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(el => {
-      if (el.offsetParent === null) return false;
-      if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-      const href = (el.getAttribute('href') || el.href || '').toLowerCase();
-      if (href.includes('play.google') || href.includes('/characters') || href.includes('/assets')) return false;
-      return true;
-    });
-
-    for (const btn of allButtons) {
       const text = (btn.textContent || btn.innerText || '').trim().toLowerCase();
-      const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
-      const title = (btn.getAttribute('title') || '').toLowerCase();
-
-      // LISTA NEGRA DE SEGURANÇA: Rejeita estritamente botões com excluir, apagar, more_vert, etc.
+      // LISTA NEGRA ABSOLUTA
       if (
-        text.includes('excluir') || text.includes('delete') || text.includes('apagar') || text.includes('remover') ||
-        aria.includes('excluir') || aria.includes('delete') || aria.includes('apagar') || aria.includes('remover') ||
-        title.includes('excluir') || title.includes('delete') ||
-        text.includes('more_vert') || aria.includes('opções') || aria.includes('options') || aria.includes('menu') ||
-        text.includes('personagem') || text.includes('character') || aria.includes('personagem')
+        text.includes('excluir') || text.includes('delete') || text.includes('apagar') ||
+        text.includes('remover') || text.includes('more_vert') || text.includes('opções') ||
+        text.includes('options') || text.includes('menu') || text.includes('personagem')
       ) {
-        continue;
+        return false;
       }
 
-      const symbolEl = btn.querySelector('.google-symbols, .material-symbols-outlined, i, span');
-      const symText = symbolEl ? (symbolEl.textContent || symbolEl.innerText || '').trim().toLowerCase() : '';
-      const isAddIcon = ['add', 'add_2', 'add_box', 'add_circle', '+'].includes(symText);
+      const iconEl = btn.querySelector('.google-symbols, .material-symbols-outlined, i');
+      const iconText = iconEl ? (iconEl.textContent || iconEl.innerText || '').trim().toLowerCase() : '';
+      const hasAddIcon = iconText === 'add_2' || iconText === 'add' || iconText === '+';
 
-      const isStrictNewProjectText = (
-        text === 'novo projeto' || text === 'new project' || text === '+ novo projeto' || text === '+ new project' ||
-        text.startsWith('novo projeto') || text.startsWith('new project') || text.startsWith('criar projeto') ||
-        aria === 'novo projeto' || aria === 'new project' || aria.includes('novo projeto') || aria.includes('new project')
-      );
+      const cleanText = text.replace(/add(_2)?/g, '').trim();
+      return (hasAddIcon && (cleanText.includes('novo projeto') || cleanText.includes('new project'))) ||
+             cleanText === 'novo projeto' || cleanText === 'new project';
+    });
 
-      if (isStrictNewProjectText) {
-        return btn;
-      }
+    if (buttonsWithAdd.length > 0) {
+      return buttonsWithAdd[0];
+    }
 
-      if (isAddIcon && (text.includes('novo projeto') || text.includes('new project') || text.includes('criar') || text.includes('começar') || text === 'novo')) {
-        return btn;
-      }
+    // 3. PRIORIDADE 3: Botão com <div data-type="button-overlay"> que contenha "Novo projeto"
+    const overlayBtn = Array.from(document.querySelectorAll('button:has(div[data-type="button-overlay"])')).find(btn => {
+      if (btn.offsetParent === null) return false;
+      if (btn.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      if (btn.querySelector('img')) return false;
+      if (btn.closest('[class*="card" i]:has(img), [role="gridcell"]')) return false;
+      const text = (btn.textContent || btn.innerText || '').toLowerCase();
+      return (text.includes('novo projeto') || text.includes('new project')) && !text.includes('excluir');
+    });
+
+    if (overlayBtn) {
+      return overlayBtn;
     }
 
     return null;
@@ -3559,49 +3585,28 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       newProjBtn.focus();
 
       const overlay = newProjBtn.querySelector('[data-type="button-overlay"]') || newProjBtn;
-      const rect = overlay.getBoundingClientRect();
-      const clientX = rect.left + (rect.width > 0 ? rect.width / 2 : 10);
-      const clientY = rect.top + (rect.height > 0 ? rect.height / 2 : 10);
 
-      const eventOpts = {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        view: window,
-        clientX: clientX,
-        clientY: clientY,
-        button: 0,
-        buttons: 1
-      };
+      // 1. Simula clique no overlay (que captura eventos pointer no Next.js/styled-components)
+      if (overlay && overlay !== newProjBtn) {
+        this.simulateClick(overlay);
+        try { overlay.click(); } catch(e) {}
+      }
 
-      const targets = [newProjBtn, overlay, newProjBtn.querySelector('i'), newProjBtn.querySelector('span')].filter(Boolean);
+      // 2. Simula clique no botão nativo
+      this.simulateClick(newProjBtn);
+      try { newProjBtn.click(); } catch(e) {}
 
-      targets.forEach(t => {
+      // 3. Aciona o handler React direto no botão e no overlay de forma limpa
+      [newProjBtn, overlay].forEach(el => {
         try {
-          const propKey = Object.keys(t).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
-          if (propKey && t[propKey]) {
-            if (typeof t[propKey].onClick === 'function') {
-              t[propKey].onClick({ preventDefault: () => {}, stopPropagation: () => {}, target: t, currentTarget: t, nativeEvent: new MouseEvent('click', eventOpts) });
-            }
-            if (typeof t[propKey].onMouseDown === 'function') {
-              t[propKey].onMouseDown({ preventDefault: () => {}, stopPropagation: () => {}, target: t, currentTarget: t, nativeEvent: new MouseEvent('mousedown', eventOpts) });
+          const propKey = Object.keys(el).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
+          if (propKey && el[propKey]) {
+            if (typeof el[propKey].onClick === 'function') {
+              el[propKey].onClick({ preventDefault: () => {}, stopPropagation: () => {}, target: el, currentTarget: el });
             }
           }
-        } catch (e) { /* ignora */ }
+        } catch (e) {}
       });
-
-      targets.forEach(t => {
-        ['pointerover', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(evtType => {
-          if (evtType.startsWith('pointer') && typeof PointerEvent !== 'undefined') {
-            t.dispatchEvent(new PointerEvent(evtType, { ...eventOpts, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
-          } else {
-            t.dispatchEvent(new MouseEvent(evtType, eventOpts));
-          }
-        });
-      });
-
-      try { overlay.click(); } catch (e) { /* ignora */ }
-      try { newProjBtn.click(); } catch (e) { /* ignora */ }
 
       this.addLog('✨ Botão "Novo projeto" clicado! Aguardando o FLOW inicializar o projeto...', 'success');
       await new Promise(r => setTimeout(r, 1500));
