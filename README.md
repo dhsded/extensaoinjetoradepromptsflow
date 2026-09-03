@@ -52,6 +52,24 @@ Extensão profissional para navegadores baseados em Chromium (**Google Chrome, B
 
 ---
 
+## 🔄 Fluxograma Oficial de Execução do FLOW Macro
+
+O motor de automação segue rigorosamente o fluxograma oficial de ações no Google FLOW:
+
+| Passo | Ação no FLOW | Regras & Comportamento |
+|---|---|---|
+| **Início** | **Detecção de Página** | Detecta se está na página principal (`https://labs.google/fx/pt/tools/flow`) ou em um projeto aberto (`.../project/<id>`). |
+| **Passo A** | **Criação de Novo Projeto** | Se ativado o modo de novo projeto a cada carrossel, clica em `+ Novo projeto`. Reseta a verificação de formato para o novo projeto. |
+| **Passo 1** | **Inserção do Prompt + Formato de Imagem** | 1. Insere o primeiro prompt de texto.<br>2. **SOMENTE no 1º slide de cada projeto**: Abre o menu *Nano Banana*, valida/configura modo Imagem, proporção (ex: 9:16) e quantidade (x4), e fecha o menu.<br>3. **Nos slides seguintes (2+)**: A verificação de formato é completamente dispensada. |
+| **Passo 2** | **Botão `+`** | Clica no botão `+` na barra de prompt para abrir a biblioteca/upload. |
+| **Passo 3** | **Enviar Mídia / Biblioteca** | Busca **primeiro** na biblioteca pelo nome de referência. Se não encontrar (1ª operação), clica em *Enviar Mídia* e carrega a imagem. |
+| **Passo 4** | **Selecionar Imagem & Incluir no Comando** | Seleciona o card do personagem pelo nome e clica em *Incluir no comando*.<br>*(Se existir mais de um personagem, retorna ao Passo 2).* |
+| **Passo 5** | **Envio do Prompt Inicial** | Com todos os personagens confirmados na barra, clica na seta à direita (`➔`) para gerar a imagem. |
+| **Passo 6/7** | **Reutilizar Comando nos Slides 2+** | Nos slides seguintes: clica no card gerado no Canvas, clica em *Reutilizar comando*, substitui o texto pelo novo prompt e envia.<br>*(Sem verificação de formato nem reenvio de personagens).* |
+| **Ciclo Final** | **Retorno ao Passo A** | Ao término da sequência de um carrossel, retorna ao **Passo A** se configurado para criar novos projetos em lote. |
+
+---
+
 ## 🚀 Como Instalar no Navegador
 
 1. Abra o navegador (**Chrome, Brave, Edge ou Opera**) e acesse:

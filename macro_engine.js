@@ -55,7 +55,8 @@ class FlowMacroEngine {
     this.tickerInterval = null;        // Intervalo do cronômetro (1 segundo)
     this.currentAction = '';           // Descrição textual da ação em andamento (ex: "⏳ FLOW gerando imagem...")
     this.countdown = { remaining: 0, total: 0, label: '' }; // Objeto da contagem regressiva ao vivo
-    this.settingsConfiguredForProject = false; // Flag de controle: configurações do Passo 2 rodam apenas 1x por projeto
+    this.settingsConfiguredForProject = false; // Flag de controle: configurações do Passo 1 rodam apenas 1x por projeto
+    this.lastConfiguredProjectId = null;       // ID do último projeto onde as configurações de formato foram aplicadas
 
     // ------------------------------------------------------------------------
     // Configurações Globais de Automação (Parâmetros que o usuário pode alterar)
@@ -1628,10 +1629,11 @@ class FlowMacroEngine {
 
   /**
    * Anexa imagens de personagens de referência no FLOW via modal de biblioteca/upload
-   * Executa os Passos 3, 4 e 5 do fluxograma oficial:
-   * - Passo 3: Clica no botão "+" na barra de prompt.
-   * - Passo 4: Abre a aba "Meus recursos" / "Upload" e envia o arquivo ou pesquisa pelo nome.
-   * - Passo 5: Seleciona o card do personagem, clica em "Incluir no comando" e valida a inclusão do chip.
+   * Executa os Passos 2, 3 e 4 do fluxograma oficial:
+   * - Passo 2: Clica no botão "+" na barra de prompt para anexar imagens.
+   * - Passo 3: Busca na biblioteca do FLOW ou clica em "Enviar Mídia" para fazer upload.
+   * - Passo 4: Seleciona o card do personagem baseado no nome, clica em "Incluir no comando" e valida o chip.
+   * - Loop: Se existir mais de um personagem ativo, retorna ao Passo 2.
    * @returns {Promise<boolean>}
    */
   async attachCharactersFromFlowLibrary() {
@@ -1657,9 +1659,9 @@ class FlowMacroEngine {
       return true; // Nenhum personagem configurado, avança imediatamente
     }
 
-    this.addLog(`🎭 [Passos 3, 4 e 5] Anexando ${activeChars.length} personagem(ns) de referência no FLOW...`, 'info');
+    this.addLog(`🎭 [Passos 2, 3 e 4] Anexando ${activeChars.length} personagem(ns) de referência no FLOW...`, 'info');
 
-    // Itera sequencialmente sobre cada personagem ativo
+    // Itera sequencialmente sobre cada personagem ativo (Passos 2 -> 3 -> 4, retornando ao 2 se > 1)
     for (let cIdx = 0; cIdx < activeChars.length; cIdx++) {
       const char = activeChars[cIdx];
       const rawName = (char.name || char.tag || '').trim();
@@ -1671,7 +1673,7 @@ class FlowMacroEngine {
       this.notify();
 
       // =========================================================================
-      // RETRY LOOP: Tenta até 3 vezes o ciclo completo (Passos 3→4→5) para cada
+      // RETRY LOOP: Tenta até 3 vezes o ciclo completo (Passos 2→3→4) para cada
       // personagem, garantindo que o chip seja de fato anexado à barra de prompt.
       // =========================================================================
       let chipConfirmedForChar = false;
@@ -1684,17 +1686,17 @@ class FlowMacroEngine {
         }
 
         // =========================================================================
-        // Passo 3: Clicar no botão "+" na barra de prompt do FLOW
+        // Passo 2: Clicar no botão "+" na barra de prompt do FLOW
         // =========================================================================
         this.dismissFlowOnboardingBanners();
         const plusBtn = this.findPlusButton();
         if (!plusBtn) {
-          this.addLog('⚠️ [Passo 3] Botão "+" da barra de prompt não encontrado.', 'warning');
+          this.addLog('⚠️ [Passo 2] Botão "+" da barra de prompt não encontrado.', 'warning');
           if (attempt < 2) continue; // Tenta novamente
           return false;
         }
 
-        this.addLog(`➕ [Passo 3] Clicando no botão "+" para anexar [${char.name}] (${cIdx + 1}/${activeChars.length})...`, 'info');
+        this.addLog(`➕ [Passo 2] Clicando no botão "+" para anexar [${char.name}] (${cIdx + 1}/${activeChars.length})...`, 'info');
         this.simulateClick(plusBtn);
 
         // Aguarda o modal de recursos abrir e estabilizar no DOM
@@ -1729,11 +1731,11 @@ class FlowMacroEngine {
         await this.stepDelay(null, 'Modal aberto. Buscando personagem na biblioteca...');
 
         // =========================================================================
-        // Passo 4: SEMPRE buscar PRIMEIRO na biblioteca do FLOW pelo nome do
-        // personagem. Somente se NÃO encontrar, fazer upload via input[type="file"].
+        // Passo 3: SEMPRE buscar PRIMEIRO na biblioteca do FLOW pelo nome do
+        // personagem. Somente se NÃO encontrar, fazer upload via "Enviar Mídia".
         // =========================================================================
 
-        // 4.0: Alternar para aba "Meus recursos" / "Upload" / "Enviar mídia" se existir
+        // 3.0: Alternar para aba "Meus recursos" / "Upload" / "Enviar mídia" se existir
         const tabs = Array.from(dialogContainer.querySelectorAll('button.sc-559b4cd2-4, button, [role="tab"], div[tabindex="0"]')).filter(b => b.offsetParent !== null);
         const assetsTab = tabs.find(b => {
           const t = (b.textContent || b.innerText || '').toLowerCase();
@@ -1745,11 +1747,11 @@ class FlowMacroEngine {
           await new Promise(r => setTimeout(r, 500));
         }
 
-        // 4.1: BUSCAR PRIMEIRO na biblioteca pelo nome do personagem
+        // 3.1: BUSCAR PRIMEIRO na biblioteca pelo nome do personagem
         let foundInLibrary = false;
         const searchInput = dialogContainer.querySelector('input[placeholder*="Pesquisar" i], input[type="search"], input[placeholder*="Search" i], input[placeholder*="Buscar" i], input');
         if (searchInput && charNameQuery) {
-          this.addLog(`🔍 [Passo 4] Buscando personagem "${charNameQuery}" na biblioteca do FLOW...`, 'info');
+          this.addLog(`🔍 [Passo 3] Buscando personagem "${charNameQuery}" na biblioteca do FLOW...`, 'info');
           searchInput.focus();
           // Limpa campo de busca antes de digitar
           const prototype = Object.getPrototypeOf(searchInput);
@@ -1781,13 +1783,13 @@ class FlowMacroEngine {
 
           if (searchResults.length > 0) {
             foundInLibrary = true;
-            this.addLog(`✅ [Passo 4] Personagem "${charNameQuery}" ENCONTRADO na biblioteca do FLOW!`, 'success');
+            this.addLog(`✅ [Passo 3] Personagem "${charNameQuery}" ENCONTRADO na biblioteca do FLOW!`, 'success');
           } else {
-            this.addLog(`ℹ️ [Passo 4] Personagem "${charNameQuery}" não encontrado por nome. Verificando cards visíveis...`, 'info');
+            this.addLog(`ℹ️ [Passo 3] Personagem "${charNameQuery}" não encontrado por nome. Verificando cards visíveis...`, 'info');
           }
         }
 
-        // 4.2: Se NÃO encontrou na biblioteca E tiver avatar em Base64, faz upload
+        // 3.2: Se NÃO encontrou na biblioteca E tiver avatar em Base64, clica em "Enviar Mídia" e faz upload
         if (!foundInLibrary && avatarData && avatarData.startsWith('data:')) {
           try {
             // Procura botão "Enviar mídia" / "Upload" dentro do modal
@@ -1804,7 +1806,7 @@ class FlowMacroEngine {
 
             const fileInput = dialogContainer.querySelector('input[type="file"]') || document.querySelector('body > input[type="file"], input[type="file"]');
             if (fileInput) {
-              this.addLog(`📤 [Passo 4] Enviando imagem de [${char.name}] para o FLOW (não estava na biblioteca)...`, 'info');
+              this.addLog(`📤 [Passo 3] Enviando imagem de [${char.name}] para o FLOW via "Enviar Mídia"...`, 'info');
               const blob = await fetch(avatarData).then(r => r.blob());
               const file = new File([blob], `${char.name || 'char'}_${cIdx + 1}.jpeg`, { type: blob.type || 'image/jpeg' });
               const dt = new DataTransfer();
@@ -1814,12 +1816,12 @@ class FlowMacroEngine {
               fileInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
 
               // Aguarda o FLOW processar e exibir a miniatura da imagem enviada no grid
-              this.addLog('⏳ [Passo 4] Aguardando o FLOW processar e carregar a imagem na galeria...', 'info');
+              this.addLog('⏳ [Passo 3] Aguardando o FLOW processar e carregar a imagem na galeria...', 'info');
               for (let upWait = 0; upWait < 15; upWait++) {
                 await new Promise(r => setTimeout(r, 600));
                 const newCards = Array.from(dialogContainer.querySelectorAll('button:has(img), [role="listitem"]:has(img), div[tabindex="0"]:has(img)')).filter(el => el.offsetParent !== null);
                 if (newCards.length > 0) {
-                  this.addLog('✅ [Passo 4] Imagem carregada com sucesso na galeria do FLOW!', 'success');
+                  this.addLog('✅ [Passo 3] Imagem carregada com sucesso na galeria do FLOW!', 'success');
                   break;
                 }
               }
@@ -1830,12 +1832,12 @@ class FlowMacroEngine {
         }
 
         // =========================================================================
-        // Passo 5: Localizar o card, SELECIONAR com confirmação visual, e clicar em
-        //          "Incluir no comando". Validar que o chip apareceu na barra de prompt.
+        // Passo 4: Localizar o card baseado no nome (referência básica), SELECIONAR
+        //          com confirmação visual, e clicar em "Incluir no comando".
+        //          Validar que o chip apareceu na barra de prompt.
         // =========================================================================
 
-        // 5.1: Localizar o card do personagem pelo nome/tag ou primeira imagem disponível
-        // Re-lê o dialogContainer pois o DOM pode ter mudado após a busca/upload
+        // 4.1: Localizar o card do personagem pelo nome/tag ou primeira imagem disponível
         let targetItem = null;
 
         for (let sWait = 0; sWait < 12; sWait++) {
@@ -1878,10 +1880,10 @@ class FlowMacroEngine {
           await new Promise(r => setTimeout(r, 400));
         }
 
-        // 5.2: Clicar no card para selecioná-lo com confirmação visual
+        // 4.2: Clicar no card para selecioná-lo com confirmação visual
         if (targetItem) {
           const clickEl = targetItem.closest('button, [role="button"], li, div[tabindex], div[role="listitem"]') || targetItem;
-          this.addLog(`🎯 [Passo 5] Selecionando imagem de [${char.name}] no modal...`, 'info');
+          this.addLog(`🎯 [Passo 4] Selecionando imagem de [${char.name}] no modal...`, 'info');
           this.simulateClick(clickEl);
           // Aguarda a seleção visual (borda de destaque, aria-selected, etc.)
           await new Promise(r => setTimeout(r, 800));
@@ -1893,18 +1895,18 @@ class FlowMacroEngine {
                              clickEl.getAttribute('data-state') === 'active';
 
           if (!isSelected) {
-            this.addLog('🔄 [Passo 5] Card não marcou como selecionado. Clicando novamente...', 'info');
+            this.addLog('🔄 [Passo 4] Card não marcou como selecionado. Clicando novamente...', 'info');
             this.simulateClick(clickEl);
             await new Promise(r => setTimeout(r, 600));
           }
         } else {
-          this.addLog(`⚠️ [Passo 5] Nenhum card de imagem encontrado para [${char.name}] no modal.`, 'warning');
+          this.addLog(`⚠️ [Passo 4] Nenhum card de imagem encontrado para [${char.name}] no modal.`, 'warning');
           // Fecha o modal e tenta novamente no próximo attempt
           this.closeResourceModal(dialogContainer);
           continue;
         }
 
-        // 5.3: Localizar e clicar no botão "Incluir no comando" com trigger React
+        // 4.3: Localizar e clicar no botão "Incluir no comando" com trigger React
         let includeBtn = null;
         for (let btnWait = 0; btnWait < 15; btnWait++) {
           // Busca ampla no DOM inteiro (o botão pode estar fora do dialogContainer, em um painel lateral)
@@ -1923,7 +1925,7 @@ class FlowMacroEngine {
         }
 
         if (includeBtn) {
-          this.addLog(`✨ [Passo 5] Clicando em "Incluir no comando" para [${char.name}]...`, 'info');
+          this.addLog(`✨ [Passo 4] Clicando em "Incluir no comando" para [${char.name}]...`, 'info');
 
           // Clique robusto: simulateClick + trigger React direto
           this.simulateClick(includeBtn);
@@ -1951,11 +1953,11 @@ class FlowMacroEngine {
           // Aguarda o FLOW processar a inclusão (o modal pode fechar automaticamente)
           await new Promise(r => setTimeout(r, 1200));
         } else {
-          this.addLog(`⚠️ [Passo 5] Botão "Incluir no comando" não encontrado.`, 'warning');
+          this.addLog(`⚠️ [Passo 4] Botão "Incluir no comando" não encontrado.`, 'warning');
         }
 
-        // 5.4: VALIDAÇÃO OBRIGATÓRIA — Verifica se o chip realmente apareceu na barra de prompt
-        this.addLog(`⏳ [Passo 5] Validando anexo do personagem [${char.name}] na barra de comando...`, 'info');
+        // 4.4: VALIDAÇÃO OBRIGATÓRIA — Verifica se o chip realmente apareceu na barra de prompt
+        this.addLog(`⏳ [Passo 4] Validando anexo do personagem [${char.name}] na barra de comando...`, 'info');
         let chipAttached = false;
 
         // Verifica por até 8 segundos se o chip do personagem apareceu
@@ -1989,14 +1991,14 @@ class FlowMacroEngine {
         }
 
         if (chipAttached) {
-          this.addLog(`✅ [Passo 5 Concluído] Personagem [${char.name}] anexado com sucesso ao comando!`, 'success');
+          this.addLog(`✅ [Passo 4 Concluído] Personagem [${char.name}] anexado com sucesso ao comando!`, 'success');
           chipConfirmedForChar = true;
 
           // Fecha o modal caso ainda esteja visível (via botão X, nunca via Escape)
           this.closeResourceModal(dialogContainer);
           break; // Sai do retry loop — este personagem foi anexado com sucesso
         } else {
-          this.addLog(`⚠️ [Passo 5] Chip de [${char.name}] NÃO detectado na barra de prompt. Tentativa ${attempt + 1}/3.`, 'warning');
+          this.addLog(`⚠️ [Passo 4] Chip de [${char.name}] NÃO detectado na barra de prompt. Tentativa ${attempt + 1}/3.`, 'warning');
 
           // Fecha o modal antes de re-tentar
           this.closeResourceModal(dialogContainer);
@@ -2007,6 +2009,11 @@ class FlowMacroEngine {
       if (!chipConfirmedForChar) {
         this.addLog(`❌ [ERRO CRÍTICO] Não foi possível anexar o personagem [${char.name}] após 3 tentativas. O macro NÃO prosseguirá sem os personagens de referência.`, 'error');
         return false;
+      }
+
+      // Loop do fluxograma: Se existir mais de um personagem ativo, retorna ao Passo 2
+      if (cIdx + 1 < activeChars.length) {
+        this.addLog(`🔁 [Loop de Personagens] Retornando ao Passo 2 para anexar o próximo personagem [${activeChars[cIdx + 1].name}] (${cIdx + 2}/${activeChars.length})...`, 'info');
       }
 
       await this.stepDelay(null, 'Personagem confirmado. Preparando próximo passo...');
@@ -2361,14 +2368,36 @@ class FlowMacroEngine {
   }
 
   /**
-   * Ajusta as configurações do FLOW (Passo 2 do fluxograma):
+   * Verifica se o projeto atual já teve seu formato e configurações de imagem validados no 1º slide.
+   * REGRA DE OURO: A verificação de formato de imagem acontece EXCLUSIVAMENTE no 1º slide de cada projeto!
+   * @returns {boolean}
+   */
+  isCurrentProjectConfigured() {
+    const currentProjectId = FlowMacroEngine.getCurrentProjectId();
+    if (!this.settingsConfiguredForProject) {
+      return false;
+    }
+    // Se mudou de projeto na URL, precisa reconfigurar no 1º slide do novo projeto
+    if (currentProjectId && this.lastConfiguredProjectId && currentProjectId !== this.lastConfiguredProjectId) {
+      this.settingsConfiguredForProject = false;
+      this.lastConfiguredProjectId = null;
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Ajusta as configurações do FLOW (Passo 1 do fluxograma oficial):
    * Abre o menu "Nano Banana", define Proporção, Modo Imagem e Quantidade, e fecha a janela.
-   * IMPORTANTE: Executa UMA ÚNICA VEZ por projeto!
+   * REGRA DE OURO: Executa EXCLUSIVAMENTE no 1º slide de cada projeto!
    * @returns {Promise<boolean>}
    */
   async applyFlowSettings() {
+    const currentProjectId = FlowMacroEngine.getCurrentProjectId();
+
     // Se as configurações já foram feitas para este projeto, pula imediatamente!
-    if (this.settingsConfiguredForProject) {
+    if (this.isCurrentProjectConfigured()) {
+      this.addLog('⏩ [Passo 1] Formato de imagem já configurado para este projeto (executado exclusivamente no 1º slide).', 'info');
       return true;
     }
 
@@ -2425,14 +2454,15 @@ class FlowMacroEngine {
         const hasRatio = aliases.some(a => pillText.includes(a) || pillAria.includes(a));
 
         if (!isVideo && hasQty && hasRatio) {
-          this.addLog(`✨ [Passo 2] Configurações já ativas no FLOW: Imagem | ${targetRatio} | ${targetQuantity}`, 'success');
+          this.addLog(`✨ [Passo 1] Configurações já ativas no FLOW: Imagem | ${targetRatio} | ${targetQuantity}`, 'success');
           this.settingsConfiguredForProject = true;
+          this.lastConfiguredProjectId = currentProjectId || FlowMacroEngine.getCurrentProjectId();
           return true;
         }
       }
 
       if (settingsTrigger) {
-        this.addLog('⚙️ [Passo 2] Abrindo painel de configurações (Nano Banana)...', 'info');
+        this.addLog('⚙️ [Passo 1] Abrindo painel de configurações (Nano Banana)...', 'info');
         this.simulateClick(settingsTrigger);
         await new Promise(r => setTimeout(r, 500));
       }
@@ -2459,7 +2489,7 @@ class FlowMacroEngine {
         });
 
         if (imageBtn && !this.isButtonSelected(imageBtn)) {
-          this.addLog('⚙️ [Passo 2] Alterando para modo "Imagem"...', 'info');
+          this.addLog('⚙️ [Passo 1] Alterando para modo "Imagem"...', 'info');
           this.simulateClick(imageBtn);
           await new Promise(r => setTimeout(r, 300));
         }
@@ -2480,7 +2510,7 @@ class FlowMacroEngine {
         });
 
         if (targetRatioBtn && !this.isButtonSelected(targetRatioBtn)) {
-          this.addLog(`⚙️ [Passo 2] Ajustando proporção para ${targetRatio}...`, 'info');
+          this.addLog(`⚙️ [Passo 1] Ajustando proporção para ${targetRatio}...`, 'info');
           this.simulateClick(targetRatioBtn);
           await new Promise(r => setTimeout(r, 300));
         }
@@ -2500,22 +2530,24 @@ class FlowMacroEngine {
         });
 
         if (targetQtyBtn && !this.isButtonSelected(targetQtyBtn)) {
-          this.addLog(`⚙️ [Passo 2] Ajustando quantidade para ${targetQuantity}...`, 'info');
+          this.addLog(`⚙️ [Passo 1] Ajustando quantidade para ${targetQuantity}...`, 'info');
           this.simulateClick(targetQtyBtn);
           await new Promise(r => setTimeout(r, 300));
         }
       }
 
-      // 6. Passo 2: Clicar novamente em Nano Banana e fechar a janela de configurações
-      this.addLog('🔒 [Passo 2] Fechando janela de configurações do FLOW...', 'info');
+      // 6. Passo 1: Clicar novamente em Nano Banana e fechar a janela de configurações
+      this.addLog('🔒 [Passo 1] Fechando janela de configurações do FLOW...', 'info');
       await this.closeSettingsPopover(settingsTrigger, popover);
 
       this.settingsConfiguredForProject = true;
-      this.addLog(`✨ [Passo 2 Concluído] Modo: Imagem | Proporção: ${targetRatio} | Quantidade: ${targetQuantity}`, 'success');
+      this.lastConfiguredProjectId = currentProjectId || FlowMacroEngine.getCurrentProjectId();
+      this.addLog(`✨ [Passo 1 Concluído] Modo: Imagem | Proporção: ${targetRatio} | Quantidade: ${targetQuantity}`, 'success');
       return true;
     } catch (e) {
       console.warn('[FLOW Macro] applyFlowSettings warning:', e);
       this.settingsConfiguredForProject = true;
+      this.lastConfiguredProjectId = currentProjectId || FlowMacroEngine.getCurrentProjectId();
       return false;
     }
   }
@@ -3091,6 +3123,10 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
     if (this.currentIndex === -1 || this.currentIndex >= this.prompts.length) {
       const firstPending = this.prompts.findIndex(p => p.enabled && p.status !== 'completed');
       this.currentIndex = firstPending !== -1 ? firstPending : 0;
+      if (this.currentIndex === 0) {
+        this.settingsConfiguredForProject = false;
+        this.lastConfiguredProjectId = null;
+      }
     }
 
     // Fecha banners ou modais obstrutivos antes de iniciar
@@ -3132,6 +3168,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
     this.elapsedSeconds = 0;
     this.countdown = { remaining: 0, total: 0, label: '' };
     this.settingsConfiguredForProject = false;
+    this.lastConfiguredProjectId = null;
     this.currentAction = '';
     this.currentIndex = -1;
 
@@ -3471,7 +3508,8 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
   async createNewFlowProject() {
     this.dismissDangerousModals();
     this.settingsConfiguredForProject = false;
-    this.addLog('📁 [Novo Projeto] Preparando criação de novo projeto no FLOW...', 'info');
+    this.lastConfiguredProjectId = null;
+    this.addLog('📁 [Passo A] Preparando criação de novo projeto no FLOW...', 'info');
 
     const hubUrl = FlowMacroEngine.getHubUrl();
 
@@ -3611,7 +3649,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
     // 0. Detecta se está no Hub ou dentro do projeto
     const promptInput = this.findPromptInput();
     if (!promptInput && FlowMacroEngine.isFlowHubPage()) {
-      this.addLog('🏠 [Página Inicial do FLOW Detectada] Criando novo projeto automaticamente...', 'info');
+      this.addLog('🏠 [Passo A] Página Inicial do FLOW detectada: criando novo projeto...', 'info');
       await this.createNewFlowProject();
     } else if (FlowMacroEngine.isFlowProjectPage() || promptInput) {
       this.addLog(`📍 [Dentro do Projeto] ID: ${FlowMacroEngine.getCurrentProjectId() || 'ativo'} - Execução direta ativada.`, 'info');
@@ -3633,7 +3671,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
 
       // Se for um novo carrossel subsequente e a opção de criar novo projeto estiver ativa
       if (cIdx > 0 && this.config.autoCreateNewProjectPerCarousel) {
-        this.addLog('🏠 [Novo Carrossel] Acessando o Hub do FLOW para criar um novo projeto...', 'info');
+        this.addLog('🏠 [Passo A - Novo Carrossel] Acessando o Hub do FLOW para criar um novo projeto...', 'info');
         await this.createNewFlowProject();
       }
 
@@ -3734,23 +3772,28 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           this.addLog(`📝 [Passo 1] Prompt inicial inserido no campo de texto.`, 'info');
           await this.stepDelay(null, 'Verificando configurações...');
 
-           // Passo 2: Abrir configurações (Nano Banana), validar Imagem / Proporção / Quantidade, e fechar (1x por projeto)
-          this.currentAction = '⚙️ Configurando proporção, modo e quantidade...';
-          this.notify();
-          await this.applyFlowSettings();
+          // Passo 1 (Continuação): Verificação de formato de imagem (SOMENTE no 1º slide de cada projeto)
+          // REGRA DE OURO: A verificação de formato de imagem acontece EXCLUSIVAMENTE no 1º slide de cada projeto!
+          if (!this.isCurrentProjectConfigured()) {
+            this.currentAction = '⚙️ [Passo 1] Verificando configurações de imagem do projeto (1ª vez)...';
+            this.notify();
+            await this.applyFlowSettings();
 
-          // CORREÇÃO: Garante que nenhum popover/dialog ficou aberto após configurações
-          // Isso evita que o menu Nano Banana interfira nos Passos 3-5
-          for (let closeWait = 0; closeWait < 5; closeWait++) {
-            const openPopover = document.querySelector('[role="dialog"], [role="menu"], [class*="popover" i], [data-radix-popper-content-wrapper]');
-            if (!openPopover || openPopover.offsetParent === null) break;
-            this.addLog('⚠️ Popover de configurações ainda aberto. Fechando...', 'info');
-            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
-            await new Promise(r => setTimeout(r, 400));
+            // CORREÇÃO: Garante que nenhum popover/dialog ficou aberto após configurações
+            // Isso evita que o menu Nano Banana interfira nos Passos 2-4
+            for (let closeWait = 0; closeWait < 5; closeWait++) {
+              const openPopover = document.querySelector('[role="dialog"], [role="menu"], [class*="popover" i], [data-radix-popper-content-wrapper]');
+              if (!openPopover || openPopover.offsetParent === null) break;
+              this.addLog('⚠️ Popover de configurações ainda aberto. Fechando...', 'info');
+              document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
+              await new Promise(r => setTimeout(r, 400));
+            }
+          } else {
+            this.addLog('⏩ [Passo 1] Formato de imagem mantido (verificação ocorre exclusivamente no 1º slide de cada projeto).', 'info');
           }
           await this.stepDelay(null, 'Verificando personagens...');
 
-          // Passos 3, 4, 5: Anexar personagens de referência (botão +, buscar na biblioteca / upload, incluir no comando)
+          // Passos 2, 3 e 4: Anexar personagens de referência (botão +, buscar na biblioteca / upload, incluir no comando)
           if (this.config.applyGlobalCharacters !== false && this.characters && this.characters.length > 0) {
             this.currentAction = '🎭 Anexando personagens de referência...';
             this.notify();
@@ -3804,14 +3847,14 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           }
         }
 
-        // Passo 6: Clicar na seta no campo direito para enviar o prompt e gerar imagens no FLOW
+        // Passo 5: Clicar na seta no campo direito para enviar o prompt e gerar imagens no FLOW
         this.currentAction = '🚀 Enviando prompt para geração no FLOW...';
         this.notify();
         const submitBtn = this.findSubmitButton();
         const submitted = await this.simulateSubmit(submitBtn, inputEl);
 
         if (submitted) {
-          this.addLog(`✅ [Passo 6] Inserção ${rep + 1}/${targetRepeats} disparada no FLOW: ${item.slideTitle || item.title}`, 'success');
+          this.addLog(`✅ [Passo 5] Inserção ${rep + 1}/${targetRepeats} disparada no FLOW: ${item.slideTitle || item.title}`, 'success');
           // Aguarda a geração da imagem ser concluída no Canvas do FLOW antes do intervalo/próximo slide
           await this.waitForGenerationToComplete(60);
         } else {
