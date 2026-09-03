@@ -504,7 +504,7 @@ class FlowMacroEngine {
     if (fp.selector) {
       try {
         const el = document.querySelector(fp.selector);
-        if (el && el.offsetParent !== null && !el.closest('[id*="fd-"], [class*="fd-"]')) {
+        if (el && FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]')) {
           return el;
         }
       } catch (e) { /* ignora */ }
@@ -514,7 +514,7 @@ class FlowMacroEngine {
     if (fp.xpath) {
       try {
         const res = document.evaluate(fp.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-        if (res.singleNodeValue && res.singleNodeValue.offsetParent !== null && !res.singleNodeValue.closest('[id*="fd-"], [class*="fd-"]')) {
+        if (res.singleNodeValue && FlowMacroEngine.isElementVisible(res.singleNodeValue) && !res.singleNodeValue.closest('[id*="fd-"], [class*="fd-"]')) {
           return res.singleNodeValue;
         }
       } catch (e) { /* ignora */ }
@@ -994,33 +994,33 @@ class FlowMacroEngine {
   findPromptInput() {
     // 0. Verifica primeiro se há um seletor aprendido pelo gravador
     const learned = this.resolveLearnedSelector('promptInput');
-    if (learned && learned.offsetParent !== null && !learned.closest('[id*="fd-"], [class*="fd-"]')) {
+    if (learned && FlowMacroEngine.isElementVisible(learned) && !learned.closest('[id*="fd-"], [class*="fd-"]')) {
       const inner = learned.querySelector('[contenteditable="true"], textarea, [role="textbox"]');
       return inner || learned;
     }
 
     // Prioridade 1: Container exato do editor Slate.js do FLOW gravado no DevTools
     const exactSlate = document.querySelector('div.sc-5c3af813-3 [contenteditable="true"], div.sc-5c3af813-3 textarea, div.sc-5c3af813-3 > div, [data-slate-editor="true"]');
-    if (exactSlate && exactSlate.offsetParent !== null && !exactSlate.closest('[id*="fd-"], [class*="fd-"]')) {
+    if (exactSlate && FlowMacroEngine.isElementVisible(exactSlate) && !exactSlate.closest('[id*="fd-"], [class*="fd-"]')) {
       const inner = exactSlate.querySelector('[contenteditable="true"], textarea, [role="textbox"]');
       return inner || exactSlate;
     }
 
     // Prioridade 2: Textarea com placeholder de prompt
     const textarea = document.querySelector('textarea, [role="textbox"], input[type="text"][placeholder*="prompt" i], input[type="text"][placeholder*="descrever" i]');
-    if (textarea) {
+    if (textarea && FlowMacroEngine.isElementVisible(textarea)) {
       return textarea;
     }
 
     // Prioridade 3: Div ContentEditable genérica
     const contentEditable = document.querySelector('[contenteditable="true"], div.ProseMirror, div[role="combobox"]');
-    if (contentEditable) {
+    if (contentEditable && FlowMacroEngine.isElementVisible(contentEditable)) {
       return contentEditable;
     }
 
     // Fallback: Qualquer textarea visível na página fora da extensão
     const allTextareas = Array.from(document.querySelectorAll('textarea'));
-    const visibleTextarea = allTextareas.find(el => el.offsetParent !== null && !el.closest('[id*="fd-"], [class*="fd-"]'));
+    const visibleTextarea = allTextareas.find(el => FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]'));
     if (visibleTextarea) {
       return visibleTextarea;
     }
@@ -1198,17 +1198,26 @@ class FlowMacroEngine {
   findSubmitButton() {
     // 0. Verifica se há um seletor aprendido previamente
     const learned = this.resolveLearnedSelector('submitButton');
-    if (learned && learned.offsetParent !== null && !learned.closest('[id*="fd-"], [class*="fd-"]')) {
+    if (learned && FlowMacroEngine.isElementVisible(learned) && !learned.closest('[id*="fd-"], [class*="fd-"]')) {
       return learned;
     }
 
     // Prioridade 1: Seletor exato gravado do botão Criar do FLOW no DevTools
-    const exactSubmit = document.querySelector('div.sc-5c3af813-10 > button.sc-e8425ea6-0, div.sc-5c3af813-10 button, button[aria-label*="arrow_forward Criar" i], button[aria-label*="arrow_forward" i]');
-    if (exactSubmit && exactSubmit.offsetParent !== null && !exactSubmit.closest('[id*="fd-"], [class*="fd-"]')) {
+    const exactSubmit = document.querySelector([
+      'div.sc-5c3af813-10 > button.sc-e8425ea6-0',
+      'div.sc-5c3af813-10 button',
+      'button[aria-label*="arrow_forward Criar" i]',
+      'button[aria-label*="arrow_forward" i]',
+      'button[aria-label*="Criar" i]',
+      'button[aria-label*="Gerar" i]',
+      'button[aria-label*="Enviar" i]',
+      'button[aria-label*="Create" i]'
+    ].join(', '));
+    if (exactSubmit && FlowMacroEngine.isElementVisible(exactSubmit) && !exactSubmit.closest('[id*="fd-"], [class*="fd-"]')) {
       return exactSubmit;
     }
 
-    // Estratégia 1: Localiza botão contendo ícones Google Symbols (arrow_forward, send, play_arrow)
+    // Prioridade 2: Localiza botão contendo ícones Google Symbols de envio
     const symbolElements = Array.from(document.querySelectorAll('i.google-symbols, span.google-symbols, .google-symbols, i, span')).filter(el => {
       const symText = (el.textContent || el.innerText || '').trim().toLowerCase();
       return (symText === 'arrow_forward' || symText === 'send' || symText === 'play_arrow' || symText === 'arrow_right_alt' || symText === 'arrow_forward_ios');
@@ -1216,14 +1225,14 @@ class FlowMacroEngine {
 
     for (const sym of symbolElements) {
       const btn = sym.closest('button, [role="button"], div[tabindex="0"]');
-      if (btn && btn.offsetParent !== null && !btn.closest('[id*="fd-"], [class*="fd-"]')) {
+      if (btn && FlowMacroEngine.isElementVisible(btn) && !btn.closest('[id*="fd-"], [class*="fd-"]')) {
         return btn;
       }
     }
 
-    // Estratégia 2: Botão contendo o texto ou aria-label "Criar", "Gerar", "Create"
+    // Prioridade 3: Botão contendo o texto ou aria-label "Criar", "Gerar", "Create"
     const srElements = Array.from(document.querySelectorAll('button, [role="button"]')).filter(btn => {
-      if (btn.offsetParent === null || btn.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      if (!FlowMacroEngine.isElementVisible(btn) || btn.closest('[id*="fd-"], [class*="fd-"]')) return false;
       const t = (btn.textContent || btn.innerText || '').trim().toLowerCase();
       const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
       return (
@@ -1236,21 +1245,30 @@ class FlowMacroEngine {
       return srElements[0];
     }
 
-    // Estratégia 3: Botão de ação à direita na barra de prompt
+    // Prioridade 4 (Detecção Geométrica): O botão de envio fica no extremo direito da barra de prompt
     const promptInput = this.findPromptInput();
     if (promptInput) {
       const promptContainer = this.getPromptContainer();
       if (promptContainer) {
-        const buttons = Array.from(promptContainer.querySelectorAll('button, [role="button"], div[tabindex="0"]'));
-        for (let i = buttons.length - 1; i >= 0; i--) {
-          const btn = buttons[i];
-          if (btn.offsetParent === null || btn === promptInput || btn.contains(promptInput)) continue;
-          if (btn.closest('[id*="fd-"], [class*="fd-"]')) continue;
-          const text = (btn.textContent || btn.innerText || '').trim().toLowerCase();
+        const buttons = Array.from(promptContainer.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
+          if (!FlowMacroEngine.isElementVisible(b) || b === promptInput || b.contains(promptInput)) return false;
+          if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
+          const text = (b.textContent || b.innerText || '').trim().toLowerCase();
           if (text.includes('agente') || text.includes('banana') || text.includes('x1') || text.includes('x2') || text.includes('x3') || text.includes('x4') || text === '+') {
-            continue;
+            return false;
           }
-          return btn;
+          return true;
+        });
+
+        // Seleciona o botão mais à direita
+        const inputRect = promptInput.getBoundingClientRect();
+        const rightButtons = buttons.filter(b => b.getBoundingClientRect().left >= inputRect.right - 40);
+        if (rightButtons.length > 0) {
+          return rightButtons[rightButtons.length - 1];
+        }
+
+        if (buttons.length > 0) {
+          return buttons[buttons.length - 1];
         }
       }
     }
@@ -1434,7 +1452,7 @@ class FlowMacroEngine {
       'span[class*="chip" i]:has(img)',
       'span[class*="ingredient" i]'
     ].join(', '))).filter(el => {
-      if (el.offsetParent === null) return false;
+      if (!FlowMacroEngine.isElementVisible(el)) return false;
       if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
       // Nunca conta botões como chips
       if (el.closest('button[aria-label*="Criar" i]') || el.closest('button[aria-label*="add" i]')) return false;
@@ -1451,21 +1469,35 @@ class FlowMacroEngine {
   findPlusButton() {
     // 0. Verifica seletor aprendido
     const learned = this.resolveLearnedSelector('plusButton');
-    if (learned && learned.offsetParent !== null && !learned.closest('nav, aside, header, [role="navigation"], [class*="sidebar" i]')) {
+    if (learned && FlowMacroEngine.isElementVisible(learned) && !learned.closest('nav, aside, header, [role="navigation"], [class*="sidebar" i]')) {
       return learned;
     }
 
     // Prioridade 1: Botão "+" exato do FLOW gravado no DevTools
     const exactPlus = document.querySelector('div.sc-5c3af813-2 > button.sc-e8425ea6-0, div.sc-5c3af813-2 button, button[aria-label*="add_2 Criar" i], button[aria-label*="add_2" i]');
-    if (exactPlus && exactPlus.offsetParent !== null && !exactPlus.closest('nav, aside, header')) {
+    if (exactPlus && FlowMacroEngine.isElementVisible(exactPlus) && !exactPlus.closest('nav, aside, header')) {
       return exactPlus;
     }
 
     const promptContainer = this.getPromptContainer();
     const promptInput = this.findPromptInput();
 
+    // Prioridade 2 (Detecção Geométrica): O botão "+" fica posicionado imediatamente à esquerda do campo de prompt
+    if (promptContainer && promptInput) {
+      const allBtns = Array.from(promptContainer.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => FlowMacroEngine.isElementVisible(b) && !b.closest('[id*="fd-"], [class*="fd-"]'));
+      const inputRect = promptInput.getBoundingClientRect();
+      const leftBtns = allBtns.filter(b => {
+        if (b === promptInput || b.contains(promptInput)) return false;
+        const bRect = b.getBoundingClientRect();
+        return bRect.right <= inputRect.left + 25;
+      });
+      if (leftBtns.length > 0) {
+        return leftBtns[leftBtns.length - 1];
+      }
+    }
+
     const isMatch = (btn) => {
-      if (!btn || btn.offsetParent === null) return false;
+      if (!btn || !FlowMacroEngine.isElementVisible(btn)) return false;
       if (btn === promptInput || (promptInput && btn.contains(promptInput))) return false;
       if (btn.closest('[id*="fd-"], [class*="fd-"]')) return false;
 
@@ -1586,7 +1618,7 @@ class FlowMacroEngine {
     try {
       const candidates = Array.from(document.querySelectorAll('button, [role="button"]'));
       for (const btn of candidates) {
-        if (btn.offsetParent === null) continue;
+        if (!FlowMacroEngine.isElementVisible(btn)) continue;
         if (btn.tagName === 'A' || btn.closest('a') || btn.getAttribute('href')) continue;
         if (btn.closest('[id*="fd-"], [class*="fd-"]')) continue;
 
@@ -1717,7 +1749,7 @@ class FlowMacroEngine {
             'div:has(input[placeholder*="Pesquisar" i])',
             'div:has(input[placeholder*="Search" i])',
             'div:has(input[placeholder*="Buscar" i])'
-          ].join(', '))).find(el => el.offsetParent !== null && !el.closest('[id*="fd-"], [class*="fd-"]'));
+          ].join(', '))).find(el => FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]'));
 
           if (dialogContainer) break;
           await new Promise(r => setTimeout(r, 250));
@@ -1737,7 +1769,7 @@ class FlowMacroEngine {
         // =========================================================================
 
         // 3.0: Alternar para aba "Meus recursos" / "Upload" / "Enviar mídia" se existir
-        const tabs = Array.from(dialogContainer.querySelectorAll('button.sc-559b4cd2-4, button, [role="tab"], div[tabindex="0"]')).filter(b => b.offsetParent !== null);
+        const tabs = Array.from(dialogContainer.querySelectorAll('button.sc-559b4cd2-4, button, [role="tab"], div[tabindex="0"]')).filter(b => FlowMacroEngine.isElementVisible(b));
         const assetsTab = tabs.find(b => {
           const t = (b.textContent || b.innerText || '').toLowerCase();
           const aria = (b.getAttribute('aria-label') || '').toLowerCase();
@@ -1768,7 +1800,7 @@ class FlowMacroEngine {
 
           // Verifica se algum card com imagem apareceu nos resultados da busca
           const searchResults = Array.from(dialogContainer.querySelectorAll('button:has(img), [role="listitem"]:has(img), div[tabindex="0"]:has(img), div:has(img)')).filter(el => {
-            if (el.offsetParent === null || el === dialogContainer) return false;
+            if (!FlowMacroEngine.isElementVisible(el) || el === dialogContainer) return false;
             if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
             // Verifica se o card contém texto/label relacionado ao personagem
             const t = (el.innerText || el.textContent || '').toLowerCase();
@@ -1795,7 +1827,7 @@ class FlowMacroEngine {
           try {
             // Procura botão "Enviar mídia" / "Upload" dentro do modal
             const uploadBtn = Array.from(dialogContainer.querySelectorAll('button, [role="button"]')).find(b => {
-              if (b.offsetParent === null) return false;
+              if (!FlowMacroEngine.isElementVisible(b)) return false;
               const t = (b.textContent || b.innerText || '').toLowerCase();
               const aria = (b.getAttribute('aria-label') || '').toLowerCase();
               return t.includes('enviar mídia') || t.includes('enviar media') || t.includes('upload') || aria.includes('upload') || aria.includes('enviar');
@@ -1820,7 +1852,7 @@ class FlowMacroEngine {
               this.addLog('⏳ [Passo 3] Aguardando o FLOW processar e carregar a imagem na galeria...', 'info');
               for (let upWait = 0; upWait < 15; upWait++) {
                 await new Promise(r => setTimeout(r, 600));
-                const newCards = Array.from(dialogContainer.querySelectorAll('button:has(img), [role="listitem"]:has(img), div[tabindex="0"]:has(img)')).filter(el => el.offsetParent !== null);
+                const newCards = Array.from(dialogContainer.querySelectorAll('button:has(img), [role="listitem"]:has(img), div[tabindex="0"]:has(img)')).filter(el => FlowMacroEngine.isElementVisible(el));
                 if (newCards.length > 0) {
                   this.addLog('✅ [Passo 3] Imagem carregada com sucesso na galeria do FLOW!', 'success');
                   break;
@@ -2163,13 +2195,13 @@ class FlowMacroEngine {
         'div[aria-label*="criando" i]'
       ].join(', '))).filter(el => {
         if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-        return el.offsetParent !== null;
+        return FlowMacroEngine.isElementVisible(el);
       });
 
       // Verifica textos nos cards indicando "Gerando..." ou "Criando..."
       const textNodes = Array.from(document.querySelectorAll('span, div, p')).filter(el => {
         if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-        if (el.offsetParent === null) return false;
+        if (!FlowMacroEngine.isElementVisible(el)) return false;
         const t = (el.textContent || el.innerText || '').trim().toLowerCase();
         return t === 'gerando...' || t === 'criando...' || t === 'generating...' || t.startsWith('gerando') || t.startsWith('criando');
       });
@@ -2205,14 +2237,14 @@ class FlowMacroEngine {
       'div.sc-452db337-2 button',
       '[data-testid="virtuoso-item-list"] button:has(i)',
       '[data-testid="virtuoso-item-list"] button:has(svg)'
-    ].join(', '))).filter(el => el.offsetParent !== null && !el.closest('[id*="fd-"], [class*="fd-"]') && FlowMacroEngine.isSafeToClick(el));
+    ].join(', '))).filter(el => FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]') && FlowMacroEngine.isSafeToClick(el));
 
     if (directMatches.length > 0) {
       return directMatches;
     }
 
     const candidates = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"], a, i, span')).filter(el => {
-      if (el.offsetParent === null) return false;
+      if (!FlowMacroEngine.isElementVisible(el)) return false;
       if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
       return true;
     });
@@ -2274,7 +2306,7 @@ class FlowMacroEngine {
         'div[class*="generation" i]',
         'div[class*="card" i]:has(img)',
         'img[src*="googleusercontent"]'
-      ].join(', '))).filter(el => el.offsetParent !== null && !el.closest('[id*="fd-"], [class*="fd-"]'));
+      ].join(', '))).filter(el => FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]'));
 
       if (generatedCards.length > 0) {
         const latestCard = generatedCards[generatedCards.length - 1];
@@ -2408,7 +2440,7 @@ class FlowMacroEngine {
     for (let w = 0; w < 10; w++) {
       await new Promise(r => setTimeout(r, 150));
       const stillOpen = document.querySelector('[role="dialog"], [role="menu"], [class*="popover" i], [data-radix-popper-content-wrapper]');
-      if (!stillOpen || stillOpen.offsetParent === null) {
+      if (!stillOpen || !FlowMacroEngine.isElementVisible(stillOpen)) {
         break;
       }
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
@@ -2467,7 +2499,7 @@ class FlowMacroEngine {
       let settingsTrigger = null;
 
       for (const el of candidateTriggers) {
-        if (el.offsetParent === null) continue;
+        if (!FlowMacroEngine.isElementVisible(el)) continue;
         const t = (el.textContent || el.innerText || '').trim().toLowerCase();
         const aria = (el.getAttribute('aria-label') || '').toLowerCase();
         if (
@@ -2523,13 +2555,13 @@ class FlowMacroEngine {
         for (let w = 0; w < 8; w++) {
           await new Promise(r => setTimeout(r, 150));
           popover = document.querySelector('[role="dialog"], [role="menu"], [class*="popover" i], [class*="menu" i], [data-radix-popper-content-wrapper]');
-          if (popover && popover.offsetParent !== null) break;
+          if (popover && FlowMacroEngine.isElementVisible(popover)) break;
         }
       }
 
-      if (popover && popover.offsetParent !== null) {
+      if (popover && FlowMacroEngine.isElementVisible(popover)) {
         const searchRoot = popover;
-        const allButtons = Array.from(searchRoot.querySelectorAll('button, [role="button"], div[role="radio"], div[tabindex="0"]')).filter(b => b.offsetParent !== null && FlowMacroEngine.isSafeToClick(b));
+        const allButtons = Array.from(searchRoot.querySelectorAll('button, [role="button"], div[role="radio"], div[tabindex="0"]')).filter(b => FlowMacroEngine.isElementVisible(b) && FlowMacroEngine.isSafeToClick(b));
 
         // 3. Seção 1: Garantir modo "Imagem" (nunca Vídeo)
         const exactImageBtn = searchRoot.querySelector('button[id*="-trigger-IMAGE"], [aria-label*="Imagem" i], [aria-label*="image" i]');
@@ -3416,7 +3448,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
 
     // 1. Tenta clicar no botão "Canvas" ou "Editor" na barra lateral
     const canvasLink = Array.from(document.querySelectorAll('a, button, [role="button"], [role="tab"]')).find(el => {
-      if (el.offsetParent === null) return false;
+      if (!FlowMacroEngine.isElementVisible(el)) return false;
       const href = (el.getAttribute('href') || el.href || '').toLowerCase();
       const text = (el.textContent || el.innerText || '').toLowerCase();
       const aria = (el.getAttribute('aria-label') || '').toLowerCase();
@@ -3537,7 +3569,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
 
     for (const sel of exactClassSelectors) {
       const candidates = Array.from(document.querySelectorAll(sel)).filter(b => {
-        if (b.offsetParent === null) return false;
+        if (!FlowMacroEngine.isElementVisible(b)) return false;
         if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
         // SEGURANÇA: Nunca pode conter imagem nem ser card de projeto
         if (b.querySelector('img') || b.closest('[class*="card" i]:has(img), [role="gridcell"]')) return false;
@@ -3552,7 +3584,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
 
     // 2. PRIORIDADE 2: Qualquer <button> no Hub com ícone 'add_2' / 'add' e texto 'Novo projeto'
     const buttonsWithAdd = Array.from(document.querySelectorAll('button')).filter(btn => {
-      if (btn.offsetParent === null) return false;
+      if (!FlowMacroEngine.isElementVisible(btn)) return false;
       if (btn.closest('[id*="fd-"], [class*="fd-"]')) return false;
       // NUNCA pode ter imagem (cards de projeto contêm thumbnails)
       if (btn.querySelector('img')) return false;
@@ -3584,7 +3616,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
 
     // 3. PRIORIDADE 3: Botão com <div data-type="button-overlay"> que contenha "Novo projeto"
     const overlayBtn = Array.from(document.querySelectorAll('button:has(div[data-type="button-overlay"])')).find(btn => {
-      if (btn.offsetParent === null) return false;
+      if (!FlowMacroEngine.isElementVisible(btn)) return false;
       if (btn.closest('[id*="fd-"], [class*="fd-"]')) return false;
       if (btn.querySelector('img')) return false;
       if (btn.closest('[class*="card" i]:has(img), [role="gridcell"]')) return false;
@@ -3724,12 +3756,16 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
    */
   async runLoop() {
     // 0. Detecta se está no Hub ou dentro do projeto
-    const promptInput = this.findPromptInput();
-    if (!promptInput && FlowMacroEngine.isFlowHubPage()) {
-      this.addLog('🏠 [Passo A] Página Inicial do FLOW detectada: criando novo projeto...', 'info');
-      await this.createNewFlowProject();
-    } else if (FlowMacroEngine.isFlowProjectPage() || promptInput) {
-      this.addLog(`📍 [Dentro do Projeto] ID: ${FlowMacroEngine.getCurrentProjectId() || 'ativo'} - Execução direta ativada.`, 'info');
+    if (FlowMacroEngine.isFlowHubPage() || !FlowMacroEngine.isFlowProjectPage()) {
+      this.addLog('🏠 [Passo A] Página Inicial / Hub do FLOW detectada: criando novo projeto no Canvas...', 'info');
+      const created = await this.createNewFlowProject();
+      if (!created && !FlowMacroEngine.isFlowProjectPage()) {
+        this.addLog('❌ Não foi possível entrar no Canvas de um projeto do FLOW. Abra um projeto e tente novamente.', 'error');
+        this.stop();
+        return;
+      }
+    } else {
+      this.addLog(`📍 [Dentro do Projeto] ID: ${FlowMacroEngine.getCurrentProjectId() || 'ativo'} - Execução direta no Canvas.`, 'info');
     }
 
     // Determina os carrosséis habilitados
@@ -3823,6 +3859,11 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           await FlowMacroEngine.ensureOnFlowCanvas();
         }
 
+        if (FlowMacroEngine.isFlowHubPage() || !FlowMacroEngine.isFlowProjectPage()) {
+          this.addLog('🏠 [Passo A] Detectado Hub inicial: criando/acessando projeto antes do slide...', 'info');
+          await this.createNewFlowProject();
+        }
+
         let reused = false;
 
         // Passo 7: Se NÃO for o primeiro slide do carrossel, reutiliza o comando anterior do Canvas
@@ -3860,7 +3901,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
             // Isso evita que o menu Nano Banana interfira nos Passos 2-4
             for (let closeWait = 0; closeWait < 5; closeWait++) {
               const openPopover = document.querySelector('[role="dialog"], [role="menu"], [class*="popover" i], [data-radix-popper-content-wrapper]');
-              if (!openPopover || openPopover.offsetParent === null) break;
+              if (!openPopover || !FlowMacroEngine.isElementVisible(openPopover)) break;
               this.addLog('⚠️ Popover de configurações ainda aberto. Fechando...', 'info');
               document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
               await new Promise(r => setTimeout(r, 400));
@@ -3906,7 +3947,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         // CORREÇÃO: Verifica que nenhum dialog/popover está aberto antes de enviar
         for (let closeWait = 0; closeWait < 3; closeWait++) {
           const openDialog = document.querySelector('[role="dialog"], [role="menu"], [class*="popover" i], [class*="modal" i], [data-radix-popper-content-wrapper]');
-          if (!openDialog || openDialog.offsetParent === null) break;
+          if (!openDialog || !FlowMacroEngine.isElementVisible(openDialog)) break;
           this.addLog('⚠️ Dialog/popover detectado antes do envio. Fechando...', 'info');
           document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
           await new Promise(r => setTimeout(r, 400));
