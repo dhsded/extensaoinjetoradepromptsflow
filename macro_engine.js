@@ -1777,10 +1777,10 @@ class FlowMacroEngine {
           'div.sc-a0e2840-0'
         ].join(', '))).filter(el => FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]'));
 
-        const libraryHasItems = virtuosoItems.length > 0;
+        const libraryHasItemForChar = virtuosoItems.length > cIdx;
         const alreadyUploadedThisSession = this.uploadedAvatarsInFlow && this.uploadedAvatarsInFlow.has(char.name);
 
-        if (avatarData && avatarData.startsWith('data:') && !libraryHasItems && !alreadyUploadedThisSession) {
+        if (avatarData && avatarData.startsWith('data:') && !libraryHasItemForChar && !alreadyUploadedThisSession) {
           try {
             // Localiza ou abre o seletor de arquivos (input[type="file"])
             const uploadBtn = Array.from(dialogContainer.querySelectorAll('button, [role="button"]')).find(b => {
@@ -1816,7 +1816,7 @@ class FlowMacroEngine {
           } catch (err) {
             console.warn('[FLOW Macro] Aviso no upload de avatar:', err);
           }
-        } else if (libraryHasItems || alreadyUploadedThisSession) {
+        } else if (libraryHasItemForChar || alreadyUploadedThisSession) {
           this.addLog(`ℹ️ [Passo 3] Imagem de [${char.name}] já disponível na biblioteca do FLOW. Pulando upload repetido.`, 'info');
           await new Promise(r => setTimeout(r, 500));
         } else {
@@ -1869,20 +1869,26 @@ class FlowMacroEngine {
         }
 
         if (targetCard) {
-          this.addLog(`🎯 [Passo 4] Clicando com botão esquerdo no card de [${char.name}] na biblioteca...`, 'info');
-          targetCard.scrollIntoView({ behavior: 'instant', block: 'center' });
-          if (targetCard.focus) targetCard.focus();
+          this.addLog(`🎯 [Passo 4] Clicando com botão esquerdo uma única vez no card de [${char.name}] na biblioteca...`, 'info');
 
-          // Dispara clique com botão esquerdo uma única vez (conforme gravação do usuário)
-          targetCard.click();
-          this.simulateClick(targetCard);
+          // Localiza o elemento alvo específico gravado no DevTools (div.sc-b0e5-14 ou imagem/card)
+          const elToClick = targetCard.matches('div.sc-b0e5-14')
+            ? targetCard
+            : (targetCard.querySelector('div.sc-b0e5-14') || targetCard);
 
-          // Clica também no elemento interno se for container
-          const innerEl = targetCard.querySelector('div.sc-b0e5-14, img');
-          if (innerEl && innerEl !== targetCard) {
-            try { innerEl.click(); } catch (e) {}
-            this.simulateClick(innerEl);
-          }
+          elToClick.scrollIntoView({ behavior: 'instant', block: 'center' });
+          if (elToClick.focus) elToClick.focus();
+
+          // Dispara um ÚNICO clique com botão esquerdo (conforme instrução e gravação do usuário)
+          this.simulateClick(elToClick);
+
+          // Dispara o manipulador React do elemento caso presente
+          try {
+            const propKey = Object.keys(elToClick).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
+            if (propKey && elToClick[propKey] && typeof elToClick[propKey].onClick === 'function') {
+              elToClick[propKey].onClick({ preventDefault: () => {}, stopPropagation: () => {}, target: elToClick, currentTarget: elToClick });
+            }
+          } catch (e) {}
 
           await new Promise(r => setTimeout(r, 600));
         } else {
@@ -1937,12 +1943,8 @@ class FlowMacroEngine {
           if (includeBtn.focus) includeBtn.focus();
 
           const overlay = includeBtn.querySelector('[data-type="button-overlay"]');
-          if (overlay) {
-            try { overlay.click(); } catch (e) {}
-            this.simulateClick(overlay);
-          }
-          try { includeBtn.click(); } catch (e) {}
-          this.simulateClick(includeBtn);
+          const targetToClick = overlay || includeBtn;
+          this.simulateClick(targetToClick);
 
           // Dispara também o handler React
           [includeBtn, overlay].filter(Boolean).forEach(el => {
