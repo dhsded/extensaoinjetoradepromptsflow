@@ -70,10 +70,16 @@ function sanitizeFilename(name) {
  */
 function formatFilename(rawName, folder, ext = 'png') {
   const dateStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  let cleanName = sanitizeFilename(rawName) || `flow_${dateStr}`;
+  let finalExt = ext;
+  // Preserva a extensão original caso o nome já termine com extensão válida
+  const extMatch = rawName ? rawName.match(/\.(mp4|png|jpg|jpeg|webp)$/i) : null;
+  if (extMatch) {
+    finalExt = extMatch[1].toLowerCase();
+  }
+  let cleanName = sanitizeFilename(rawName) || `media_${dateStr}`;
   // Remove extensões duplicadas caso já venham no nome
-  cleanName = cleanName.replace(/\.(png|jpg|jpeg|webp)$/i, '');
-  const fileName = `${cleanName}.${ext}`;
+  cleanName = cleanName.replace(/\.(png|jpg|jpeg|webp|mp4)$/i, '');
+  const fileName = `${cleanName}.${finalExt}`;
   
   // Limpa o nome da pasta de destino
   const cleanFolder = sanitizeFilename(folder || 'FLOW_Downloads').replace(/^_+|_+$/g, '');
@@ -197,7 +203,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     try {
       switch (message.action) {
-        // Ação: Baixar uma única imagem
+        // Ação: Baixar uma única mídia (imagem ou vídeo)
+        case 'DOWNLOAD_MEDIA':
         case 'DOWNLOAD_IMAGE': {
           const settings = await chrome.storage.local.get(DEFAULT_SETTINGS);
           const fullPath = formatFilename(

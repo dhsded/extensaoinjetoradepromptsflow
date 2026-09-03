@@ -48,11 +48,16 @@
     }, true);
   } catch (e) { /* ignora */ }
 
+  // content.js é dedicado exclusivamente ao ambiente Google FLOW
+  if (!window.location.hostname.includes('labs.google') && !window.location.pathname.includes('/flow')) {
+    return;
+  }
+
   // Evita injeções múltiplas no mesmo frame da página
   if (window.__FLOW_DOWNLOADER_INITIALIZED__) return;
   window.__FLOW_DOWNLOADER_INITIALIZED__ = true;
 
-  console.log('[FLOW Downloader Pro] Content Script inicializado com sucesso.');
+  console.log('[FLOW Downloader Pro] Content Script do Google FLOW inicializado com sucesso.');
 
   // =========================================================================
   // Estado Local da Extensão na Página

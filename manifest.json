@@ -19,10 +19,20 @@
   "content_scripts": [
     {
       "matches": [
-        "<all_urls>"
+        "https://labs.google/*",
+        "https://*.google.com/*"
       ],
       "js": ["pdf_extractor.js", "macro_engine.js", "content.js"],
       "css": ["content.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.instagram.com/*",
+        "https://instagram.com/*"
+      ],
+      "js": ["instagram_downloader.js"],
+      "css": ["instagram.css"],
       "run_at": "document_idle"
     }
   ],
