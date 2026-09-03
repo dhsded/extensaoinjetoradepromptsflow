@@ -3565,13 +3565,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
 
   /**
    * Localiza o botão "+ Novo projeto" estritamente na tela do Hub inicial do Google FLOW
-   * NUNCA é executado dentro de um projeto aberto nem em cards de projetos existentes.
-   * Seletor exato no DOM do FLOW:
-   * <button class="sc-16c4830a-1 iofibh sc-a38764c7-0 cgdjfr">
-   *   <i class="sc-a39c2a59-0 bvvkYW google-symbols undefined">add_2</i>
-   *   Novo projeto
-   *   <div data-type="button-overlay" class="sc-16c4830a-0 cZvLor"></div>
-   * </button>
+   * Prioriza a busca textual direta pela expressão "Novo projeto" (conforme solicitado pelo usuário).
    * @returns {HTMLElement|null}
    */
   findNewProjectButton() {
@@ -3583,20 +3577,83 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       return null;
     }
 
-    // 1. PRIORIDADE MÁXIMA: Seletores exatos das classes do botão Novo Projeto no FLOW
+    // =========================================================================
+    // PRIORIDADE 1: Busca textual direta pelas palavras "novo projeto" ou "new project"
+    // Varre todos os botões, links, spans e divs interativos da página
+    // =========================================================================
+    const candidateElements = Array.from(document.querySelectorAll('button, [role="button"], a, div[tabindex="0"], span, div, p'));
+    for (const el of candidateElements) {
+      if (!FlowMacroEngine.isElementVisible(el)) continue;
+      if (el.closest('[id*="fd-"], [class*="fd-"]')) continue;
+
+      const text = (el.textContent || el.innerText || '').trim().toLowerCase();
+      const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+      const title = (el.getAttribute('title') || '').toLowerCase();
+
+      const hasTextMatch = text.includes('novo projeto') || text.includes('new project') ||
+                           aria.includes('novo projeto') || aria.includes('new project') ||
+                           title.includes('novo projeto') || title.includes('new project');
+
+      if (!hasTextMatch) continue;
+
+      // SEGURANÇA: Rejeita rigorosamente menus de opções, cards de projetos com thumbnail e exclusão
+      if (
+        text.includes('excluir') || text.includes('delete') || text.includes('apagar') ||
+        text.includes('remover') || text.includes('certeza') || text.includes('exclusão') ||
+        text.includes('more_vert')
+      ) {
+        continue;
+      }
+
+      if (el.querySelector('img') || el.closest('[class*="card" i]:has(img), [role="gridcell"]:has(img)')) {
+        continue;
+      }
+
+      // Se encontrou o texto dentro de um span/div/ícone, sobe até o botão clicável pai
+      const clickableBtn = el.closest('button, [role="button"], a, div[tabindex="0"]') || el;
+      if (clickableBtn && FlowMacroEngine.isElementVisible(clickableBtn) && !clickableBtn.querySelector('img')) {
+        this.addLog('✨ [Passo A] Botão "Novo projeto" localizado via busca textual direta!', 'info');
+        return clickableBtn;
+      }
+    }
+
+    // =========================================================================
+    // PRIORIDADE 2: Busca por XPath textual direto no DOM
+    // =========================================================================
+    try {
+      const xpath = "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'novo projeto') and not(self::script) and not(self::style)]";
+      const result = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+      for (let i = 0; i < result.snapshotLength; i++) {
+        const node = result.snapshotItem(i);
+        if (!FlowMacroEngine.isElementVisible(node) || node.closest('[id*="fd-"], [class*="fd-"]')) continue;
+        if (node.querySelector('img') || node.closest('[class*="card" i]:has(img)')) continue;
+        const text = (node.textContent || '').toLowerCase();
+        if (text.includes('excluir') || text.includes('apagar')) continue;
+
+        const clickable = node.closest('button, [role="button"], a, div[tabindex="0"]') || node;
+        if (FlowMacroEngine.isElementVisible(clickable)) {
+          this.addLog('✨ [Passo A] Botão "Novo projeto" localizado via XPath textual!', 'info');
+          return clickable;
+        }
+      }
+    } catch (e) { /* ignora */ }
+
+    // =========================================================================
+    // PRIORIDADE 3: Classes oficiais gravadas do FLOW (Fallback)
+    // =========================================================================
     const exactClassSelectors = [
       'button.cgdjfr',
       'button.iofibh',
       'button.sc-16c4830a-1',
       'button.sc-a38764c7-0',
-      'button.sc-1c6805c6-1'
+      'button.sc-1c6805c6-1',
+      'button:has(div[data-type="button-overlay"])'
     ];
 
     for (const sel of exactClassSelectors) {
       const candidates = Array.from(document.querySelectorAll(sel)).filter(b => {
         if (!FlowMacroEngine.isElementVisible(b)) return false;
         if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
-        // SEGURANÇA: Nunca pode conter imagem nem ser card de projeto
         if (b.querySelector('img') || b.closest('[class*="card" i]:has(img), [role="gridcell"]')) return false;
         const text = (b.textContent || b.innerText || '').toLowerCase();
         return text.includes('novo projeto') || text.includes('new project') || text.includes('add_2');
@@ -3605,52 +3662,6 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       if (candidates.length > 0) {
         return candidates[0];
       }
-    }
-
-    // 2. PRIORIDADE 2: Qualquer <button> no Hub com ícone 'add_2' / 'add' e texto 'Novo projeto'
-    const buttonsWithAdd = Array.from(document.querySelectorAll('button')).filter(btn => {
-      if (!FlowMacroEngine.isElementVisible(btn)) return false;
-      if (btn.closest('[id*="fd-"], [class*="fd-"]')) return false;
-      // NUNCA pode ter imagem (cards de projeto contêm thumbnails)
-      if (btn.querySelector('img')) return false;
-      // NUNCA pode estar dentro de um card de projeto da galeria
-      if (btn.closest('[class*="card" i]:has(img), [role="gridcell"], [class*="project-card" i]')) return false;
-
-      const text = (btn.textContent || btn.innerText || '').trim().toLowerCase();
-      // LISTA NEGRA ABSOLUTA
-      if (
-        text.includes('excluir') || text.includes('delete') || text.includes('apagar') ||
-        text.includes('remover') || text.includes('more_vert') || text.includes('opções') ||
-        text.includes('options') || text.includes('menu') || text.includes('personagem')
-      ) {
-        return false;
-      }
-
-      const iconEl = btn.querySelector('.google-symbols, .material-symbols-outlined, i');
-      const iconText = iconEl ? (iconEl.textContent || iconEl.innerText || '').trim().toLowerCase() : '';
-      const hasAddIcon = iconText === 'add_2' || iconText === 'add' || iconText === '+';
-
-      const cleanText = text.replace(/add(_2)?/g, '').trim();
-      return (hasAddIcon && (cleanText.includes('novo projeto') || cleanText.includes('new project'))) ||
-             cleanText === 'novo projeto' || cleanText === 'new project';
-    });
-
-    if (buttonsWithAdd.length > 0) {
-      return buttonsWithAdd[0];
-    }
-
-    // 3. PRIORIDADE 3: Botão com <div data-type="button-overlay"> que contenha "Novo projeto"
-    const overlayBtn = Array.from(document.querySelectorAll('button:has(div[data-type="button-overlay"])')).find(btn => {
-      if (!FlowMacroEngine.isElementVisible(btn)) return false;
-      if (btn.closest('[id*="fd-"], [class*="fd-"]')) return false;
-      if (btn.querySelector('img')) return false;
-      if (btn.closest('[class*="card" i]:has(img), [role="gridcell"]')) return false;
-      const text = (btn.textContent || btn.innerText || '').toLowerCase();
-      return (text.includes('novo projeto') || text.includes('new project')) && !text.includes('excluir');
-    });
-
-    if (overlayBtn) {
-      return overlayBtn;
     }
 
     return null;
