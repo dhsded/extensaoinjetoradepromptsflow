@@ -2710,6 +2710,26 @@ class FlowMacroEngine {
     };
   }
 
+  /**
+   * Retorna um snapshot completo do estado do Espião formatado para exportação e cópia com 1 clique
+   * @returns {string} - JSON legível contendo todos os dados capturados
+   */
+  getDiagnosticSnapshot() {
+    const dom = this.diagnoseFlowDOM();
+    const snapshot = {
+      timestamp: new Date().toISOString(),
+      url: typeof window !== 'undefined' ? window.location.href : '',
+      pageType: FlowMacroEngine.isFlowProjectPage() ? 'Canvas do Projeto' : (FlowMacroEngine.isFlowHubPage() ? 'Hub Inicial do FLOW' : 'Outra'),
+      projectId: FlowMacroEngine.getCurrentProjectId(),
+      macroState: this.state,
+      currentSlide: `${this.currentIndex + 1}/${this.prompts.length}`,
+      carouselsCount: this.carousels.length,
+      domElements: dom,
+      recentLogs: this.logs.slice(-20)
+    };
+    return JSON.stringify(snapshot, null, 2);
+  }
+
   // =========================================================================
   // Pool de Chaves de IA e Sistema Multi-Provedor com Rotação Automática
   // =========================================================================
@@ -2870,8 +2890,13 @@ class FlowMacroEngine {
     const isProject = FlowMacroEngine.isFlowProjectPage();
     const projectId = FlowMacroEngine.getCurrentProjectId();
 
-    const systemPrompt = `Você é o Agente de Diagnóstico e Auto-Recuperação do FLOW Macro Studio Pro para o Google Flow (labs.google/fx/pt/tools/flow).
-Seu objetivo é analisar o estado da página, o DOM, a barra de prompt, os botões, os erros e os logs recentes, identificando falhas ou lentidões e prescrevendo a solução exata em português brasileiro de forma direta e concisa.`;
+    const systemPrompt = `Você é o Agente Especialista de Diagnóstico e Auto-Recuperação do FLOW Macro Studio Pro para o Google Flow (labs.google/fx/pt/tools/flow).
+Seu objetivo é analisar o estado da página, o DOM, a barra de prompt, os botões e os logs recentes, orientando o usuário em português brasileiro de forma direta e concisa.
+
+REGRAS DE ARQUITETURA DO GOOGLE FLOW:
+1. No 'Hub Inicial do FLOW' (URL sem /project/): É perfeitamente NORMAL e ESPERADO que o botão de envio (Criar/➔) e o botão + de personagens não estejam presentes, pois a geração de imagens só acontece DENTRO DE UM PROJETO (/project/ID).
+2. Se o usuário estiver no Hub Inicial, explique que a interface está pronta e que basta clicar em 'Iniciar Macro' no Studio (a macro executa o Passo A automaticamente, criando e entrando no Canvas do projeto) ou clicar em '+ Novo projeto'.
+3. Somente aponte como bloqueio a falta do botão Criar/➔ ou do botão + se a página já estiver 'Dentro do Projeto' (/project/ID).`;
 
     const userPrompt = `
 ESTADO ATUAL DO GOOGLE FLOW:

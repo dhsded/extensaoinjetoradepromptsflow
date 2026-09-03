@@ -1621,7 +1621,10 @@
                 <h3 style="margin: 0; font-size: 14px; font-weight: 700; color: #fff;">🔍 Espião e Diagnóstico Inteligente com I.A</h3>
                 <span style="font-size: 12px; color: var(--fd-text-muted);">Varredura de elementos em tempo real + Análise e Auto-Recuperação via Gemini, Groq ou OpenRouter.</span>
               </div>
-              <div style="display: flex; gap: 6px;">
+              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <button class="fd-modal-btn-cancel" id="fd-btn-copy-spy-snapshot" style="padding: 6px 12px; font-size: 12px;" title="Copiar relatório e snapshot completo do Espião para a área de transferência">
+                  📋 Copiar Snapshot
+                </button>
                 <button class="fd-modal-btn-cancel" id="fd-btn-refresh-inspector" style="padding: 6px 12px; font-size: 12px;">
                   🔄 Varredura DOM
                 </button>
@@ -2678,6 +2681,19 @@
             aiResultBox.innerHTML = `<strong>❌ Falha no Diagnóstico:</strong><br>${res.error}`;
           }
           renderAIKeysPool();
+        }
+      });
+    }
+
+    const btnCopySpySnapshot = macroModalElement.querySelector('#fd-btn-copy-spy-snapshot');
+    if (btnCopySpySnapshot) {
+      btnCopySpySnapshot.addEventListener('click', async () => {
+        const snapshot = engine.getDiagnosticSnapshot();
+        try {
+          await navigator.clipboard.writeText(snapshot);
+          showToast('📋 Snapshot do Espião copiado com sucesso! Pode colar aqui no chat.', 'success');
+        } catch (e) {
+          prompt('Copie o snapshot abaixo (Ctrl+C):', snapshot);
         }
       });
     }
