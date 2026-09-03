@@ -86,15 +86,31 @@
     };
   }
 
-  // Carrega configurações iniciais salvas no Chrome Storage
-  chrome.runtime.sendMessage({ action: 'GET_SETTINGS' }, (response) => {
-    if (chrome.runtime.lastError) {
-      chrome.storage.local.get(null, (data) => {
-        if (data) settings = { ...settings, ...data };
-        init();
+  /**
+   * Envia mensagem de forma segura para o background script
+   * Protege contra "Extension context invalidated" se o usuário recarregar a extensão
+   */
+  function safeSendMessage(message, callback) {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) {
+        return;
+      }
+      chrome.runtime.sendMessage(message, (res) => {
+        if (chrome.runtime.lastError) {
+          // Contexto descarregado ou erro transitório
+          return;
+        }
+        if (typeof callback === 'function') {
+          callback(res);
+        }
       });
-      return;
+    } catch (e) {
+      // Ignora erro de contexto invalidado após recarregar a extensão
     }
+  }
+
+  // Carrega configurações iniciais salvas no Chrome Storage
+  safeSendMessage({ action: 'GET_SETTINGS' }, (response) => {
     if (response && response.settings) {
       settings = { ...settings, ...response.settings };
     }
@@ -403,7 +419,7 @@
       ? `${cleanPrompt}_${Date.now().toString().slice(-4)}`
       : `flow_${Date.now()}`;
 
-    chrome.runtime.sendMessage(
+    safeSendMessage(
       {
         action: 'DOWNLOAD_IMAGE',
         url: imageUrl,
@@ -412,10 +428,6 @@
         id: imageUrl
       },
       (res) => {
-        if (chrome.runtime.lastError) {
-          console.warn('[FLOW Downloader] Erro ao enviar download:', chrome.runtime.lastError.message);
-          return;
-        }
         if (res && res.success) {
           processedImageIds.add(imageUrl);
           markCardAsDownloaded(card);
@@ -561,11 +573,9 @@
       }
       settings.downloadFolder = targetFolder;
       chrome.storage.local.set({ downloadFolder: targetFolder });
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         action: 'SAVE_SETTINGS',
         settings: { downloadFolder: targetFolder }
-      }, () => {
-        if (chrome.runtime.lastError) {}
       });
     }
 
@@ -736,17 +746,13 @@
     });
 
     // 5. Envia o lote completo para a fila de download no background worker
-    chrome.runtime.sendMessage(
+    safeSendMessage(
       {
         action: 'DOWNLOAD_BATCH',
         items: batchItems,
         folder: targetFolder
       },
       (response) => {
-        if (chrome.runtime.lastError) {
-          console.warn('[FLOW Downloader] Erro no lote:', chrome.runtime.lastError.message);
-        }
-
         // Marca visualmente os cards presentes na tela como salvos
         for (const item of allDiscovered) {
           if (item.card) markCardAsDownloaded(item.card);
@@ -1018,13 +1024,9 @@
       const val = e.target.checked;
       settings.autoDownload = val;
       chrome.storage.local.set({ autoDownload: val });
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         action: 'SAVE_SETTINGS',
         settings: { autoDownload: val }
-      }, () => {
-        if (chrome.runtime.lastError) {
-          // Consumo seguro de retorno
-        }
       });
       updateHudUI();
       showToast(val ? '🟢 Download automático ativado!' : '⏸️ Download automático pausado.', val ? 'success' : 'info');
@@ -1035,13 +1037,9 @@
       const val = e.target.value;
       settings.quality = val;
       chrome.storage.local.set({ quality: val });
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         action: 'SAVE_SETTINGS',
         settings: { quality: val }
-      }, () => {
-        if (chrome.runtime.lastError) {
-          // Consumo seguro de retorno
-        }
       });
       showToast(`🎯 Resolução alterada para: ${val.toUpperCase()}`, 'info');
     });
@@ -1053,9 +1051,7 @@
     btnCancel.addEventListener('click', () => {
       cancelRequested = true;
       isScrollingAndDownloading = false;
-      chrome.runtime.sendMessage({ action: 'CANCEL_DOWNLOADS' }, () => {
-        if (chrome.runtime.lastError) { /* ignora */ }
-      });
+      safeSendMessage({ action: 'CANCEL_DOWNLOADS' });
       resetHudButtons();
       showToast('🛑 Downloads cancelados pelo usuário.', 'info');
     });
