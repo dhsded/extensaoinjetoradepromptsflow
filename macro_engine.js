@@ -1101,8 +1101,10 @@ class FlowMacroEngine {
         const prototype = Object.getPrototypeOf(targetEditable);
         const valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value') ? Object.getOwnPropertyDescriptor(prototype, 'value').set : null;
         if (valueSetter) {
+          valueSetter.call(targetEditable, '');
           valueSetter.call(targetEditable, cleanText);
         } else {
+          targetEditable.value = '';
           targetEditable.value = cleanText;
         }
 
@@ -1113,13 +1115,14 @@ class FlowMacroEngine {
         targetEditable.focus();
         await new Promise(r => setTimeout(r, 40));
 
-        // 1. Cria seleção limpa dentro do editor Slate
+        // 1. Cria seleção limpa dentro do editor Slate e apaga conteúdo pré-existente
         try {
           const sel = window.getSelection();
           const range = document.createRange();
           range.selectNodeContents(targetEditable);
           sel.removeAllRanges();
           sel.addRange(range);
+          document.execCommand('delete', false, null);
         } catch (e) { /* ignora */ }
 
         // 2. Atualização direta no Fiber do Slate Editor se disponível
@@ -1480,9 +1483,37 @@ class FlowMacroEngine {
    * @returns {boolean}
    */
   isFlowLibraryOpen() {
+    // 1. Lista virtual de mídias
     const list = document.querySelector('[data-testid="virtuoso-item-list"]');
     if (list && FlowMacroEngine.isElementVisible(list)) return true;
 
+    // 2. Campo de busca de recursos (presente no topo da gaveta lateral)
+    const searchInput = document.querySelector('input[placeholder*="Pesquisar recursos" i], input[placeholder*="search" i]');
+    if (searchInput && FlowMacroEngine.isElementVisible(searchInput) && !searchInput.closest('[id*="fd-"], [class*="fd-"]')) {
+      return true;
+    }
+
+    // 3. Botão "Enviar mídia" ou "Upload" visível na barra lateral de mídia (x < 500px)
+    const mediaActions = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
+      if (!FlowMacroEngine.isElementVisible(b) || b.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const rect = b.getBoundingClientRect();
+      if (rect.left > 500) return false;
+      const t = (b.textContent || b.innerText || '').toLowerCase();
+      return t.includes('enviar mídia') || t.includes('enviar media') || (t.includes('upload') && !t.includes('studio'));
+    });
+    if (mediaActions.length > 0) return true;
+
+    // 4. Mensagem de gaveta de mídia vazia ("Nenhum resultado encontrado")
+    const emptyMsg = Array.from(document.querySelectorAll('div, p, span')).find(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const rect = el.getBoundingClientRect();
+      if (rect.left > 500) return false;
+      const t = (el.textContent || el.innerText || '').toLowerCase();
+      return t.includes('nenhum resultado encontrado') || t.includes('comece a criar ou adicione');
+    });
+    if (emptyMsg) return true;
+
+    // 5. Cards de mídia styled-components
     const cards = Array.from(document.querySelectorAll('div.sc-b0e5-14, div.sc-a0e2840-0')).filter(el => {
       return FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]');
     });
@@ -1511,6 +1542,54 @@ class FlowMacroEngine {
     return Array.from(document.querySelectorAll('[data-testid="virtuoso-item-list"] > div')).filter(el => {
       return FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]');
     });
+  }
+
+  /**
+   * Garante a abertura da gaveta/biblioteca de mídia do Google FLOW
+   * Prioridade 1: Clica no botão "Todas as mídias" ou "Personagens" na barra lateral esquerda (rect.left < 220)
+   * Prioridade 2: Clica no botão de adição do prompt (se não for + Agente)
+   * @returns {Promise<boolean>}
+   */
+  async ensureFlowLibraryOpen() {
+    if (this.isFlowLibraryOpen()) return true;
+
+    // 1. Procura botão "Todas as mídias" ou "Personagens" na barra lateral de navegação (x < 220px)
+    const sidebarButtons = Array.from(document.querySelectorAll('button, [role="button"], [role="tab"], div[tabindex="0"], div[class*="item" i]')).filter(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.left < 220;
+    });
+
+    const allMediaBtn = sidebarButtons.find(b => {
+      const t = (b.textContent || b.innerText || '').toLowerCase();
+      const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+      return t.includes('todas as mídias') || t.includes('todas as midias') || t.includes('all media') ||
+             aria.includes('todas as mídias') || aria.includes('todas as midias') || aria.includes('all media');
+    }) || sidebarButtons.find(b => {
+      const t = (b.textContent || b.innerText || '').toLowerCase();
+      const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+      return t.includes('personagens') || t.includes('characters') || aria.includes('personagens');
+    });
+
+    if (allMediaBtn) {
+      this.addLog('📂 [Passo 2] Clicando em "Todas as mídias" na barra lateral para abrir a biblioteca...', 'info');
+      this.clickElementWithOverlay(allMediaBtn);
+    } else {
+      const plusBtn = this.findPlusButton();
+      if (plusBtn) {
+        this.addLog('➕ [Passo 2] Clicando no botão de adição do prompt...', 'info');
+        this.clickElementWithOverlay(plusBtn);
+      }
+    }
+
+    // Aguarda até 4 segundos pela abertura da biblioteca
+    for (let w = 0; w < 16; w++) {
+      await new Promise(r => setTimeout(r, 250));
+      if (this.isFlowLibraryOpen()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -1614,8 +1693,11 @@ class FlowMacroEngine {
     const tooltip = (btn.getAttribute('data-tooltip') || '').toLowerCase();
     const testid = (btn.getAttribute('data-testid') || '').toLowerCase();
 
-    // REJEIÇÃO ABSOLUTA: Filtros, ordenação, busca, lixeira, configurações de proporção/banana, submit
+    // REJEIÇÃO ABSOLUTA: Agentes (+ Agente adiciona persona, NÃO mídia), Filtros, busca, proporção/banana, submit
     if (
+      lowerText.includes('agente') || lowerText.includes('agent') ||
+      aria.includes('agente') || aria.includes('agent') ||
+      title.includes('agente') || title.includes('agent') ||
       aria.includes('filtro') || aria.includes('filter') || aria.includes('filtrar') ||
       title.includes('filtro') || title.includes('filter') || title.includes('filtrar') ||
       tooltip.includes('filtro') || tooltip.includes('filter') || testid.includes('filter') ||
@@ -2015,33 +2097,19 @@ class FlowMacroEngine {
         // =========================================================================
         // Passo 2: Garantir que a biblioteca/galeria de mídia do FLOW está aberta
         // Se já estiver aberta na tela (por exemplo, do personagem anterior),
-        // NÃO clica no "+" para não fechar/alternar o drawer!
+        // NÃO clica novamente para não alternar/fechar o drawer!
         // =========================================================================
         let libraryOpen = this.isFlowLibraryOpen();
 
         if (!libraryOpen) {
-          const plusBtn = this.findPlusButton();
-          if (!plusBtn) {
-            this.addLog('⚠️ [Passo 2] Botão "+" da barra de prompt não encontrado.', 'warning');
-            if (attempt < 2) continue;
-            return false;
-          }
-
-          this.addLog(`➕ [Passo 2] Clicando no botão "+" para abrir biblioteca para [${char.name}] (${cIdx + 1}/${activeChars.length})...`, 'info');
-          this.simulateClick(plusBtn);
-
-          // Aguarda a biblioteca abrir
-          for (let w = 0; w < 16; w++) {
-            await new Promise(r => setTimeout(r, 250));
-            if (this.isFlowLibraryOpen()) {
-              libraryOpen = true;
-              break;
-            }
-          }
+          this.addLog(`📂 [Passo 2] Abrindo biblioteca do FLOW para [${char.name}] (${cIdx + 1}/${activeChars.length})...`, 'info');
+          libraryOpen = await this.ensureFlowLibraryOpen();
 
           if (!libraryOpen) {
-            this.addLog('⚠️ Biblioteca do FLOW não abriu após clicar em "+".', 'warning');
+            this.addLog('⚠️ Biblioteca do FLOW não abriu após tentativa na barra lateral.', 'warning');
             if (attempt < 2) continue;
+            this.addLog(`❌ [ERRO CRÍTICO] Não foi possível acessar a biblioteca do FLOW após 3 tentativas.`, 'error');
+            this.stop();
             return false;
           }
         } else {
@@ -2064,10 +2132,10 @@ class FlowMacroEngine {
               if (!FlowMacroEngine.isElementVisible(b) || !FlowMacroEngine.isSafeToClick(b)) return false;
               const t = (b.textContent || b.innerText || '').toLowerCase();
               const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-              return t.includes('enviar mídia') || t.includes('enviar media') || t.includes('upload') || aria.includes('enviar');
+              return t.includes('enviar mídia') || t.includes('enviar media') || (t.includes('upload') && !t.includes('studio')) || aria.includes('enviar');
             });
             if (uploadBtn) {
-              uploadBtn.click();
+              this.clickElementWithOverlay(uploadBtn);
               await new Promise(r => setTimeout(r, 400));
             }
 
@@ -2123,29 +2191,12 @@ class FlowMacroEngine {
             ? targetCard
             : (targetCard.querySelector('div.sc-b0e5-14') || targetCard);
 
-          elToClick.scrollIntoView({ behavior: 'instant', block: 'center' });
-          if (elToClick.focus) elToClick.focus();
-
-          this.simulateClick(elToClick);
-          try { elToClick.click(); } catch (e) {}
-
-          const innerImg = targetCard.querySelector('img, div.sc-b0e5-14');
-          if (innerImg && innerImg !== elToClick) {
-            try { innerImg.click(); } catch (e) {}
-            this.simulateClick(innerImg);
-          }
-
-          try {
-            const propKey = Object.keys(elToClick).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
-            if (propKey && elToClick[propKey] && typeof elToClick[propKey].onClick === 'function') {
-              elToClick[propKey].onClick({ preventDefault: () => {}, stopPropagation: () => {}, target: elToClick, currentTarget: elToClick });
-            }
-          } catch (e) {}
-
+          this.clickElementWithOverlay(elToClick);
           await new Promise(r => setTimeout(r, 600));
         } else {
           this.addLog(`⚠️ [Passo 4] Card para [${char.name}] não encontrado na biblioteca. Tentativa ${attempt + 1}/3.`, 'warning');
           if (attempt < 2) continue;
+          this.stop();
           return false;
         }
 
@@ -2181,9 +2232,7 @@ class FlowMacroEngine {
             // Re-clica no card caso o botão de inclusão demore a abrir a gaveta de detalhes
             this.addLog(`🔄 [Passo 4] Re-selecionando card de [${char.name}]...`, 'info');
             const elToClick = targetCard.matches('div.sc-b0e5-14') ? targetCard : (targetCard.querySelector('div.sc-b0e5-14') || targetCard);
-            elToClick.scrollIntoView({ behavior: 'instant', block: 'center' });
-            this.simulateClick(elToClick);
-            try { elToClick.click(); } catch (e) {}
+            this.clickElementWithOverlay(elToClick);
           }
 
           await new Promise(r => setTimeout(r, 400));
@@ -2191,24 +2240,7 @@ class FlowMacroEngine {
 
         if (includeBtn) {
           this.addLog(`✨ [Passo 4] Botão "Incluir no comando" pronto! Clicando...`, 'success');
-          includeBtn.scrollIntoView({ behavior: 'instant', block: 'center' });
-          if (includeBtn.focus) includeBtn.focus();
-
-          const overlay = includeBtn.querySelector('[data-type="button-overlay"]');
-          const targetToClick = overlay || includeBtn;
-          this.simulateClick(targetToClick);
-          try { targetToClick.click(); } catch (e) {}
-          try { includeBtn.click(); } catch (e) {}
-
-          [includeBtn, overlay].filter(Boolean).forEach(el => {
-            try {
-              const propKey = Object.keys(el).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
-              if (propKey && el[propKey] && typeof el[propKey].onClick === 'function') {
-                el[propKey].onClick({ preventDefault: () => {}, stopPropagation: () => {}, target: el, currentTarget: el });
-              }
-            } catch (e) {}
-          });
-
+          this.clickElementWithOverlay(includeBtn);
           await new Promise(r => setTimeout(r, 800));
         } else {
           this.addLog(`ℹ️ [Passo 4] Verificando anexo do chip na barra de comando...`, 'info');
@@ -2547,6 +2579,66 @@ class FlowMacroEngine {
   }
 
   /**
+   * Clica em um elemento garantindo suporte ao data-type="button-overlay" do Google FLOW e handlers sintéticos do React
+   * @param {HTMLElement} element - Elemento alvo
+   * @returns {boolean}
+   */
+  clickElementWithOverlay(element) {
+    if (!element) return false;
+    try {
+      element.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+      if (element.focus) element.focus();
+
+      const overlay = element.querySelector ? element.querySelector('[data-type="button-overlay"]') : null;
+      const targets = [overlay, element].filter(Boolean);
+
+      for (const target of targets) {
+        const rect = target.getBoundingClientRect();
+        const clientX = rect.left + (rect.width > 0 ? rect.width / 2 : 10);
+        const clientY = rect.top + (rect.height > 0 ? rect.height / 2 : 10);
+        const eventOpts = {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          view: window,
+          clientX,
+          clientY,
+          button: 0,
+          buttons: 1
+        };
+
+        if (typeof PointerEvent !== 'undefined') {
+          target.dispatchEvent(new PointerEvent('pointerdown', { ...eventOpts, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+        }
+        target.dispatchEvent(new MouseEvent('mousedown', eventOpts));
+
+        // Invoca manipuladores sintéticos do React se presentes
+        try {
+          const propKey = Object.keys(target).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
+          if (propKey && target[propKey]) {
+            if (typeof target[propKey].onMouseDown === 'function') {
+              target[propKey].onMouseDown({ preventDefault: () => {}, stopPropagation: () => {}, target, currentTarget: target });
+            }
+            if (typeof target[propKey].onClick === 'function') {
+              target[propKey].onClick({ preventDefault: () => {}, stopPropagation: () => {}, target, currentTarget: target });
+            }
+          }
+        } catch (e) {}
+
+        if (typeof PointerEvent !== 'undefined') {
+          target.dispatchEvent(new PointerEvent('pointerup', { ...eventOpts, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+        }
+        target.dispatchEvent(new MouseEvent('mouseup', eventOpts));
+
+        try { target.click(); } catch (e) {}
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
    * Helper para verificar se um botão/pílula de opção está ativo/selecionado no FLOW
    * @param {HTMLElement} btn - Botão a testar
    * @returns {boolean}
@@ -2554,10 +2646,10 @@ class FlowMacroEngine {
   isButtonSelected(btn) {
     if (!btn) return false;
     if (btn.getAttribute('aria-selected') === 'true' || btn.getAttribute('aria-checked') === 'true') return true;
-    if (btn.getAttribute('data-state') === 'active' || btn.getAttribute('data-state') === 'on') return true;
+    if (btn.getAttribute('data-state') === 'active' || btn.getAttribute('data-state') === 'on' || btn.getAttribute('data-state') === 'checked') return true;
     if (btn.classList.contains('active') || btn.classList.contains('selected') || btn.classList.contains('checked')) return true;
 
-    // Checa brilho da cor de fundo (botão selecionado tem fundo branco/cinza claro no modo escuro do FLOW)
+    // Checa brilho da cor de fundo (botão selecionado tem fundo destacado/branco no modo escuro do FLOW, > 180)
     try {
       const style = window.getComputedStyle(btn);
       const bg = style.backgroundColor;
@@ -2565,7 +2657,7 @@ class FlowMacroEngine {
         const rgb = bg.match(/\d+/g);
         if (rgb && rgb.length >= 3) {
           const brightness = (parseInt(rgb[0]) * 299 + parseInt(rgb[1]) * 587 + parseInt(rgb[2]) * 114) / 1000;
-          if (brightness > 45) return true;
+          if (brightness > 180) return true;
         }
       }
     } catch (e) { /* ignora */ }
@@ -2657,28 +2749,32 @@ class FlowMacroEngine {
 
       if (!promptContainer) return true;
 
-      // 1. Localiza a pílula de gatilho das configurações na barra inferior (ex: "🍌 Nano Banana Pro ...")
-      const candidateTriggers = Array.from(promptContainer.querySelectorAll('button, [role="button"], div[tabindex="0"], div[class*="pill" i], div[class*="setting" i], span, div')).filter(el => !el.closest('[id*="fd-"], [class*="fd-"]'));
-      let settingsTrigger = null;
-
-      for (const el of candidateTriggers) {
-        if (!FlowMacroEngine.isElementVisible(el)) continue;
-        const t = (el.textContent || el.innerText || '').trim().toLowerCase();
+      // 1. Localiza a pílula de gatilho das configurações na barra inferior (ex: "✨ Nano Banana Pro [] x4")
+      const candidateTriggers = Array.from(promptContainer.querySelectorAll('button, [role="button"], div[tabindex="0"], div[class*="pill" i], div[class*="setting" i]')).filter(el => {
+        if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        const t = (el.textContent || el.innerText || '').toLowerCase();
         const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-        if (
-          (t.includes('vídeo') || t.includes('video') || t.includes('imagem') || t.includes('image') || t.includes('banana') || aria.includes('banana') || aria.includes('vídeo')) &&
-          (t.includes('720p') || t.includes('360p') || t.includes('16:9') || t.includes('9:16') || t.includes('1:1') || t.includes('4:3') || t.includes('3:4') || t.includes('x4') || t.includes('x1') || t.includes('x2') || t.includes('x3') || t.includes('·') || aria.includes('x4') || aria.includes('crop_'))
-        ) {
-          settingsTrigger = el.closest('button, [role="button"], div[tabindex="0"]') || el;
-          break;
-        }
-      }
+        if (t.includes('agente') || aria.includes('agente') || aria.includes('arrow_forward') || aria.includes('criar') || t.includes('enviar')) return false;
+        return (
+          t.includes('banana') || t.includes('imagem') || t.includes('vídeo') || t.includes('video') ||
+          t.includes('16:9') || t.includes('9:16') || t.includes('1:1') || t.includes('4:3') || t.includes('3:4') ||
+          t.includes('x4') || t.includes('x1') || t.includes('x2') || t.includes('x3') ||
+          aria.includes('banana') || aria.includes('crop_') || aria.includes('proporção')
+        );
+      });
 
+      let settingsTrigger = candidateTriggers[0] || null;
       if (!settingsTrigger) {
-        settingsTrigger = candidateTriggers.find(el => {
-          const t = (el.textContent || el.innerText || '').trim().toLowerCase();
-          return t.includes('vídeo') || t.includes('video') || t.includes('banana') || t.includes('720p') || t.includes('16:9') || t.includes('9:16') || t.includes('1:1');
+        // Fallback: procura botões no promptContainer na região direita (antes do botão de envio)
+        const allPromptBtns = Array.from(promptContainer.querySelectorAll('button, [role="button"]')).filter(b => {
+          if (!FlowMacroEngine.isElementVisible(b) || b.closest('[id*="fd-"], [class*="fd-"]')) return false;
+          const t = (b.textContent || b.innerText || '').toLowerCase();
+          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+          return !t.includes('agente') && !aria.includes('agente') && !aria.includes('arrow_forward') && !aria.includes('criar') && b !== promptInput;
         });
+        if (allPromptBtns.length > 0) {
+          settingsTrigger = allPromptBtns[allPromptBtns.length - 1];
+        }
       }
 
       // 1.1 Caminho Rápido: Se a pílula já mostra exatamente as configurações desejadas, não precisa abrir o popover
@@ -2687,11 +2783,11 @@ class FlowMacroEngine {
         const pillAria = (settingsTrigger.getAttribute('aria-label') || '').toLowerCase();
         const isVideo = pillText.includes('vídeo') || pillText.includes('video') || pillAria.includes('vídeo') || pillAria.includes('video');
         const hasQty = pillText.includes(targetQuantity.toLowerCase()) || pillAria.includes(targetQuantity.toLowerCase());
-        
+
         const ratioAliases = {
           '1:1': ['1:1', 'crop_square', 'square'],
-          '9:16': ['9:16', 'crop_9_16', 'portrait'],
-          '16:9': ['16:9', 'crop_16_9', 'landscape'],
+          '9:16': ['9:16', 'crop_9_16', 'portrait', '9_16'],
+          '16:9': ['16:9', 'crop_16_9', 'landscape', '16_9'],
           '3:4': ['3:4', 'crop_portrait', '3_4'],
           '4:3': ['4:3', 'crop_landscape', '4_3']
         };
@@ -2706,82 +2802,93 @@ class FlowMacroEngine {
         }
       }
 
-      if (settingsTrigger) {
-        this.addLog('⚙️ [Passo 1] Abrindo painel de configurações (Nano Banana)...', 'info');
-        this.simulateClick(settingsTrigger);
-        await new Promise(r => setTimeout(r, 500));
+      if (!settingsTrigger) {
+        this.addLog('⚠️ [Passo 1] Pílula de configurações do FLOW não localizada no container do prompt.', 'warning');
+        return false;
       }
 
-      // 2. Localiza o popover de opções aberto
-      let popover = document.querySelector('[role="dialog"], [role="menu"], [class*="popover" i], [class*="menu" i], [data-radix-popper-content-wrapper]');
-      if (!popover) {
-        for (let w = 0; w < 8; w++) {
-          await new Promise(r => setTimeout(r, 150));
+      // 2. Abre o popover de opções com re-tentativas
+      let popover = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        this.addLog(`⚙️ [Passo 1] Abrindo painel de configurações (tentativa ${attempt + 1}/3)...`, 'info');
+        this.clickElementWithOverlay(settingsTrigger);
+        await new Promise(r => setTimeout(r, 600));
+
+        for (let w = 0; w < 10; w++) {
           popover = document.querySelector('[role="dialog"], [role="menu"], [class*="popover" i], [class*="menu" i], [data-radix-popper-content-wrapper]');
-          if (popover && FlowMacroEngine.isElementVisible(popover)) break;
+          if (popover && FlowMacroEngine.isElementVisible(popover) && !popover.closest('[id*="fd-"], [class*="fd-"]')) {
+            break;
+          }
+          await new Promise(r => setTimeout(r, 150));
         }
+
+        if (popover && FlowMacroEngine.isElementVisible(popover)) break;
       }
 
-      if (popover && FlowMacroEngine.isElementVisible(popover)) {
-        const searchRoot = popover;
-        const allButtons = Array.from(searchRoot.querySelectorAll('button, [role="button"], div[role="radio"], div[tabindex="0"]')).filter(b => FlowMacroEngine.isElementVisible(b) && FlowMacroEngine.isSafeToClick(b));
-
-        // 3. Seção 1: Garantir modo "Imagem" (nunca Vídeo)
-        const exactImageBtn = searchRoot.querySelector('button[id*="-trigger-IMAGE"], [aria-label*="Imagem" i], [aria-label*="image" i]');
-        const imageBtn = exactImageBtn || allButtons.find(b => {
-          const t = (b.textContent || b.innerText || '').trim().toLowerCase();
-          return (t === 'imagem' || t === 'image' || t.includes('imagem')) && !t.includes('vídeo') && !t.includes('video') && !t.includes('elemento');
-        });
-
-        if (imageBtn && !this.isButtonSelected(imageBtn)) {
-          this.addLog('⚙️ [Passo 1] Alterando para modo "Imagem"...', 'info');
-          this.simulateClick(imageBtn);
-          await new Promise(r => setTimeout(r, 300));
-        }
-
-        // 4. Seção 2: Ajustar Proporção da Imagem (16:9, 9:16, 1:1, 3:4, 4:3)
-        const ratioSelectorMap = {
-          '1:1': 'button[id*="-trigger-SQUARE"], [aria-label*="1:1"], [aria-label*="crop_square"]',
-          '9:16': 'button[id*="-trigger-PORTRAIT"], [aria-label*="9:16"], [aria-label*="crop_9_16"]',
-          '16:9': 'button[id*="-trigger-LANDSCAPE"], [aria-label*="16:9"], [aria-label*="crop_16_9"]',
-          '3:4': 'button[id*="-trigger-PORTRAIT_3_4"], [aria-label*="3:4"], [aria-label*="crop_portrait"]',
-          '4:3': 'button[id*="-trigger-LANDSCAPE_4_3"], [aria-label*="4:3"], [aria-label*="crop_landscape"]'
-        };
-
-        const exactRatioBtn = ratioSelectorMap[targetRatio] ? searchRoot.querySelector(ratioSelectorMap[targetRatio]) : null;
-        const targetRatioBtn = exactRatioBtn || allButtons.find(b => {
-          const t = (b.textContent || b.innerText || '').trim();
-          return t === targetRatio || t.includes(targetRatio);
-        });
-
-        if (targetRatioBtn && !this.isButtonSelected(targetRatioBtn)) {
-          this.addLog(`⚙️ [Passo 1] Ajustando proporção para ${targetRatio}...`, 'info');
-          this.simulateClick(targetRatioBtn);
-          await new Promise(r => setTimeout(r, 300));
-        }
-
-        // 5. Seção 3: Ajustar Quantidade de Imagens (x1, x2, x3, x4)
-        const qtySelectorMap = {
-          'x1': 'button[id*="-trigger-1"], [aria-label="x1"]',
-          'x2': 'button[id*="-trigger-2"], [aria-label="x2"]',
-          'x3': 'button[id*="-trigger-3"], [aria-label="x3"]',
-          'x4': 'button[id*="-trigger-4"], [aria-label="x4"]'
-        };
-
-        const exactQtyBtn = qtySelectorMap[targetQuantity.toLowerCase()] ? searchRoot.querySelector(qtySelectorMap[targetQuantity.toLowerCase()]) : null;
-        const targetQtyBtn = exactQtyBtn || allButtons.find(b => {
-          const t = (b.textContent || b.innerText || '').trim().toLowerCase();
-          return t === targetQuantity.toLowerCase() || t === `${this.config.quantity}` || t === `×${this.config.quantity}`;
-        });
-
-        if (targetQtyBtn && !this.isButtonSelected(targetQtyBtn)) {
-          this.addLog(`⚙️ [Passo 1] Ajustando quantidade para ${targetQuantity}...`, 'info');
-          this.simulateClick(targetQtyBtn);
-          await new Promise(r => setTimeout(r, 300));
-        }
+      if (!popover || !FlowMacroEngine.isElementVisible(popover)) {
+        this.addLog('⚠️ [Passo 1] Não foi possível abrir o menu de configurações do FLOW.', 'warning');
+        return false;
       }
 
-      // 6. Passo 1: Clicar novamente em Nano Banana e fechar a janela de configurações
+      const searchRoot = popover;
+      const allButtons = Array.from(searchRoot.querySelectorAll('button, [role="button"], div[role="radio"], div[tabindex="0"]')).filter(b => FlowMacroEngine.isElementVisible(b) && FlowMacroEngine.isSafeToClick(b));
+
+      // 3. Seção 1: Garantir modo "Imagem" (nunca Vídeo)
+      const exactImageBtn = searchRoot.querySelector('button[id*="-trigger-IMAGE"], [aria-label*="Imagem" i], [aria-label*="image" i]');
+      const imageBtn = exactImageBtn || allButtons.find(b => {
+        const t = (b.textContent || b.innerText || '').trim().toLowerCase();
+        return (t === 'imagem' || t === 'image' || t.includes('imagem')) && !t.includes('vídeo') && !t.includes('video') && !t.includes('elemento');
+      });
+
+      if (imageBtn && !this.isButtonSelected(imageBtn)) {
+        this.addLog('⚙️ [Passo 1] Alterando para modo "Imagem"...', 'info');
+        this.clickElementWithOverlay(imageBtn);
+        await new Promise(r => setTimeout(r, 350));
+      }
+
+      // 4. Seção 2: Ajustar Proporção da Imagem (16:9, 9:16, 1:1, 3:4, 4:3)
+      const ratioSelectorMap = {
+        '1:1': 'button[id*="-trigger-SQUARE"], [aria-label*="1:1"], [aria-label*="crop_square"]',
+        '9:16': 'button[id*="-trigger-PORTRAIT"], [aria-label*="9:16"], [aria-label*="crop_9_16"], [aria-label*="portrait" i]',
+        '16:9': 'button[id*="-trigger-LANDSCAPE"], [aria-label*="16:9"], [aria-label*="crop_16_9"], [aria-label*="landscape" i]',
+        '3:4': 'button[id*="-trigger-PORTRAIT_3_4"], [aria-label*="3:4"], [aria-label*="crop_portrait"]',
+        '4:3': 'button[id*="-trigger-LANDSCAPE_4_3"], [aria-label*="4:3"], [aria-label*="crop_landscape"]'
+      };
+
+      const exactRatioBtn = ratioSelectorMap[targetRatio] ? searchRoot.querySelector(ratioSelectorMap[targetRatio]) : null;
+      const targetRatioBtn = exactRatioBtn || allButtons.find(b => {
+        const t = (b.textContent || b.innerText || '').trim();
+        const aria = (b.getAttribute('aria-label') || '').trim();
+        return t === targetRatio || t.includes(targetRatio) || aria.includes(targetRatio);
+      });
+
+      if (targetRatioBtn && !this.isButtonSelected(targetRatioBtn)) {
+        this.addLog(`⚙️ [Passo 1] Ajustando proporção para ${targetRatio}...`, 'info');
+        this.clickElementWithOverlay(targetRatioBtn);
+        await new Promise(r => setTimeout(r, 400));
+      }
+
+      // 5. Seção 3: Ajustar Quantidade de Imagens (x1, x2, x3, x4)
+      const qtySelectorMap = {
+        'x1': 'button[id*="-trigger-1"], [aria-label="x1"]',
+        'x2': 'button[id*="-trigger-2"], [aria-label="x2"]',
+        'x3': 'button[id*="-trigger-3"], [aria-label="x3"]',
+        'x4': 'button[id*="-trigger-4"], [aria-label="x4"]'
+      };
+
+      const exactQtyBtn = qtySelectorMap[targetQuantity.toLowerCase()] ? searchRoot.querySelector(qtySelectorMap[targetQuantity.toLowerCase()]) : null;
+      const targetQtyBtn = exactQtyBtn || allButtons.find(b => {
+        const t = (b.textContent || b.innerText || '').trim().toLowerCase();
+        return t === targetQuantity.toLowerCase() || t === `${this.config.quantity}` || t === `×${this.config.quantity}`;
+      });
+
+      if (targetQtyBtn && !this.isButtonSelected(targetQtyBtn)) {
+        this.addLog(`⚙️ [Passo 1] Ajustando quantidade para ${targetQuantity}...`, 'info');
+        this.clickElementWithOverlay(targetQtyBtn);
+        await new Promise(r => setTimeout(r, 400));
+      }
+
+      // 6. Fechar janela de configurações
       this.addLog('🔒 [Passo 1] Fechando janela de configurações do FLOW...', 'info');
       await this.closeSettingsPopover(settingsTrigger, popover);
 
@@ -2791,8 +2898,6 @@ class FlowMacroEngine {
       return true;
     } catch (e) {
       console.warn('[FLOW Macro] applyFlowSettings warning:', e);
-      this.settingsConfiguredForProject = true;
-      this.lastConfiguredProjectId = currentProjectId || FlowMacroEngine.getCurrentProjectId();
       return false;
     }
   }
@@ -4000,6 +4105,9 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       }
     } else {
       this.addLog(`📍 [Dentro do Projeto] ID: ${FlowMacroEngine.getCurrentProjectId() || 'ativo'} - Execução direta no Canvas.`, 'info');
+      // Fecha eventuais modais ou gavetas de detalhes residuais para limpar o Canvas
+      this.dismissDangerousModals();
+      this.closeResourceModal();
     }
 
     // Determina os carrosséis habilitados
@@ -4042,8 +4150,14 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         }
       }
 
-      carousel.status = 'completed';
-      this.addLog(`✅ [Carrossel ${cIdx + 1}/${carouselsToRun.length}] Concluído com sucesso!`, 'success');
+      const hasFailedSlides = carousel.slides.some(s => s.status === 'error' || (s.enabled !== false && (s.completedRepeats || 0) === 0));
+      if (hasFailedSlides) {
+        carousel.status = 'failed';
+        this.addLog(`⚠️ [Carrossel ${cIdx + 1}/${carouselsToRun.length}] Finalizado com erro(s) ou incompleto.`, 'warning');
+      } else {
+        carousel.status = 'completed';
+        this.addLog(`✅ [Carrossel ${cIdx + 1}/${carouselsToRun.length}] Concluído com sucesso!`, 'success');
+      }
       this.saveState();
 
       // Intervalo entre o fim de um carrossel e o início do próximo (Padrão: 25s)
@@ -4060,7 +4174,12 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       this.countdown = { remaining: 0, total: 0, label: '' };
       this.currentAction = 'Concluído';
       const totalElapsed = FlowMacroEngine.formatDuration(this.elapsedSeconds);
-      this.addLog(`🎉 Todos os carrosséis e slides foram gerados com sucesso! Tempo total: ${totalElapsed}`, 'success');
+      const anyCarouselFailed = carouselsToRun.some(c => c.status === 'failed');
+      if (anyCarouselFailed) {
+        this.addLog(`⚠️ Execução finalizada com alertas ou falhas. Tempo total: ${totalElapsed}`, 'warning');
+      } else {
+        this.addLog(`🎉 Todos os carrosséis e slides foram gerados com sucesso! Tempo total: ${totalElapsed}`, 'success');
+      }
       this.saveState();
     }
   }
@@ -4234,6 +4353,12 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         item.status = 'error';
         item.errorMsg = err.message || 'Erro ao executar prompt';
         this.addLog(`❌ Falha no ${item.title} (rep ${rep + 1}): ${item.errorMsg}`, 'error');
+
+        // Se o 1º slide do carrossel falhou criticamente, interrompe imediatamente para não cascadear erros
+        if (isFirstSlideOfCarousel) {
+          this.addLog(`🛑 [Interrupção] O 1º slide do carrossel falhou criticamente. O macro NÃO prosseguirá para os próximos slides.`, 'error');
+          this.stop();
+        }
 
         // Auto-diagnóstico em tempo real por I.A se habilitado
         if (this.config.aiAutoHeal !== false && this.config.aiApiKey) {
