@@ -35,6 +35,19 @@ try {
 } catch (e) { /* ignora se já estiver protegido */ }
 
 class FlowMacroEngine {
+  // ============================================================================
+  // Banco de Imagens de Referência para Detecção por Similaridade Visual
+  // Cada entrada é um data URL base64 (64x64 PNG) que representa visualmente
+  // um botão ou elemento da interface do Google FLOW.
+  // O macro usa computeImageSimilarity() para comparar esses fingerprints
+  // com os elementos reais da página, tornando a detecção resiliente a
+  // mudanças de CSS/classes no FLOW.
+  // ============================================================================
+  static REFERENCE_IMAGES = {
+    // Botão circular preto com seta branca (→) que envia o prompt para gerar imagem
+    submitButton: 'data:image/png;base64,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'
+  };
+
   constructor() {
     // ------------------------------------------------------------------------
     // Estruturas de Dados Principais
@@ -1147,6 +1160,123 @@ class FlowMacroEngine {
   }
 
   /**
+   * Localiza um elemento (botão, ícone, etc.) na página por similaridade visual de pixels
+   * Compara a aparência visual de cada candidato com a imagem de referência do banco REFERENCE_IMAGES.
+   * @param {string} referenceKey - Chave no banco REFERENCE_IMAGES (ex: 'submitButton')
+   * @param {string} [candidateSelector='button, [role="button"], div[tabindex="0"]'] - Seletor CSS dos candidatos
+   * @param {number} [minSimilarity=50] - Similaridade mínima para considerar um match (0-100)
+   * @returns {Promise<{element: HTMLElement|null, similarity: number}>}
+   */
+  static async findElementByVisualSimilarity(referenceKey, candidateSelector = 'button, [role="button"], div[tabindex="0"]', minSimilarity = 50) {
+    const refDataUrl = FlowMacroEngine.REFERENCE_IMAGES[referenceKey];
+    if (!refDataUrl) return { element: null, similarity: 0 };
+
+    const candidates = Array.from(document.querySelectorAll(candidateSelector)).filter(el => {
+      if (!FlowMacroEngine.isElementVisible(el)) return false;
+      if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const rect = el.getBoundingClientRect();
+      // Botões muito grandes ou muito pequenos não são o alvo
+      if (rect.width < 20 || rect.width > 120 || rect.height < 20 || rect.height > 120) return false;
+      return true;
+    });
+
+    let bestMatch = null;
+    let highestSim = 0;
+
+    for (const el of candidates) {
+      try {
+        // Captura o visual do elemento via canvas
+        const rect = el.getBoundingClientRect();
+        const size = 32;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+        // Tenta capturar via html2canvas simplificado: desenha o fundo e ícone do elemento
+        // Para botões com SVG ou ícone interno, captura a imagem/SVG
+        const img = el.querySelector('img, svg');
+        if (img && img.tagName === 'IMG' && img.complete && img.naturalWidth > 0) {
+          try {
+            ctx.drawImage(img, 0, 0, size, size);
+          } catch (e) {
+            continue;
+          }
+        } else if (img && img.tagName === 'svg') {
+          // Converte SVG para imagem
+          try {
+            const svgData = new XMLSerializer().serializeToString(img);
+            const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(svgBlob);
+            const svgImg = await new Promise((resolve, reject) => {
+              const i = new Image();
+              i.onload = () => resolve(i);
+              i.onerror = reject;
+              i.src = url;
+            });
+            ctx.drawImage(svgImg, 0, 0, size, size);
+            URL.revokeObjectURL(url);
+          } catch (e) {
+            continue;
+          }
+        } else {
+          // Sem imagem/svg interno — desenha um retângulo com a cor de fundo do elemento
+          try {
+            const style = window.getComputedStyle(el);
+            ctx.fillStyle = style.backgroundColor || '#ffffff';
+            ctx.fillRect(0, 0, size, size);
+            // Desenha o ícone de texto (se houver Google Symbols)
+            const symbolEl = el.querySelector('.google-symbols, .material-symbols-outlined, i, span');
+            if (symbolEl) {
+              const symText = (symbolEl.textContent || '').trim();
+              ctx.fillStyle = style.color || '#000000';
+              ctx.font = `${size * 0.6}px sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(symText.substring(0, 2), size / 2, size / 2);
+            }
+          } catch (e) {
+            continue;
+          }
+        }
+
+        const elPixels = ctx.getImageData(0, 0, size, size).data;
+
+        // Carrega a referência
+        const refPixels = await new Promise((resolve) => {
+          const refImg = new Image();
+          refImg.onload = () => {
+            const refCanvas = document.createElement('canvas');
+            refCanvas.width = size;
+            refCanvas.height = size;
+            const refCtx = refCanvas.getContext('2d', { willReadFrequently: true });
+            refCtx.drawImage(refImg, 0, 0, size, size);
+            resolve(refCtx.getImageData(0, 0, size, size).data);
+          };
+          refImg.onerror = () => resolve(null);
+          refImg.src = refDataUrl;
+        });
+
+        if (!refPixels) continue;
+
+        const sim = FlowMacroEngine.calculatePixelSimilarity(elPixels, refPixels);
+        if (sim > highestSim) {
+          highestSim = sim;
+          bestMatch = el;
+        }
+      } catch (e) {
+        // Ignora erros de CORS ou canvas tainted
+      }
+    }
+
+    if (bestMatch && highestSim >= minSimilarity) {
+      return { element: bestMatch, similarity: highestSim };
+    }
+
+    return { element: null, similarity: highestSim };
+  }
+
+  /**
    * Recupera com segurança a instância interna do Slate Editor do React Fiber
    * @param {HTMLElement} element - Elemento DOM do editor
    * @returns {Object|null} - Instância do Slate Editor
@@ -1392,6 +1522,16 @@ class FlowMacroEngine {
   async simulateSubmit(submitBtn, inputEl) {
     if (!submitBtn) {
       submitBtn = this.findSubmitButton();
+    }
+    // Fallback: busca por similaridade visual de pixels (compara com imagem de referência do botão)
+    if (!submitBtn) {
+      try {
+        const result = await FlowMacroEngine.findElementByVisualSimilarity('submitButton', 'button, [role="button"], div[tabindex="0"]', 45);
+        if (result.element) {
+          this.addLog(`🎯 [Passo 5] Botão de envio localizado por similaridade visual (${result.similarity}%)!`, 'success');
+          submitBtn = result.element;
+        }
+      } catch (e) { /* ignora */ }
     }
     if (!inputEl) {
       inputEl = this.findPromptInput();
