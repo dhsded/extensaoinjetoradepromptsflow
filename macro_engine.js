@@ -1388,7 +1388,36 @@ class FlowMacroEngine {
     const promptInput = this.findPromptInput();
     if (!promptInput) return null;
 
-    // 1. Procura por seletores padrão de barra inferior
+    // 1. Sobe na árvore de pais procurando o container que engloba o editor e os controles inferiores
+    let curr = promptInput.parentElement;
+    let bestContainer = curr;
+    let depth = 0;
+
+    while (curr && curr !== document.body && depth < 14) {
+      if (curr.closest && curr.closest('[id*="fd-"], [class*="fd-"]')) {
+        break; // Ignora o modal da extensão
+      }
+      const rect = curr.getBoundingClientRect();
+      if (rect.width > 280 && rect.height >= 60 && rect.height <= 600) {
+        const text = (curr.textContent || '').toLowerCase();
+        const hasControls = text.includes('agente') || text.includes('banana') || text.includes('criar') ||
+                            text.includes('9:16') || text.includes('16:9') || text.includes('1:1');
+        const hasSubmitLike = curr.querySelector('button[aria-label*="Criar" i], button[aria-label*="arrow_forward" i], div.sc-5c3af813-10, button.sc-e8425ea6-0');
+        const btns = curr.querySelectorAll('button, [role="button"], div[tabindex="0"]');
+
+        if (btns.length >= 2 && (hasControls || hasSubmitLike)) {
+          return curr;
+        }
+
+        if (btns.length >= 2) {
+          bestContainer = curr;
+        }
+      }
+      curr = curr.parentElement;
+      depth++;
+    }
+
+    // 2. Fallback para seletores semânticos
     const container = promptInput.closest([
       'form',
       'footer',
@@ -1398,36 +1427,13 @@ class FlowMacroEngine {
       '[class*="bottom" i]',
       '[class*="toolbar" i]',
       '[class*="card" i]',
-      '[class*="input" i]',
       '[data-testid*="prompt" i]',
       '[data-testid*="composer" i]',
       '[data-testid*="bottom" i]'
     ].join(', '));
 
     if (container && container !== document.body && !container.closest('[id*="fd-"], [class*="fd-"]')) {
-      const btns = container.querySelectorAll('button, [role="button"]');
-      if (btns.length >= 1) return container;
-    }
-
-    // 2. Sobe na árvore de pais procurando o container pai mais adequado
-    let curr = promptInput.parentElement;
-    let bestContainer = curr;
-    let depth = 0;
-
-    while (curr && curr !== document.body && depth < 10) {
-      if (curr.closest && curr.closest('[id*="fd-"], [class*="fd-"]')) {
-        break; // Ignora o modal da extensão
-      }
-      const btns = curr.querySelectorAll('button, [role="button"], div[tabindex="0"]');
-      if (btns.length >= 2) {
-        bestContainer = curr;
-        const rect = curr.getBoundingClientRect();
-        if (rect.width > 280) {
-          return curr;
-        }
-      }
-      curr = curr.parentElement;
-      depth++;
+      return container;
     }
 
     return bestContainer;
@@ -1439,27 +1445,123 @@ class FlowMacroEngine {
    */
   getPromptAttachedChips() {
     const promptContainer = this.getPromptContainer();
-    if (!promptContainer || promptContainer === document.body) return [];
+    const promptInput = this.findPromptInput();
 
-    return Array.from(promptContainer.querySelectorAll([
-      '[data-slate-node="element"]:has(img)',
-      '[data-type*="ingredient" i]',
-      '[data-type*="mention" i]',
-      'div[class*="chip" i]:has(img)',
-      'div[class*="pill" i]:has(img)',
-      'div[class*="ingredient" i]',
-      'div[class*="asset" i]:has(img)',
-      'span[class*="chip" i]:has(img)',
-      'span[class*="ingredient" i]',
-      'img[alt*="cerebro" i]',
-      'img[alt*="cora" i]',
-      'img[alt*="char" i]'
-    ].join(', '))).filter(el => {
-      if (!FlowMacroEngine.isElementVisible(el)) return false;
-      if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-      if (el.closest('button[aria-label*="Criar" i]') || el.closest('button[aria-label*="add" i]')) return false;
-      return true;
-    });
+    // 1. Identifica os containers principais da barra de comando
+    const searchContainers = new Set();
+    if (promptContainer && promptContainer !== document.body) {
+      searchContainers.add(promptContainer);
+      if (promptContainer.parentElement && promptContainer.parentElement !== document.body) {
+        const pRect = promptContainer.parentElement.getBoundingClientRect();
+        if (pRect.height < 650 && pRect.width < window.innerWidth * 0.98) {
+          searchContainers.add(promptContainer.parentElement);
+        }
+      }
+    }
+
+    if (searchContainers.size === 0 && promptInput) {
+      let p = promptInput.parentElement;
+      for (let i = 0; i < 6 && p && p !== document.body; i++) {
+        searchContainers.add(p);
+        p = p.parentElement;
+      }
+    }
+
+    const chipsFound = new Set();
+
+    // 2. Busca miniaturas <img> legítimas nos containers da barra de prompt
+    for (const container of searchContainers) {
+      const imgs = Array.from(container.querySelectorAll('img')).filter(img => {
+        if (!FlowMacroEngine.isElementVisible(img)) return false;
+        // Ignora elementos da extensão FLOW Downloader Pro
+        if (img.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        // Ignora se estiver dentro de botões de envio ou controle
+        if (img.closest('button[aria-label*="Criar" i], button[aria-label*="arrow_forward" i]')) return false;
+
+        const rect = img.getBoundingClientRect();
+        // Chips/miniaturas de anexos no FLOW têm entre 16px e 250px
+        if (rect.width < 16 || rect.width > 250 || rect.height < 16 || rect.height > 250) return false;
+
+        // Fonte válida de imagem (blob, http/https, data URL)
+        const src = img.getAttribute('src') || img.src || '';
+        if (!src || src.length < 5) return false;
+        if (src.includes('data:image/gif;base64,R0lGOD') && rect.width <= 16) return false;
+
+        return true;
+      });
+
+      for (const img of imgs) {
+        chipsFound.add(img);
+      }
+    }
+
+    // 3. Busca por containers com background-image (caso o FLOW renderize via div estilizada)
+    if (chipsFound.size === 0) {
+      for (const container of searchContainers) {
+        const bgElements = Array.from(container.querySelectorAll('div, span')).filter(el => {
+          if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+          if (el.querySelector('img')) return false; // Evita duplicação se houver <img> interno
+          const rect = el.getBoundingClientRect();
+          if (rect.width < 16 || rect.width > 250 || rect.height < 16 || rect.height > 250) return false;
+          try {
+            const bg = window.getComputedStyle(el).backgroundImage;
+            return bg && bg.startsWith('url(') && !bg.includes('none');
+          } catch (e) {
+            return false;
+          }
+        });
+
+        for (const el of bgElements) {
+          chipsFound.add(el);
+        }
+      }
+    }
+
+    // 4. Seletores semânticos complementares
+    for (const container of searchContainers) {
+      const semanticEls = Array.from(container.querySelectorAll([
+        '[data-slate-node="element"]:has(img)',
+        '[data-type*="ingredient" i]',
+        '[data-type*="mention" i]',
+        'div[class*="chip" i]:has(img)',
+        'div[class*="pill" i]:has(img)',
+        'div[class*="ingredient" i]',
+        'div[class*="asset" i]:has(img)',
+        'span[class*="chip" i]:has(img)',
+        'span[class*="ingredient" i]'
+      ].join(', '))).filter(el => {
+        if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        if (el.closest('button[aria-label*="Criar" i]') || el.closest('button[aria-label*="add" i]')) return false;
+        return true;
+      });
+
+      for (const el of semanticEls) {
+        const alreadyCovered = Array.from(chipsFound).some(c => el.contains(c) || c.contains(el));
+        if (!alreadyCovered) {
+          chipsFound.add(el);
+        }
+      }
+    }
+
+    // 5. Fallback geométrico infalível na barra inferior da janela (x >= 220, bottom >= innerHeight - 400)
+    if (chipsFound.size === 0) {
+      const geometricImgs = Array.from(document.querySelectorAll('img')).filter(img => {
+        if (!FlowMacroEngine.isElementVisible(img) || img.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        if (img.closest('button[aria-label*="Criar" i]')) return false;
+        const rect = img.getBoundingClientRect();
+        if (rect.width < 16 || rect.width > 220 || rect.height < 16 || rect.height > 220) return false;
+        if (rect.bottom < window.innerHeight - 400) return false;
+        if (rect.left < 220) return false; // Ignora cards da barra lateral de biblioteca (x < 220)
+        const src = img.getAttribute('src') || img.src || '';
+        return src.length > 5 && !src.includes('data:image/gif;base64,R0lGOD');
+      });
+
+      for (const img of geometricImgs) {
+        chipsFound.add(img);
+      }
+    }
+
+    return Array.from(chipsFound);
   }
 
   /**
@@ -2590,48 +2692,47 @@ class FlowMacroEngine {
       if (element.focus) element.focus();
 
       const overlay = element.querySelector ? element.querySelector('[data-type="button-overlay"]') : null;
-      const targets = [overlay, element].filter(Boolean);
+      const target = overlay || element;
 
-      for (const target of targets) {
-        const rect = target.getBoundingClientRect();
-        const clientX = rect.left + (rect.width > 0 ? rect.width / 2 : 10);
-        const clientY = rect.top + (rect.height > 0 ? rect.height / 2 : 10);
-        const eventOpts = {
-          bubbles: true,
-          cancelable: true,
-          composed: true,
-          view: window,
-          clientX,
-          clientY,
-          button: 0,
-          buttons: 1
-        };
+      const rect = target.getBoundingClientRect();
+      const clientX = rect.left + (rect.width > 0 ? rect.width / 2 : 10);
+      const clientY = rect.top + (rect.height > 0 ? rect.height / 2 : 10);
+      const eventOpts = {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+        clientX,
+        clientY,
+        button: 0,
+        buttons: 1
+      };
 
-        if (typeof PointerEvent !== 'undefined') {
-          target.dispatchEvent(new PointerEvent('pointerdown', { ...eventOpts, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
-        }
-        target.dispatchEvent(new MouseEvent('mousedown', eventOpts));
-
-        // Invoca manipuladores sintéticos do React se presentes
-        try {
-          const propKey = Object.keys(target).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
-          if (propKey && target[propKey]) {
-            if (typeof target[propKey].onMouseDown === 'function') {
-              target[propKey].onMouseDown({ preventDefault: () => {}, stopPropagation: () => {}, target, currentTarget: target });
-            }
-            if (typeof target[propKey].onClick === 'function') {
-              target[propKey].onClick({ preventDefault: () => {}, stopPropagation: () => {}, target, currentTarget: target });
-            }
-          }
-        } catch (e) {}
-
-        if (typeof PointerEvent !== 'undefined') {
-          target.dispatchEvent(new PointerEvent('pointerup', { ...eventOpts, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
-        }
-        target.dispatchEvent(new MouseEvent('mouseup', eventOpts));
-
-        try { target.click(); } catch (e) {}
+      if (typeof PointerEvent !== 'undefined') {
+        target.dispatchEvent(new PointerEvent('pointerdown', { ...eventOpts, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
       }
+      target.dispatchEvent(new MouseEvent('mousedown', eventOpts));
+
+      // Invoca manipuladores sintéticos do React se presentes (testa tanto no element raiz quanto no target)
+      try {
+        const handlerHost = element[Object.keys(element).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'))] ? element : target;
+        const propKey = Object.keys(handlerHost).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
+        if (propKey && handlerHost[propKey]) {
+          if (typeof handlerHost[propKey].onMouseDown === 'function') {
+            handlerHost[propKey].onMouseDown({ preventDefault: () => {}, stopPropagation: () => {}, target, currentTarget: handlerHost });
+          }
+          if (typeof handlerHost[propKey].onClick === 'function') {
+            handlerHost[propKey].onClick({ preventDefault: () => {}, stopPropagation: () => {}, target, currentTarget: handlerHost });
+          }
+        }
+      } catch (e) {}
+
+      if (typeof PointerEvent !== 'undefined') {
+        target.dispatchEvent(new PointerEvent('pointerup', { ...eventOpts, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      }
+      target.dispatchEvent(new MouseEvent('mouseup', eventOpts));
+
+      try { target.click(); } catch (e) {}
       return true;
     } catch (e) {
       return false;
