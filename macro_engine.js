@@ -1049,6 +1049,104 @@ class FlowMacroEngine {
   }
 
   /**
+   * Compara a similaridade visual entre um elemento de imagem (ou canvas) e uma imagem base64/dataURL de referência
+   * Utiliza amostragem de pixels em canvas reduzido (32x32) com cálculo de erro quadrático médio (MSE)
+   * @param {HTMLImageElement|HTMLElement} imgEl - Elemento de imagem no DOM
+   * @param {string} referenceDataUrl - Data URL da imagem de referência (avatar)
+   * @returns {Promise<number>} - Porcentagem de similaridade de 0 a 100
+   */
+  static async computeImageSimilarity(imgEl, referenceDataUrl) {
+    if (!imgEl || !referenceDataUrl) return 0;
+
+    return new Promise((resolve) => {
+      try {
+        const targetSrc = imgEl.getAttribute('src') || imgEl.src || '';
+        if (!targetSrc) return resolve(0);
+
+        const refImg = new Image();
+        refImg.crossOrigin = 'anonymous';
+
+        refImg.onload = () => {
+          try {
+            const size = 32;
+            const c1 = document.createElement('canvas');
+            c1.width = size;
+            c1.height = size;
+            const ctx1 = c1.getContext('2d', { willReadFrequently: true });
+            ctx1.drawImage(refImg, 0, 0, size, size);
+            const d1 = ctx1.getImageData(0, 0, size, size).data;
+
+            const c2 = document.createElement('canvas');
+            c2.width = size;
+            c2.height = size;
+            const ctx2 = c2.getContext('2d', { willReadFrequently: true });
+
+            if (imgEl.tagName === 'IMG' && imgEl.complete && imgEl.naturalWidth > 0) {
+              try {
+                ctx2.drawImage(imgEl, 0, 0, size, size);
+                const d2 = ctx2.getImageData(0, 0, size, size).data;
+                const sim = FlowMacroEngine.calculatePixelSimilarity(d1, d2);
+                return resolve(sim);
+              } catch (e) {
+                // Cross-origin taint pode ocorrer, continua tentativa via Image()
+              }
+            }
+
+            const domImg = new Image();
+            domImg.crossOrigin = 'anonymous';
+            domImg.onload = () => {
+              try {
+                ctx2.drawImage(domImg, 0, 0, size, size);
+                const d2 = ctx2.getImageData(0, 0, size, size).data;
+                const sim = FlowMacroEngine.calculatePixelSimilarity(d1, d2);
+                resolve(sim);
+              } catch (e) {
+                resolve(0);
+              }
+            };
+            domImg.onerror = () => resolve(0);
+            domImg.src = targetSrc;
+          } catch (err) {
+            resolve(0);
+          }
+        };
+
+        refImg.onerror = () => resolve(0);
+        refImg.src = referenceDataUrl;
+      } catch (err) {
+        resolve(0);
+      }
+    });
+  }
+
+  /**
+   * Calcula a similaridade entre dois buffers de pixels RGBA (retorna valor de 0 a 100%)
+   * @param {Uint8ClampedArray} d1 
+   * @param {Uint8ClampedArray} d2 
+   * @returns {number}
+   */
+  static calculatePixelSimilarity(d1, d2) {
+    if (!d1 || !d2 || d1.length !== d2.length) return 0;
+    let totalDiff = 0;
+    const numPixels = d1.length / 4;
+
+    for (let i = 0; i < d1.length; i += 4) {
+      if (d1[i + 3] === 0 && d2[i + 3] === 0) continue;
+
+      const rDiff = Math.abs(d1[i] - d2[i]);
+      const gDiff = Math.abs(d1[i + 1] - d2[i + 1]);
+      const bDiff = Math.abs(d1[i + 2] - d2[i + 2]);
+      const aDiff = Math.abs(d1[i + 3] - d2[i + 3]);
+
+      totalDiff += (rDiff + gDiff + bDiff + aDiff) / 4;
+    }
+
+    const avgDiff = totalDiff / numPixels;
+    const similarity = Math.max(0, 100 - (avgDiff / 2.55));
+    return Math.round(similarity * 10) / 10;
+  }
+
+  /**
    * Recupera com segurança a instância interna do Slate Editor do React Fiber
    * @param {HTMLElement} element - Elemento DOM do editor
    * @returns {Object|null} - Instância do Slate Editor
@@ -1543,14 +1641,14 @@ class FlowMacroEngine {
       }
     }
 
-    // 5. Fallback geométrico infalível na barra inferior da janela (x >= 220, bottom >= innerHeight - 400)
+    // 5. Fallback geométrico infalível na área inferior do dock de prompt (x >= 220, bottom >= innerHeight * 0.35)
     if (chipsFound.size === 0) {
       const geometricImgs = Array.from(document.querySelectorAll('img')).filter(img => {
         if (!FlowMacroEngine.isElementVisible(img) || img.closest('[id*="fd-"], [class*="fd-"]')) return false;
         if (img.closest('button[aria-label*="Criar" i]')) return false;
         const rect = img.getBoundingClientRect();
         if (rect.width < 16 || rect.width > 220 || rect.height < 16 || rect.height > 220) return false;
-        if (rect.bottom < window.innerHeight - 400) return false;
+        if (rect.bottom < window.innerHeight * 0.35) return false;
         if (rect.left < 220) return false; // Ignora cards da barra lateral de biblioteca (x < 220)
         const src = img.getAttribute('src') || img.src || '';
         return src.length > 5 && !src.includes('data:image/gif;base64,R0lGOD');
@@ -2088,41 +2186,27 @@ class FlowMacroEngine {
    * @returns {HTMLElement|null}
    */
   findIncludeInCommandButton() {
-    // 1. Busca por seletores de classes oficiais gravados no DevTools
-    const exactSelectors = [
-      'div.sc-4da33547-5 button',
-      'button.gecFQL',
-      'button.dnFqQq',
-      'button.jHjHyn',
-      'button.fPutAP',
-      'button.sc-64c4dea-4',
-      'button[aria-label*="incluir no comando" i]',
-      'button[aria-label*="incluir no prompt" i]',
-      'button[aria-label*="adicionar ao comando" i]',
-      'button[aria-label*="adicionar ao prompt" i]'
-    ];
-
-    for (const sel of exactSelectors) {
-      const btn = document.querySelector(sel);
-      if (btn && FlowMacroEngine.isElementVisible(btn) && !btn.closest('[id*="fd-"], [class*="fd-"]')) {
-        return btn;
-      }
-    }
-
-    // 2. Busca abrangente por texto e aria-label em todos os botões visíveis
+    // 1. Busca por todos os botões visíveis fora do modal da extensão
     const allButtons = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
       if (!FlowMacroEngine.isElementVisible(b)) return false;
       if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
       return true;
     });
 
-    return allButtons.find(b => {
+    const isIncludeMatch = (b) => {
       const t = (b.textContent || b.innerText || '').toLowerCase().trim();
       const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-      // Ignora botões de exclusão ou cancelamento
-      if (t.includes('excluir') || aria.includes('excluir') || t.includes('cancelar') || aria.includes('cancelar') || t.includes('lixeira')) return false;
 
-      return (
+      // REJEIÇÃO ESTRITA: Botões que NUNCA são o botão de inclusão (ex: Baixar, Excluir, Fechar, Filtros)
+      if (t.includes('baixar') || aria.includes('baixar') || t.includes('download') || aria.includes('download')) return false;
+      if (t.includes('excluir') || aria.includes('excluir') || t.includes('cancelar') || aria.includes('cancelar') || t.includes('lixeira') || t.includes('trash') || t.includes('delete')) return false;
+      if (t.includes('fechar') || aria.includes('fechar') || t.includes('close') || t === '✕' || t === '×') return false;
+      if (t.includes('filtros') || aria.includes('filtros') || t.includes('filter')) return false;
+      if (t.includes('novo projeto') || aria.includes('novo projeto') || t.includes('new project')) return false;
+      if (t.includes('agente') || t.includes('banana') || t.includes('criar') || t.includes('gerar') || aria.includes('arrow_forward')) return false;
+
+      // 1. Correspondência textual explícita
+      if (
         t.includes('incluir no comando') || aria.includes('incluir no comando') ||
         t.includes('incluir no prompt') || aria.includes('incluir no prompt') ||
         t.includes('adicionar ao comando') || aria.includes('adicionar ao comando') ||
@@ -2131,10 +2215,117 @@ class FlowMacroEngine {
         t.includes('usar no prompt') || aria.includes('usar no prompt') ||
         t.includes('usar imagem') || aria.includes('usar imagem') ||
         t.includes('use image') || aria.includes('use image') ||
-        (t.includes('incluir') && (t.includes('comando') || t.includes('prompt') || t.includes('command'))) ||
-        (t === 'incluir' || aria === 'incluir' || aria.includes('incluir'))
-      );
-    }) || null;
+        t.includes('add to prompt') || aria.includes('add to prompt') ||
+        t.includes('include in prompt') || aria.includes('include in prompt') ||
+        (t.includes('incluir') && (t.includes('comando') || t.includes('prompt') || t.includes('command')))
+      ) {
+        return true;
+      }
+
+      // 2. Se estiver dentro do drawer/painel de detalhes do card selecionado
+      if (b.closest('div.sc-4da33547-5, [class*="drawer" i], [class*="detail" i]')) {
+        if (t === 'incluir' || aria === 'incluir' || t.includes('incluir') || t.includes('usar') || t.includes('adicionar')) {
+          return true;
+        }
+      }
+
+      return false;
+    };
+
+    return allButtons.find(isIncludeMatch) || null;
+  }
+
+  /**
+   * Localiza o card correspondente ao personagem na biblioteca do FLOW
+   * Prioridade 1: Similaridade visual de pixels (compara avatarUrl do personagem com miniaturas dos cards)
+   * Prioridade 2: Nome do arquivo ou nome do personagem no texto do card
+   * Prioridade 3: Posição indexada na virtuoso-item-list
+   * @param {Object} char - Configuração do personagem
+   * @param {number} cIdx - Índice do personagem
+   * @returns {Promise<HTMLElement|null>}
+   */
+  async findCharacterCardInLibrary(char, cIdx) {
+    const mediaCards = this.getLibraryMediaCards();
+    if (mediaCards.length === 0) return null;
+
+    const avatarData = char.avatarUrl || char.avatar;
+
+    // Prioridade 1: Comparação por Similaridade Visual de Imagem / Pixels
+    if (avatarData && avatarData.startsWith('data:')) {
+      let bestMatch = null;
+      let highestSimilarity = 0;
+
+      for (const card of mediaCards) {
+        const imgEl = card.querySelector('img');
+        if (imgEl && FlowMacroEngine.isElementVisible(imgEl)) {
+          try {
+            const sim = await FlowMacroEngine.computeImageSimilarity(imgEl, avatarData);
+            if (sim > highestSimilarity) {
+              highestSimilarity = sim;
+              bestMatch = card;
+            }
+          } catch (e) {}
+        }
+      }
+
+      if (bestMatch && highestSimilarity >= 55) {
+        this.addLog(`🎯 [Passo 4] Card de [${char.name}] identificado por similaridade de imagem (${highestSimilarity}% de correspondência)!`, 'success');
+        return bestMatch;
+      }
+    }
+
+    // Prioridade 2: Busca por texto contendo o nome do personagem ou arquivo
+    const charNameClean = (char.name || '').toLowerCase().trim();
+    for (const card of mediaCards) {
+      const cardText = (card.textContent || '').toLowerCase();
+      if (charNameClean && (cardText.includes(charNameClean) || cardText.includes(`${charNameClean}_`))) {
+        this.addLog(`🎯 [Passo 4] Card de [${char.name}] localizado pelo nome na biblioteca!`, 'info');
+        return card;
+      }
+    }
+
+    // Prioridade 3: Fallback por índice
+    if (cIdx < mediaCards.length) {
+      return mediaCards[cIdx];
+    }
+
+    return null;
+  }
+
+  /**
+   * Valida se o personagem foi anexado à barra de comando (Passo 4)
+   * Prioridade 1: Similaridade visual de pixels (compara avatarUrl com as imagens no prompt dock)
+   * Prioridade 2: Contagem estrita de chips anexados (promptChips.length >= cIdx + 1)
+   * @param {Object} char - Personagem atual
+   * @param {number} cIdx - Índice atual
+   * @returns {Promise<boolean>}
+   */
+  async validateCharacterChipAttached(char, cIdx) {
+    const promptChips = this.getPromptAttachedChips();
+    const avatarData = char.avatarUrl || char.avatar;
+
+    // 1. Verificação por Similaridade Visual de Pixels no dock de prompt
+    if (avatarData && avatarData.startsWith('data:') && promptChips.length > 0) {
+      for (const chip of promptChips) {
+        const imgEl = chip.tagName === 'IMG' ? chip : chip.querySelector('img');
+        if (imgEl) {
+          try {
+            const sim = await FlowMacroEngine.computeImageSimilarity(imgEl, avatarData);
+            if (sim >= 50) {
+              this.addLog(`✅ [Passo 4 Concluído] Chip de [${char.name}] confirmado visualmente no prompt (${sim}% de similaridade de pixels)!`, 'success');
+              return true;
+            }
+          } catch (e) {}
+        }
+      }
+    }
+
+    // 2. Validação estrita por contagem de chips
+    if (promptChips.length >= (cIdx + 1)) {
+      return true;
+    }
+
+    return false;
   }
 
   /**
@@ -2267,22 +2458,12 @@ class FlowMacroEngine {
 
         // =========================================================================
         // Passo 4: Clicar no card correspondente ao personagem atual (após upload 100%)
+        // Localiza por similaridade visual de pixels, texto do nome ou índice
         // =========================================================================
         let targetCard = null;
         for (let cWait = 0; cWait < 15; cWait++) {
-          mediaCards = this.getLibraryMediaCards();
-          if (cIdx < mediaCards.length) {
-            targetCard = mediaCards[cIdx];
-            break;
-          }
-
-          // Busca pelo seletor indexado gravado no DevTools
-          const nthCard = document.querySelector(`[data-testid='virtuoso-item-list'] > div:nth-of-type(${cIdx + 1}) div.sc-b0e5-14, [data-testid='virtuoso-item-list'] > div:nth-of-type(${cIdx + 1})`);
-          if (nthCard && FlowMacroEngine.isElementVisible(nthCard)) {
-            targetCard = nthCard;
-            break;
-          }
-
+          targetCard = await this.findCharacterCardInLibrary(char, cIdx);
+          if (targetCard) break;
           await new Promise(r => setTimeout(r, 400));
         }
 
@@ -2291,7 +2472,7 @@ class FlowMacroEngine {
 
           const elToClick = targetCard.matches('div.sc-b0e5-14')
             ? targetCard
-            : (targetCard.querySelector('div.sc-b0e5-14') || targetCard);
+            : (targetCard.querySelector('div.sc-b0e5-14') || targetCard.querySelector('img') || targetCard);
 
           this.clickElementWithOverlay(elToClick);
           await new Promise(r => setTimeout(r, 600));
@@ -2307,9 +2488,8 @@ class FlowMacroEngine {
         // =========================================================================
         let includeBtn = null;
         for (let bWait = 0; bWait < 20; bWait++) {
-          // Verifica se o chip já foi anexado diretamente pelo clique no card
-          const promptChips = this.getPromptAttachedChips();
-          if (promptChips.length >= (cIdx + 1)) {
+          // Verifica se o chip já foi anexado diretamente pelo clique no card (visual ou contagem)
+          if (await this.validateCharacterChipAttached(char, cIdx)) {
             this.addLog(`ℹ️ [Passo 4] Personagem [${char.name}] já anexado diretamente ao comando pelo card.`, 'info');
             break;
           }
@@ -2333,7 +2513,7 @@ class FlowMacroEngine {
           } else if ((bWait === 4 || bWait === 10) && targetCard) {
             // Re-clica no card caso o botão de inclusão demore a abrir a gaveta de detalhes
             this.addLog(`🔄 [Passo 4] Re-selecionando card de [${char.name}]...`, 'info');
-            const elToClick = targetCard.matches('div.sc-b0e5-14') ? targetCard : (targetCard.querySelector('div.sc-b0e5-14') || targetCard);
+            const elToClick = targetCard.matches('div.sc-b0e5-14') ? targetCard : (targetCard.querySelector('div.sc-b0e5-14') || targetCard.querySelector('img') || targetCard);
             this.clickElementWithOverlay(elToClick);
           }
 
@@ -2350,16 +2530,13 @@ class FlowMacroEngine {
 
         // =========================================================================
         // 4.4: Validação se o personagem foi anexado à barra de comando (STRICT CHECK)
-        // Requer estritamente promptChips.length >= (cIdx + 1)
+        // Requer confirmação por similaridade visual de pixels OU contagem de chips
         // =========================================================================
         this.addLog(`⏳ [Passo 4] Validando anexo do personagem [${char.name}] na barra de comando...`, 'info');
         let chipAttached = false;
 
         for (let chk = 0; chk < 20; chk++) {
-          const promptChips = this.getPromptAttachedChips();
-
-          // Validação estrita: exige que a contagem atinja o índice atual (1 para o 1º, 2 para o 2º, etc.)
-          if (promptChips.length >= (cIdx + 1)) {
+          if (await this.validateCharacterChipAttached(char, cIdx)) {
             chipAttached = true;
             break;
           }
