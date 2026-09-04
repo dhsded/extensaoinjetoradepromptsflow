@@ -4380,9 +4380,18 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           this.dismissFlowOnboardingBanners();
 
           // Passo 1: Inserir o primeiro prompt de texto
-          const inputEl = this.findPromptInput();
+          // Aguarda até 15s para o campo de prompt aparecer (o Canvas pode demorar a carregar após "Novo projeto")
+          let inputEl = null;
+          for (let waitInput = 0; waitInput < 30; waitInput++) {
+            inputEl = this.findPromptInput();
+            if (inputEl) break;
+            if (waitInput === 0) {
+              this.addLog('⏳ Aguardando campo de prompt do FLOW carregar...', 'info');
+            }
+            await new Promise(r => setTimeout(r, 500));
+          }
           if (!inputEl) {
-            throw new Error('Campo de prompt do Flow não encontrado na página.');
+            throw new Error('Campo de prompt do Flow não encontrado na página após 15s de espera.');
           }
           this.currentAction = '📝 Inserindo texto do prompt inicial...';
           this.notify();
