@@ -1753,33 +1753,36 @@ class FlowMacroEngine {
   async ensureFlowLibraryOpen() {
     if (this.isFlowLibraryOpen()) return true;
 
-    // 1. Procura botão "Todas as mídias" ou "Personagens" na barra lateral de navegação (x < 220px)
+    // Prioridade 1: Botão "+" no canto esquerdo da barra de comando (conforme captura enviada)
+    const plusBtn = this.findPlusButton();
+    if (plusBtn) {
+      this.addLog('➕ [Passo 2] Clicando no botão "+" no canto esquerdo do comando para abrir biblioteca...', 'info');
+      this.clickElementWithOverlay(plusBtn);
+      for (let w = 0; w < 6; w++) {
+        await new Promise(r => setTimeout(r, 200));
+        if (this.isFlowLibraryOpen()) return true;
+      }
+    }
+
+    // Prioridade 2: Botão "Tudo", "Todas as mídias" ou "Personagens" na barra lateral de navegação (x < 220px)
     const sidebarButtons = Array.from(document.querySelectorAll('button, [role="button"], [role="tab"], div[tabindex="0"], div[class*="item" i]')).filter(el => {
       if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
       const rect = el.getBoundingClientRect();
       return rect.left < 220;
     });
 
-    const allMediaBtn = sidebarButtons.find(b => {
-      const t = (b.textContent || b.innerText || '').toLowerCase();
+    const mediaSidebarBtn = sidebarButtons.find(b => {
+      const t = (b.textContent || b.innerText || '').toLowerCase().trim();
       const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-      return t.includes('todas as mídias') || t.includes('todas as midias') || t.includes('all media') ||
-             aria.includes('todas as mídias') || aria.includes('todas as midias') || aria.includes('all media');
-    }) || sidebarButtons.find(b => {
-      const t = (b.textContent || b.innerText || '').toLowerCase();
-      const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-      return t.includes('personagens') || t.includes('characters') || aria.includes('personagens');
+      return t === 'tudo' || aria === 'tudo' ||
+             t.includes('todas as mídias') || t.includes('todas as midias') || t.includes('all media') ||
+             aria.includes('todas as mídias') || aria.includes('todas as midias') || aria.includes('all media') ||
+             t.includes('personagens') || aria.includes('personagens') || t.includes('imagens') || aria.includes('imagens');
     });
 
-    if (allMediaBtn) {
-      this.addLog('📂 [Passo 2] Clicando em "Todas as mídias" na barra lateral para abrir a biblioteca...', 'info');
-      this.clickElementWithOverlay(allMediaBtn);
-    } else {
-      const plusBtn = this.findPlusButton();
-      if (plusBtn) {
-        this.addLog('➕ [Passo 2] Clicando no botão de adição do prompt...', 'info');
-        this.clickElementWithOverlay(plusBtn);
-      }
+    if (mediaSidebarBtn) {
+      this.addLog('📂 [Passo 2] Clicando em "Tudo / Todas as mídias" na barra lateral para abrir a biblioteca...', 'info');
+      this.clickElementWithOverlay(mediaSidebarBtn);
     }
 
     // Aguarda até 4 segundos pela abertura da biblioteca
@@ -2470,12 +2473,27 @@ class FlowMacroEngine {
         if (targetCard) {
           this.addLog(`🎯 [Passo 4] Clicando no card de [${char.name}] (${cIdx + 1}/${activeChars.length})...`, 'info');
 
+          const imgEl = targetCard.querySelector('img');
+          if (imgEl && FlowMacroEngine.isElementVisible(imgEl)) {
+            this.clickElementWithOverlay(imgEl);
+          }
           const elToClick = targetCard.matches('div.sc-b0e5-14')
             ? targetCard
-            : (targetCard.querySelector('div.sc-b0e5-14') || targetCard.querySelector('img') || targetCard);
+            : (targetCard.querySelector('div.sc-b0e5-14') || targetCard);
 
           this.clickElementWithOverlay(elToClick);
           await new Promise(r => setTimeout(r, 600));
+
+          // Valida se o clique na imagem da biblioteca já anexou o personagem diretamente ao comando
+          if (await this.validateCharacterChipAttached(char, cIdx)) {
+            this.addLog(`✅ [Passo 4 Concluído] Personagem [${char.name}] anexado diretamente ao clicar na imagem da biblioteca!`, 'success');
+            chipConfirmedForChar = true;
+            if (cIdx === activeChars.length - 1) {
+              this.closeResourceModal();
+            }
+            await new Promise(r => setTimeout(r, 500));
+            break;
+          }
         } else {
           this.addLog(`⚠️ [Passo 4] Card para [${char.name}] não encontrado na biblioteca. Tentativa ${attempt + 1}/3.`, 'warning');
           if (attempt < 2) continue;
