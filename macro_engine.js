@@ -45,7 +45,9 @@ class FlowMacroEngine {
   // ============================================================================
   static REFERENCE_IMAGES = {
     // Botão circular preto com seta branca (→) que envia o prompt para gerar imagem
-    submitButton: 'data:image/png;base64,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'
+    submitButton: 'data:image/png;base64,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',
+    // Botão "+" no canto esquerdo da barra de comando para abrir a biblioteca de mídia/imagens
+    plusButton: 'data:image/png;base64,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'
   };
 
   constructor() {
@@ -1176,7 +1178,13 @@ class FlowMacroEngine {
       if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
       const rect = el.getBoundingClientRect();
       // Botões muito grandes ou muito pequenos não são o alvo
-      if (rect.width < 20 || rect.width > 120 || rect.height < 20 || rect.height > 120) return false;
+      if (rect.width < 15 || rect.width > 120 || rect.height < 15 || rect.height > 120) return false;
+      // Para o botão "+", o botão fica na barra de comando (metade inferior da tela)
+      if (referenceKey === 'plusButton') {
+        if (rect.top < 200) return false;
+        const text = (el.textContent || el.innerText || '').toLowerCase();
+        if (text.includes('banana') || text.includes('agente') || text.includes('agent')) return false;
+      }
       return true;
     });
 
@@ -1259,7 +1267,13 @@ class FlowMacroEngine {
 
         if (!refPixels) continue;
 
-        const sim = FlowMacroEngine.calculatePixelSimilarity(elPixels, refPixels);
+        let sim = FlowMacroEngine.calculatePixelSimilarity(elPixels, refPixels);
+        if (referenceKey === 'plusButton') {
+          const t = (el.textContent || el.innerText || el.getAttribute('aria-label') || '').toLowerCase();
+          if (t.includes('+') || t.includes('add') || t.includes('adicionar') || t.includes('criar')) {
+            sim = Math.min(100, sim + 15);
+          }
+        }
         if (sim > highestSim) {
           highestSim = sim;
           bestMatch = el;
@@ -1708,21 +1722,85 @@ class FlowMacroEngine {
   }
 
   /**
+   * Detecta se o FLOW está no modo de visualização expandida / editor de imagem (Lightbox)
+   * NUNCA confunde esse estado com a biblioteca de mídia!
+   * @returns {boolean}
+   */
+  isImageExpanded() {
+    // 1. Campo de inpainting / edição com o placeholder característico
+    const inpaintingPrompt = document.querySelector([
+      'textarea[placeholder*="quer mudar" i]',
+      'input[placeholder*="quer mudar" i]',
+      '[placeholder*="what do you want to change" i]',
+      '[placeholder*="o que você quer mudar" i]'
+    ].join(', '));
+    if (inpaintingPrompt && FlowMacroEngine.isElementVisible(inpaintingPrompt)) {
+      return true;
+    }
+
+    // 2. Botão de voltar no canto superior esquerdo acompanhado de nome de arquivo de imagem no topo
+    const topBackBtn = Array.from(document.querySelectorAll('button, [role="button"]')).find(b => {
+      if (!FlowMacroEngine.isElementVisible(b)) return false;
+      const rect = b.getBoundingClientRect();
+      if (rect.left > 120 || rect.top > 80) return false;
+      const t = (b.textContent || b.innerText || '').toLowerCase();
+      const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+      return t.includes('arrow_back') || t.includes('voltar') || t.includes('back') || t.includes('←') || aria.includes('voltar') || aria.includes('back');
+    });
+
+    const hasHeaderImageName = Array.from(document.querySelectorAll('header, div[class*="header" i], div[class*="top" i], span, p')).some(el => {
+      if (!FlowMacroEngine.isElementVisible(el)) return false;
+      const rect = el.getBoundingClientRect();
+      if (rect.top > 80) return false;
+      const t = (el.textContent || '').toLowerCase();
+      return t.includes('.jpeg') || t.includes('.jpg') || t.includes('.png') || t.includes('.webp');
+    });
+
+    return !!(topBackBtn && hasHeaderImageName);
+  }
+
+  /**
+   * Fecha com segurança o modo de imagem expandida e retorna ao Canvas principal do projeto
+   */
+  async exitExpandedImageView() {
+    this.addLog('↩️ Detectada imagem expandida na tela. Retornando com segurança ao Canvas do projeto...', 'info');
+
+    // 1. Envia tecla Escape para window e document
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
+    await new Promise(r => setTimeout(r, 400));
+
+    // 2. Localiza e clica no botão de voltar (arrow_back / ←) no topo esquerdo
+    const topBackBtn = Array.from(document.querySelectorAll('button, [role="button"]')).find(b => {
+      if (!FlowMacroEngine.isElementVisible(b)) return false;
+      const rect = b.getBoundingClientRect();
+      if (rect.left > 120 || rect.top > 80) return false;
+      return true;
+    });
+
+    if (topBackBtn) {
+      this.clickElementWithOverlay(topBackBtn);
+      await new Promise(r => setTimeout(r, 600));
+    }
+
+    await new Promise(r => setTimeout(r, 400));
+  }
+
+  /**
    * Verifica se a biblioteca / galeria de mídia do FLOW já está aberta e visível na tela
+   * NUNCA confunde com a lista de cards gerados no Canvas nem com imagens expandidas!
    * @returns {boolean}
    */
   isFlowLibraryOpen() {
-    // 1. Lista virtual de mídias
-    const list = document.querySelector('[data-testid="virtuoso-item-list"]');
-    if (list && FlowMacroEngine.isElementVisible(list)) return true;
+    if (this.isImageExpanded()) return false;
 
-    // 2. Campo de busca de recursos (presente no topo da gaveta lateral)
+    // 1. Campo de busca de recursos (presente exclusivamente no topo da gaveta lateral)
     const searchInput = document.querySelector('input[placeholder*="Pesquisar recursos" i], input[placeholder*="search" i]');
     if (searchInput && FlowMacroEngine.isElementVisible(searchInput) && !searchInput.closest('[id*="fd-"], [class*="fd-"]')) {
       return true;
     }
 
-    // 3. Botão "Enviar mídia" ou "Upload" visível na barra lateral de mídia (x < 500px)
+    // 2. Botão "Enviar mídia" ou "Upload" visível na gaveta de mídia (região esquerda x < 500px)
     const mediaActions = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
       if (!FlowMacroEngine.isElementVisible(b) || b.closest('[id*="fd-"], [class*="fd-"]')) return false;
       const rect = b.getBoundingClientRect();
@@ -1731,6 +1809,14 @@ class FlowMacroEngine {
       return t.includes('enviar mídia') || t.includes('enviar media') || (t.includes('upload') && !t.includes('studio'));
     });
     if (mediaActions.length > 0) return true;
+
+    // 3. Lista virtual de mídias situada estritamente na gaveta lateral (x < 550)
+    const lists = Array.from(document.querySelectorAll('[data-testid="virtuoso-item-list"]')).filter(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.right < 550;
+    });
+    if (lists.length > 0) return true;
 
     // 4. Mensagem de gaveta de mídia vazia ("Nenhum resultado encontrado")
     const emptyMsg = Array.from(document.querySelectorAll('div, p, span')).find(el => {
@@ -1742,80 +1828,89 @@ class FlowMacroEngine {
     });
     if (emptyMsg) return true;
 
-    // 5. Cards de mídia styled-components
+    // 5. Cards de mídia styled-components situados na gaveta esquerda (x < 500)
     const cards = Array.from(document.querySelectorAll('div.sc-b0e5-14, div.sc-a0e2840-0')).filter(el => {
-      return FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]');
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.right < 500;
     });
     return cards.length > 0;
   }
 
   /**
    * Retorna os cards de mídia visíveis dentro da biblioteca do FLOW
+   * NUNCA retorna cards do Canvas principal!
    * @returns {HTMLElement[]}
    */
   getLibraryMediaCards() {
-    const virtuosoList = document.querySelector('[data-testid="virtuoso-item-list"]');
+    if (!this.isFlowLibraryOpen() || this.isImageExpanded()) {
+      return [];
+    }
+
+    // Procura lista virtuoso na gaveta lateral (rect.right < 550)
+    const virtuosoList = Array.from(document.querySelectorAll('[data-testid="virtuoso-item-list"]')).find(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.right < 550;
+    });
+
     if (virtuosoList) {
-      // Retorna estritamente os filhos diretos da lista virtual (1 item por card)
       const children = Array.from(virtuosoList.children).filter(el => {
         return FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]');
       });
       if (children.length > 0) return children;
     }
 
+    // Cards styled-components na gaveta lateral (rect.right < 500)
     const scCards = Array.from(document.querySelectorAll('div.sc-b0e5-14, div.sc-a0e2840-0')).filter(el => {
-      return FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]');
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.right < 500;
     });
     if (scCards.length > 0) return scCards;
 
-    return Array.from(document.querySelectorAll('[data-testid="virtuoso-item-list"] > div')).filter(el => {
-      return FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]');
-    });
+    return [];
   }
 
   /**
-   * Garante a abertura da gaveta/biblioteca de mídia do Google FLOW
-   * Prioridade 1: Clica no botão "Todas as mídias" ou "Personagens" na barra lateral esquerda (rect.left < 220)
-   * Prioridade 2: Clica no botão de adição do prompt (se não for + Agente)
+   * Garante a abertura da biblioteca de mídia do Google FLOW
+   * Executa EXCLUSIVAMENTE pelo botão "+" na barra de comando (conforme Passo 2 do fluxograma).
+   * NUNCA clica na barra lateral nem em imagens do Canvas!
    * @returns {Promise<boolean>}
    */
   async ensureFlowLibraryOpen() {
+    // 0. Se a tela estiver com a imagem expandida, fecha a visualização expandida primeiro!
+    if (this.isImageExpanded()) {
+      await this.exitExpandedImageView();
+    }
+
     if (this.isFlowLibraryOpen()) return true;
 
-    // Prioridade 1: Botão "+" no canto esquerdo da barra de comando (conforme captura enviada)
-    const plusBtn = this.findPlusButton();
+    // Prioridade 1: Botão "+" no canto esquerdo da barra de comando (seletores CSS)
+    let plusBtn = this.findPlusButton();
+
+    // Prioridade 2: Botão "+" localizado por similaridade visual de pixels (imagem de referência fornecida pelo usuário)
+    if (!plusBtn) {
+      try {
+        const visualRes = await FlowMacroEngine.findElementByVisualSimilarity('plusButton', 'button, [role="button"], div[tabindex="0"], div[role="button"]', 35);
+        if (visualRes && visualRes.element) {
+          plusBtn = visualRes.element;
+          this.addLog(`✨ [Passo 2] Botão "+" localizado por similaridade visual (${visualRes.similarity}% de correspondência)!`, 'success');
+        }
+      } catch (e) {}
+    }
+
     if (plusBtn) {
       this.addLog('➕ [Passo 2] Clicando no botão "+" no canto esquerdo do comando para abrir biblioteca...', 'info');
       this.clickElementWithOverlay(plusBtn);
-      for (let w = 0; w < 6; w++) {
+      for (let w = 0; w < 10; w++) {
         await new Promise(r => setTimeout(r, 200));
         if (this.isFlowLibraryOpen()) return true;
       }
     }
 
-    // Prioridade 2: Botão "Tudo", "Todas as mídias" ou "Personagens" na barra lateral de navegação (x < 220px)
-    const sidebarButtons = Array.from(document.querySelectorAll('button, [role="button"], [role="tab"], div[tabindex="0"], div[class*="item" i]')).filter(el => {
-      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-      const rect = el.getBoundingClientRect();
-      return rect.left < 220;
-    });
-
-    const mediaSidebarBtn = sidebarButtons.find(b => {
-      const t = (b.textContent || b.innerText || '').toLowerCase().trim();
-      const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-      return t === 'tudo' || aria === 'tudo' ||
-             t.includes('todas as mídias') || t.includes('todas as midias') || t.includes('all media') ||
-             aria.includes('todas as mídias') || aria.includes('todas as midias') || aria.includes('all media') ||
-             t.includes('personagens') || aria.includes('personagens') || t.includes('imagens') || aria.includes('imagens');
-    });
-
-    if (mediaSidebarBtn) {
-      this.addLog('📂 [Passo 2] Clicando em "Tudo / Todas as mídias" na barra lateral para abrir a biblioteca...', 'info');
-      this.clickElementWithOverlay(mediaSidebarBtn);
-    }
-
-    // Aguarda até 4 segundos pela abertura da biblioteca
-    for (let w = 0; w < 16; w++) {
+    // Aguarda até 3 segundos checando abertura da biblioteca
+    for (let w = 0; w < 12; w++) {
       await new Promise(r => setTimeout(r, 250));
       if (this.isFlowLibraryOpen()) {
         return true;
@@ -2421,7 +2516,7 @@ class FlowMacroEngine {
           libraryOpen = await this.ensureFlowLibraryOpen();
 
           if (!libraryOpen) {
-            this.addLog('⚠️ Biblioteca do FLOW não abriu após tentativa na barra lateral.', 'warning');
+            this.addLog('⚠️ Biblioteca do FLOW não abriu após clicar no botão "+".', 'warning');
             if (attempt < 2) continue;
             this.addLog(`❌ [ERRO CRÍTICO] Não foi possível acessar a biblioteca do FLOW após 3 tentativas.`, 'error');
             this.stop();
@@ -2496,6 +2591,12 @@ class FlowMacroEngine {
           const elToClick = targetCard.querySelector('img') || targetCard.querySelector('div.sc-b0e5-14') || targetCard;
           this.clickElementWithOverlay(elToClick);
           await new Promise(r => setTimeout(r, 800));
+
+          // Se por algum motivo o FLOW expandiu a imagem na tela ao invés de selecionar, desfaz imediatamente!
+          if (this.isImageExpanded()) {
+            this.addLog('⚠️ Imagem foi expandida. Fechando visualização expandida e retornando ao controle...', 'warning');
+            await this.exitExpandedImageView();
+          }
         } else {
           this.addLog(`⚠️ [Passo 4] Card para [${char.name}] não encontrado na biblioteca. Tentativa ${attempt + 1}/3.`, 'warning');
           if (attempt < 2) continue;
@@ -4503,6 +4604,11 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         if (FlowMacroEngine.isFlowHubPage() || !FlowMacroEngine.isFlowProjectPage()) {
           this.addLog('🏠 [Passo A] Detectado Hub inicial: criando/acessando projeto antes do slide...', 'info');
           await this.createNewFlowProject();
+        }
+
+        // Se a tela estiver em modo de imagem expandida (editor de imagem/lightbox), fecha e volta ao Canvas
+        if (this.isImageExpanded()) {
+          await this.exitExpandedImageView();
         }
 
         let reused = false;
