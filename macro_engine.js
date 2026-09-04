@@ -1496,18 +1496,21 @@ class FlowMacroEngine {
   getLibraryMediaCards() {
     const virtuosoList = document.querySelector('[data-testid="virtuoso-item-list"]');
     if (virtuosoList) {
-      const items = Array.from(virtuosoList.querySelectorAll(':scope > div, div.sc-b0e5-14')).filter(el => {
+      // Retorna estritamente os filhos diretos da lista virtual (1 item por card)
+      const children = Array.from(virtuosoList.children).filter(el => {
         return FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]');
       });
-      if (items.length > 0) return items;
+      if (children.length > 0) return children;
     }
 
-    return Array.from(document.querySelectorAll([
-      '[data-testid="virtuoso-item-list"] > div',
-      '[data-testid="virtuoso-item-list"] div.sc-b0e5-14',
-      'div.sc-b0e5-14',
-      'div.sc-a0e2840-0'
-    ].join(', '))).filter(el => FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]'));
+    const scCards = Array.from(document.querySelectorAll('div.sc-b0e5-14, div.sc-a0e2840-0')).filter(el => {
+      return FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]');
+    });
+    if (scCards.length > 0) return scCards;
+
+    return Array.from(document.querySelectorAll('[data-testid="virtuoso-item-list"] > div')).filter(el => {
+      return FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]');
+    });
   }
 
   /**
@@ -1901,7 +1904,8 @@ class FlowMacroEngine {
    * @returns {HTMLElement|null}
    */
   findIncludeInCommandButton() {
-    const exactBtn = document.querySelector([
+    // 1. Busca por seletores de classes oficiais gravados no DevTools
+    const exactSelectors = [
       'div.sc-4da33547-5 button',
       'button.gecFQL',
       'button.dnFqQq',
@@ -1910,25 +1914,41 @@ class FlowMacroEngine {
       'button.sc-64c4dea-4',
       'button[aria-label*="incluir no comando" i]',
       'button[aria-label*="incluir no prompt" i]',
-      'button[aria-label*="adicionar ao comando" i]'
-    ].join(', '));
+      'button[aria-label*="adicionar ao comando" i]',
+      'button[aria-label*="adicionar ao prompt" i]'
+    ];
 
-    if (exactBtn && FlowMacroEngine.isElementVisible(exactBtn) && FlowMacroEngine.isSafeToClick(exactBtn)) {
-      return exactBtn;
+    for (const sel of exactSelectors) {
+      const btn = document.querySelector(sel);
+      if (btn && FlowMacroEngine.isElementVisible(btn) && !btn.closest('[id*="fd-"], [class*="fd-"]')) {
+        return btn;
+      }
     }
 
+    // 2. Busca abrangente por texto e aria-label em todos os botões visíveis
     const allButtons = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
-      if (!FlowMacroEngine.isElementVisible(b) || !FlowMacroEngine.isSafeToClick(b)) return false;
+      if (!FlowMacroEngine.isElementVisible(b)) return false;
+      if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
       return true;
     });
 
     return allButtons.find(b => {
       const t = (b.textContent || b.innerText || '').toLowerCase().trim();
       const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+      // Ignora botões de exclusão ou cancelamento
+      if (t.includes('excluir') || aria.includes('excluir') || t.includes('cancelar') || aria.includes('cancelar') || t.includes('lixeira')) return false;
+
       return (
         t.includes('incluir no comando') || aria.includes('incluir no comando') ||
         t.includes('incluir no prompt') || aria.includes('incluir no prompt') ||
-        t.includes('adicionar ao comando') || aria.includes('adicionar ao comando')
+        t.includes('adicionar ao comando') || aria.includes('adicionar ao comando') ||
+        t.includes('adicionar ao prompt') || aria.includes('adicionar ao prompt') ||
+        t.includes('usar no comando') || aria.includes('usar no comando') ||
+        t.includes('usar no prompt') || aria.includes('usar no prompt') ||
+        t.includes('usar imagem') || aria.includes('usar imagem') ||
+        t.includes('use image') || aria.includes('use image') ||
+        (t.includes('incluir') && (t.includes('comando') || t.includes('prompt') || t.includes('command'))) ||
+        (t === 'incluir' || aria === 'incluir' || aria.includes('incluir'))
       );
     }) || null;
   }
@@ -2107,6 +2127,13 @@ class FlowMacroEngine {
           if (elToClick.focus) elToClick.focus();
 
           this.simulateClick(elToClick);
+          try { elToClick.click(); } catch (e) {}
+
+          const innerImg = targetCard.querySelector('img, div.sc-b0e5-14');
+          if (innerImg && innerImg !== elToClick) {
+            try { innerImg.click(); } catch (e) {}
+            this.simulateClick(innerImg);
+          }
 
           try {
             const propKey = Object.keys(elToClick).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
@@ -2115,7 +2142,7 @@ class FlowMacroEngine {
             }
           } catch (e) {}
 
-          await new Promise(r => setTimeout(r, 800));
+          await new Promise(r => setTimeout(r, 600));
         } else {
           this.addLog(`⚠️ [Passo 4] Card para [${char.name}] não encontrado na biblioteca. Tentativa ${attempt + 1}/3.`, 'warning');
           if (attempt < 2) continue;
@@ -2127,6 +2154,13 @@ class FlowMacroEngine {
         // =========================================================================
         let includeBtn = null;
         for (let bWait = 0; bWait < 20; bWait++) {
+          // Verifica se o chip já foi anexado diretamente pelo clique no card
+          const promptChips = this.getPromptAttachedChips();
+          if (promptChips.length >= (cIdx + 1)) {
+            this.addLog(`ℹ️ [Passo 4] Personagem [${char.name}] já anexado diretamente ao comando pelo card.`, 'info');
+            break;
+          }
+
           const btn = this.findIncludeInCommandButton();
           if (btn) {
             const isDisabled = btn.disabled ||
@@ -2143,7 +2177,15 @@ class FlowMacroEngine {
               this.currentAction = `⏳ Aguardando liberação do botão "Incluir no comando" para [${char.name}]...`;
               this.notify();
             }
+          } else if ((bWait === 4 || bWait === 10) && targetCard) {
+            // Re-clica no card caso o botão de inclusão demore a abrir a gaveta de detalhes
+            this.addLog(`🔄 [Passo 4] Re-selecionando card de [${char.name}]...`, 'info');
+            const elToClick = targetCard.matches('div.sc-b0e5-14') ? targetCard : (targetCard.querySelector('div.sc-b0e5-14') || targetCard);
+            elToClick.scrollIntoView({ behavior: 'instant', block: 'center' });
+            this.simulateClick(elToClick);
+            try { elToClick.click(); } catch (e) {}
           }
+
           await new Promise(r => setTimeout(r, 400));
         }
 
@@ -2155,6 +2197,8 @@ class FlowMacroEngine {
           const overlay = includeBtn.querySelector('[data-type="button-overlay"]');
           const targetToClick = overlay || includeBtn;
           this.simulateClick(targetToClick);
+          try { targetToClick.click(); } catch (e) {}
+          try { includeBtn.click(); } catch (e) {}
 
           [includeBtn, overlay].filter(Boolean).forEach(el => {
             try {
@@ -2166,6 +2210,8 @@ class FlowMacroEngine {
           });
 
           await new Promise(r => setTimeout(r, 800));
+        } else {
+          this.addLog(`ℹ️ [Passo 4] Verificando anexo do chip na barra de comando...`, 'info');
         }
 
         // =========================================================================
@@ -3540,12 +3586,12 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       }
     }
 
-    // Nunca clica em menus de navegação ou barra lateral durante a geração
-    if (element.closest('nav, aside, header, [role="navigation"], [class*="sidebar" i], [class*="navbar" i]')) {
+    // Bloqueia cliques em links ou navegação global do site
+    if (element.closest('nav, [role="navigation"], [class*="navbar" i]')) {
       return false;
     }
 
-    // Bloqueia qualquer elemento posicionado no cabeçalho superior (Y < 120px)
+    // Bloqueia qualquer elemento posicionado no cabeçalho superior de busca (Y < 120px)
     try {
       const rect = element.getBoundingClientRect();
       if (rect.top < 120 && rect.left < window.innerWidth - 80) {
