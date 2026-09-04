@@ -1203,6 +1203,8 @@ class FlowMacroEngine {
       return learned;
     }
 
+    const promptContainer = this.getPromptContainer();
+
     // Prioridade 1: Seletor exato gravado do botão Criar do FLOW no DevTools
     const exactSubmit = document.querySelector([
       'div.sc-5c3af813-10 > button.sc-e8425ea6-0',
@@ -1212,6 +1214,7 @@ class FlowMacroEngine {
       'button[aria-label*="Criar" i]',
       'button[aria-label*="Gerar" i]',
       'button[aria-label*="Enviar" i]',
+      'button[aria-label*="Submit" i]',
       'button[aria-label*="Create" i]'
     ].join(', '));
     if (exactSubmit && FlowMacroEngine.isElementVisible(exactSubmit) && !exactSubmit.closest('[id*="fd-"], [class*="fd-"]')) {
@@ -1234,8 +1237,8 @@ class FlowMacroEngine {
     // Prioridade 3: Botão contendo o texto ou aria-label "Criar", "Gerar", "Create"
     const srElements = Array.from(document.querySelectorAll('button, [role="button"]')).filter(btn => {
       if (!FlowMacroEngine.isElementVisible(btn) || !FlowMacroEngine.isSafeToClick(btn) || btn.closest('[id*="fd-"], [class*="fd-"]')) return false;
-      // Rejeita estritamente botões dentro de popovers/modais de filtros ou cabeçalho
-      if (btn.closest('[role="dialog"], [role="menu"], [class*="popover" i], [class*="filter" i]')) return false;
+      // Rejeita estritamente menus ou filtros externos (permite se estiver dentro do promptContainer)
+      if (!promptContainer?.contains(btn) && btn.closest('[role="menu"], [class*="popover" i], [class*="filter" i]')) return false;
       const t = (btn.textContent || btn.innerText || '').trim().toLowerCase();
       const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
       return (
@@ -1248,31 +1251,30 @@ class FlowMacroEngine {
       return srElements[0];
     }
 
-    // Prioridade 4 (Detecção Geométrica): O botão de envio fica no extremo direito da barra de prompt
-    const promptInput = this.findPromptInput();
-    if (promptInput) {
-      const promptContainer = this.getPromptContainer();
-      if (promptContainer) {
-        const buttons = Array.from(promptContainer.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
-          if (!FlowMacroEngine.isElementVisible(b) || b === promptInput || b.contains(promptInput)) return false;
-          if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
-          const text = (b.textContent || b.innerText || '').trim().toLowerCase();
-          if (text.includes('agente') || text.includes('banana') || text.includes('x1') || text.includes('x2') || text.includes('x3') || text.includes('x4') || text === '+') {
-            return false;
-          }
-          return true;
+    // Prioridade 4 (Detecção Geométrica Infalível no Prompt Container):
+    // O botão circular branco de envio ➔ fica posicionado no canto inferior direito da barra de comandos
+    if (promptContainer) {
+      const buttons = Array.from(promptContainer.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
+        if (!FlowMacroEngine.isElementVisible(b) || b.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        const text = (b.textContent || b.innerText || '').trim().toLowerCase();
+        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        if (text.includes('agente') || text.includes('banana') || text.includes('x1') || text.includes('x2') || text.includes('x3') || text.includes('x4') || text === '+') {
+          return false;
+        }
+        if (aria.includes('fechar') || aria.includes('close') || text === '✕' || text === '×' || text === 'close') {
+          return false;
+        }
+        if (b.closest('[class*="chip" i]')) return false;
+        return true;
+      });
+
+      if (buttons.length > 0) {
+        buttons.sort((a, b) => {
+          const rA = a.getBoundingClientRect();
+          const rB = b.getBoundingClientRect();
+          return (rB.right + rB.bottom) - (rA.right + rA.bottom);
         });
-
-        // Seleciona o botão mais à direita
-        const inputRect = promptInput.getBoundingClientRect();
-        const rightButtons = buttons.filter(b => b.getBoundingClientRect().left >= inputRect.right - 40);
-        if (rightButtons.length > 0) {
-          return rightButtons[rightButtons.length - 1];
-        }
-
-        if (buttons.length > 0) {
-          return buttons[buttons.length - 1];
-        }
+        return buttons[0];
       }
     }
 
@@ -1294,9 +1296,9 @@ class FlowMacroEngine {
       inputEl = this.findPromptInput();
     }
 
-    // Aguarda até 1.2s caso o botão esteja temporariamente desabilitado pelo React
+    // Aguarda até 3.0s caso o botão esteja temporariamente desabilitado pelo React enquanto processa o texto/chips
     if (submitBtn) {
-      for (let wait = 0; wait < 12; wait++) {
+      for (let wait = 0; wait < 30; wait++) {
         if (submitBtn.getAttribute('aria-disabled') !== 'true' && !submitBtn.disabled) {
           break;
         }
@@ -1711,12 +1713,233 @@ class FlowMacroEngine {
   }
 
   /**
+   * Detecta a porcentagem e o status de envio de um card de mídia na biblioteca do FLOW
+   * @param {HTMLElement|null} targetCard - Card do virtuoso sendo monitorado
+   * @returns {{ isUploading: boolean, percent: number|null, statusText: string, isComplete: boolean }}
+   */
+  detectUploadProgress(targetCard) {
+    const result = {
+      isUploading: false,
+      percent: null,
+      statusText: '',
+      isComplete: false
+    };
+
+    if (!targetCard) return result;
+
+    // 1. Procura por percentual explícito no card (ex: "35%", "80%", "100%")
+    const cardText = (targetCard.textContent || targetCard.innerText || '').trim();
+    const pctMatch = cardText.match(/\b(\d{1,3})\s*%/);
+    if (pctMatch) {
+      const val = parseInt(pctMatch[1], 10);
+      if (!isNaN(val)) {
+        result.percent = val;
+        if (val >= 100) {
+          result.isComplete = true;
+        } else {
+          result.isUploading = true;
+        }
+      }
+    }
+
+    // 2. Procura atributos em barras de progresso nativas ou ARIA (role="progressbar", progress, aria-valuenow)
+    const progressEl = targetCard.querySelector('[role="progressbar"], progress, [aria-valuenow], [class*="progress" i]');
+    if (progressEl) {
+      result.isUploading = true;
+      const now = progressEl.getAttribute('aria-valuenow') || progressEl.getAttribute('value');
+      const max = progressEl.getAttribute('aria-valuemax') || progressEl.getAttribute('max') || '100';
+      if (now !== null) {
+        const pNow = parseFloat(now);
+        const pMax = parseFloat(max);
+        if (!isNaN(pNow) && !isNaN(pMax) && pMax > 0) {
+          result.percent = Math.round((pNow / pMax) * 100);
+          if (result.percent >= 100) result.isComplete = true;
+        }
+      }
+      const fillEl = progressEl.querySelector('[style*="width"], [class*="fill" i], [class*="bar" i]') || progressEl;
+      if (fillEl && fillEl.style && fillEl.style.width && fillEl.style.width.includes('%')) {
+        const wVal = parseInt(fillEl.style.width, 10);
+        if (!isNaN(wVal)) {
+          result.percent = wVal;
+          if (wVal >= 100) result.isComplete = true;
+        }
+      }
+    }
+
+    // 3. Procura por spinners de carregamento ou anéis de progresso SVG no card
+    const spinner = targetCard.querySelector([
+      '[class*="spinner" i]',
+      '[class*="loading" i]',
+      '[class*="uploading" i]',
+      '[data-testid*="loading" i]',
+      '[data-testid*="progress" i]',
+      'svg[class*="spin" i]',
+      'circle[stroke-dashoffset]'
+    ].join(', '));
+    if (spinner && FlowMacroEngine.isElementVisible(spinner)) {
+      result.isUploading = true;
+    }
+
+    // 4. Procura por percentual em toda a biblioteca ou gaveta de mídia (caso haja barra global de upload)
+    if (!result.isUploading && result.percent === null) {
+      const virtuosoList = targetCard.closest('[data-testid="virtuoso-item-list"]') || document.querySelector('[data-testid="virtuoso-item-list"]');
+      const drawer = virtuosoList ? virtuosoList.parentElement : null;
+      if (drawer) {
+        const drawerText = (drawer.textContent || '').trim();
+        const drawerPctMatch = drawerText.match(/\b(\d{1,3})\s*%/);
+        if (drawerPctMatch) {
+          const dVal = parseInt(drawerPctMatch[1], 10);
+          if (!isNaN(dVal)) {
+            result.percent = dVal;
+            if (dVal >= 100) result.isComplete = true;
+            else result.isUploading = true;
+          }
+        }
+      }
+    }
+
+    // 5. Verifica se há indicadores de conclusão no card (imagem thumbnail renderizada)
+    const img = targetCard.querySelector('img');
+    const hasLoadedImg = img && img.complete && img.naturalWidth > 0 && !img.src.startsWith('data:image/svg');
+    const bgImage = targetCard.style && targetCard.style.backgroundImage && targetCard.style.backgroundImage.includes('url');
+
+    // 6. Verifica texto de status no painel de detalhes do FLOW (ex: "Imagem enviada" conforme Image 1)
+    const statusElements = Array.from(document.querySelectorAll('span, p, div')).filter(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const t = (el.textContent || '').trim().toLowerCase();
+      return t === 'imagem enviada' || t === 'enviando...' || t === 'upload concluído';
+    });
+    for (const st of statusElements) {
+      const txt = (st.textContent || '').trim().toLowerCase();
+      if (txt.includes('imagem enviada') || txt.includes('upload concluído')) {
+        result.statusText = 'Imagem enviada';
+        result.isComplete = true;
+      } else if (txt.includes('enviando')) {
+        result.isUploading = true;
+        result.statusText = 'Enviando...';
+      }
+    }
+
+    if (!result.isUploading && (hasLoadedImg || bgImage) && !spinner) {
+      result.isComplete = true;
+    }
+
+    return result;
+  }
+
+  /**
+   * Monitora ativamente o progresso de upload da imagem do personagem na biblioteca do FLOW até 100%
+   * @param {number} cIdx - Índice do personagem
+   * @param {string} charName - Nome do personagem
+   * @param {number} maxWaitSeconds - Tempo máximo de espera em segundos (padrão 60s)
+   * @returns {Promise<boolean>}
+   */
+  async waitForCardUploadCompletion(cIdx, charName, maxWaitSeconds = 60) {
+    this.addLog(`⏳ [Passo 3] Monitorando envio da imagem de [${charName}] para o FLOW...`, 'info');
+
+    const startTime = Date.now();
+    const maxWaitMs = maxWaitSeconds * 1000;
+    let lastLoggedPercent = -1;
+    let stableCompleteChecks = 0;
+
+    while (Date.now() - startTime < maxWaitMs) {
+      if (this.state === 'stopped' || this.state === 'paused') return false;
+
+      // Localiza o card correspondente ao índice
+      const mediaCards = this.getLibraryMediaCards();
+      let targetCard = (cIdx < mediaCards.length) ? mediaCards[cIdx] : null;
+
+      if (!targetCard) {
+        targetCard = document.querySelector(`[data-testid='virtuoso-item-list'] > div:nth-of-type(${cIdx + 1}) div.sc-b0e5-14, [data-testid='virtuoso-item-list'] > div:nth-of-type(${cIdx + 1})`);
+      }
+
+      if (!targetCard) {
+        // Card ainda não renderizado na lista, aguarda
+        await new Promise(r => setTimeout(r, 400));
+        continue;
+      }
+
+      // Analisa o progresso do upload no card
+      const progress = this.detectUploadProgress(targetCard);
+
+      if (progress.isUploading && progress.percent !== null) {
+        stableCompleteChecks = 0;
+        if (progress.percent !== lastLoggedPercent && (progress.percent % 10 === 0 || progress.percent - lastLoggedPercent >= 10 || progress.percent >= 90)) {
+          lastLoggedPercent = progress.percent;
+          this.addLog(`📊 [Upload] [${charName}]: ${progress.percent}% enviado...`, 'info');
+        }
+        this.currentAction = `⏳ Upload de [${charName}]: ${progress.percent}%...`;
+        this.notify();
+      } else if (progress.isUploading) {
+        stableCompleteChecks = 0;
+        this.currentAction = `⏳ Enviando imagem de [${charName}]...`;
+        this.notify();
+      }
+
+      // Se concluiu o upload (100% ou imagem pronta sem spinners)
+      if (progress.isComplete && !progress.isUploading) {
+        stableCompleteChecks++;
+        if (stableCompleteChecks >= 2) {
+          const finalPct = progress.percent !== null ? `${progress.percent}%` : '100%';
+          this.addLog(`✅ [Passo 3 Concluído] Imagem de [${charName}] pronta na biblioteca (${finalPct})!`, 'success');
+          await new Promise(r => setTimeout(r, 600));
+          return true;
+        }
+      } else {
+        stableCompleteChecks = 0;
+      }
+
+      await new Promise(r => setTimeout(r, 400));
+    }
+
+    this.addLog(`⚠️ [Passo 3] Tempo limite de upload (${maxWaitSeconds}s) atingido para [${charName}]. Tentando prosseguir...`, 'warning');
+    return true;
+  }
+
+  /**
+   * Localiza o botão "Incluir no comando" no FLOW
+   * @returns {HTMLElement|null}
+   */
+  findIncludeInCommandButton() {
+    const exactBtn = document.querySelector([
+      'div.sc-4da33547-5 button',
+      'button.gecFQL',
+      'button.dnFqQq',
+      'button.jHjHyn',
+      'button.fPutAP',
+      'button.sc-64c4dea-4',
+      'button[aria-label*="incluir no comando" i]',
+      'button[aria-label*="incluir no prompt" i]',
+      'button[aria-label*="adicionar ao comando" i]'
+    ].join(', '));
+
+    if (exactBtn && FlowMacroEngine.isElementVisible(exactBtn) && FlowMacroEngine.isSafeToClick(exactBtn)) {
+      return exactBtn;
+    }
+
+    const allButtons = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
+      if (!FlowMacroEngine.isElementVisible(b) || !FlowMacroEngine.isSafeToClick(b)) return false;
+      return true;
+    });
+
+    return allButtons.find(b => {
+      const t = (b.textContent || b.innerText || '').toLowerCase().trim();
+      const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+      return (
+        t.includes('incluir no comando') || aria.includes('incluir no comando') ||
+        t.includes('incluir no prompt') || aria.includes('incluir no prompt') ||
+        t.includes('adicionar ao comando') || aria.includes('adicionar ao comando')
+      );
+    }) || null;
+  }
+
+  /**
    * Anexa imagens de personagens de referência no FLOW via modal de biblioteca/upload
    * Executa os Passos 2, 3 e 4 do fluxograma oficial:
    * - Passo 2: Clica no botão "+" na barra de prompt para anexar imagens.
-   * - Passo 3: Busca na biblioteca do FLOW ou clica em "Enviar Mídia" para fazer upload.
-   * - Passo 4: Seleciona o card do personagem baseado no nome, clica em "Incluir no comando" e valida o chip.
-   * - Loop: Se existir mais de um personagem ativo, retorna ao Passo 2.
+   * - Passo 3: Busca na biblioteca do FLOW ou clica em "Enviar Mídia" para fazer upload e aguarda 100%.
+   * - Passo 4: Seleciona o card do personagem após upload concluído, clica em "Incluir no comando" e valida o chip.
+   * - Loop: Se existir mais de um personagem ativo, processa sequencialmente todos os personagens.
    * @returns {Promise<boolean>}
    */
   async attachCharactersFromFlowLibrary() {
@@ -1809,6 +2032,7 @@ class FlowMacroEngine {
 
         // =========================================================================
         // Passo 3: Upload do personagem se a biblioteca ainda não tiver cards suficientes
+        // E monitoramento ativo até 100% de conclusão antes de qualquer clique!
         // =========================================================================
         let mediaCards = this.getLibraryMediaCards();
         const hasCardForThisChar = mediaCards.length > cIdx;
@@ -1829,7 +2053,7 @@ class FlowMacroEngine {
 
             const fileInput = document.querySelector('input[type="file"]:not([id*="fd-"])');
             if (fileInput) {
-              this.addLog(`📤 [Passo 3] Enviando imagem de [${char.name}] para a biblioteca do FLOW...`, 'info');
+              this.addLog(`📤 [Passo 3] Disparando envio da imagem de [${char.name}] para a biblioteca do FLOW...`, 'info');
               const blob = await fetch(avatarData).then(r => r.blob());
               const file = new File([blob], `${char.name || 'char'}_${cIdx + 1}.jpeg`, { type: blob.type || 'image/jpeg' });
               const dt = new DataTransfer();
@@ -1838,29 +2062,24 @@ class FlowMacroEngine {
               fileInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
               fileInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
 
-              // Aguarda ativamente o novo card aparecer na biblioteca (até 12s)
-              this.addLog('⏳ [Passo 3] Imagem enviada! Aguardando o FLOW processar e exibir na galeria...', 'info');
-              for (let pw = 0; pw < 24; pw++) {
-                await new Promise(r => setTimeout(r, 500));
-                mediaCards = this.getLibraryMediaCards();
-                if (mediaCards.length > cIdx) break;
-              }
+              // Monitora ativamente a porcentagem de envio e aguarda conclusão 100%
+              await this.waitForCardUploadCompletion(cIdx, char.name, 60);
 
               if (this.uploadedAvatarsInFlow) this.uploadedAvatarsInFlow.add(char.name);
             }
           } catch (err) {
             console.warn('[FLOW Macro] Aviso no upload de avatar:', err);
           }
+        } else if (hasCardForThisChar) {
+          // Card já existe na lista, mas se estiver em processamento/upload pendente, aguarda
+          await this.waitForCardUploadCompletion(cIdx, char.name, 30);
         }
 
-        // Atualiza a lista de cards
-        mediaCards = this.getLibraryMediaCards();
-
         // =========================================================================
-        // Passo 4: Clicar no card correspondente ao personagem atual
+        // Passo 4: Clicar no card correspondente ao personagem atual (após upload 100%)
         // =========================================================================
         let targetCard = null;
-        for (let cWait = 0; cWait < 12; cWait++) {
+        for (let cWait = 0; cWait < 15; cWait++) {
           mediaCards = this.getLibraryMediaCards();
           if (cIdx < mediaCards.length) {
             targetCard = mediaCards[cIdx];
@@ -1874,11 +2093,11 @@ class FlowMacroEngine {
             break;
           }
 
-          await new Promise(r => setTimeout(r, 300));
+          await new Promise(r => setTimeout(r, 400));
         }
 
         if (targetCard) {
-          this.addLog(`🎯 [Passo 4] Clicando com botão esquerdo uma única vez no card de [${char.name}] (${cIdx + 1}/${activeChars.length})...`, 'info');
+          this.addLog(`🎯 [Passo 4] Clicando no card de [${char.name}] (${cIdx + 1}/${activeChars.length})...`, 'info');
 
           const elToClick = targetCard.matches('div.sc-b0e5-14')
             ? targetCard
@@ -1896,7 +2115,7 @@ class FlowMacroEngine {
             }
           } catch (e) {}
 
-          await new Promise(r => setTimeout(r, 600));
+          await new Promise(r => setTimeout(r, 800));
         } else {
           this.addLog(`⚠️ [Passo 4] Card para [${char.name}] não encontrado na biblioteca. Tentativa ${attempt + 1}/3.`, 'warning');
           if (attempt < 2) continue;
@@ -1904,47 +2123,32 @@ class FlowMacroEngine {
         }
 
         // =========================================================================
-        // 4.3: Detectar e clicar no botão "Incluir no comando"
+        // 4.3: Detectar e aguardar o botão "Incluir no comando" estar ativo e liberado
         // =========================================================================
         let includeBtn = null;
-        for (let bWait = 0; bWait < 12; bWait++) {
-          const exactBtn = document.querySelector([
-            'div.sc-4da33547-5 button',
-            'button.gecFQL',
-            'button.dnFqQq',
-            'button.jHjHyn',
-            'button.fPutAP',
-            'button.sc-64c4dea-4',
-            'button[aria-label*="incluir no comando" i]',
-            'button[aria-label*="incluir no prompt" i]'
-          ].join(', '));
+        for (let bWait = 0; bWait < 20; bWait++) {
+          const btn = this.findIncludeInCommandButton();
+          if (btn) {
+            const isDisabled = btn.disabled ||
+                               btn.getAttribute('aria-disabled') === 'true' ||
+                               btn.classList.contains('disabled') ||
+                               btn.getAttribute('disabled') !== null;
+            const btnText = (btn.textContent || '').toLowerCase();
+            const isProcessing = btnText.includes('enviando') || btnText.includes('upload');
 
-          if (exactBtn && FlowMacroEngine.isElementVisible(exactBtn) && !exactBtn.disabled && FlowMacroEngine.isSafeToClick(exactBtn)) {
-            includeBtn = exactBtn;
-            break;
+            if (!isDisabled && !isProcessing) {
+              includeBtn = btn;
+              break;
+            } else {
+              this.currentAction = `⏳ Aguardando liberação do botão "Incluir no comando" para [${char.name}]...`;
+              this.notify();
+            }
           }
-
-          const allButtons = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
-            if (!FlowMacroEngine.isElementVisible(b) || !FlowMacroEngine.isSafeToClick(b)) return false;
-            return true;
-          });
-
-          includeBtn = allButtons.find(b => {
-            const t = (b.textContent || b.innerText || '').toLowerCase().trim();
-            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-            return (
-              t.includes('incluir no comando') || aria.includes('incluir no comando') ||
-              t.includes('incluir no prompt') || aria.includes('incluir no prompt') ||
-              t.includes('adicionar ao comando') || aria.includes('adicionar ao comando')
-            );
-          });
-
-          if (includeBtn) break;
-          await new Promise(r => setTimeout(r, 300));
+          await new Promise(r => setTimeout(r, 400));
         }
 
         if (includeBtn) {
-          this.addLog(`✨ [Passo 4] Botão "Incluir no comando" detectado! Clicando...`, 'success');
+          this.addLog(`✨ [Passo 4] Botão "Incluir no comando" pronto! Clicando...`, 'success');
           includeBtn.scrollIntoView({ behavior: 'instant', block: 'center' });
           if (includeBtn.focus) includeBtn.focus();
 
@@ -1971,7 +2175,7 @@ class FlowMacroEngine {
         this.addLog(`⏳ [Passo 4] Validando anexo do personagem [${char.name}] na barra de comando...`, 'info');
         let chipAttached = false;
 
-        for (let chk = 0; chk < 15; chk++) {
+        for (let chk = 0; chk < 20; chk++) {
           const promptChips = this.getPromptAttachedChips();
 
           // Validação estrita: exige que a contagem atinja o índice atual (1 para o 1º, 2 para o 2º, etc.)
@@ -3881,11 +4085,15 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
             this.notify();
             await this.applyFlowSettings();
 
-            // CORREÇÃO: Garante que nenhum popover/dialog ficou aberto após configurações
-            // Isso evita que o menu Nano Banana interfira nos Passos 2-4
+            // CORREÇÃO: Garante que nenhum menu de configurações externo ficou aberto após configurações
             for (let closeWait = 0; closeWait < 5; closeWait++) {
-              const openPopover = document.querySelector('[role="dialog"], [role="menu"], [class*="popover" i], [data-radix-popper-content-wrapper]');
-              if (!openPopover || !FlowMacroEngine.isElementVisible(openPopover)) break;
+              const promptContainer = this.getPromptContainer();
+              const unwanted = Array.from(document.querySelectorAll('[role="dialog"], [role="menu"], [class*="popover" i], [data-radix-popper-content-wrapper]')).filter(el => {
+                if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+                if (promptContainer && (promptContainer === el || promptContainer.contains(el) || el.contains(promptContainer))) return false;
+                return true;
+              });
+              if (unwanted.length === 0) break;
               this.addLog('⚠️ Popover de configurações ainda aberto. Fechando...', 'info');
               document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
               await new Promise(r => setTimeout(r, 400));
@@ -3928,11 +4136,16 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
 
         this.dismissFlowOnboardingBanners();
 
-        // CORREÇÃO: Verifica que nenhum dialog/popover está aberto antes de enviar
+        // CORREÇÃO: Garante que nenhum dialog/menu externo ficou aberto antes de enviar (sem fechar o promptContainer)
         for (let closeWait = 0; closeWait < 3; closeWait++) {
-          const openDialog = document.querySelector('[role="dialog"], [role="menu"], [class*="popover" i], [class*="modal" i], [data-radix-popper-content-wrapper]');
-          if (!openDialog || !FlowMacroEngine.isElementVisible(openDialog)) break;
-          this.addLog('⚠️ Dialog/popover detectado antes do envio. Fechando...', 'info');
+          const promptContainer = this.getPromptContainer();
+          const unwanted = Array.from(document.querySelectorAll('[role="dialog"], [role="menu"], [class*="popover" i], [class*="modal" i], [data-radix-popper-content-wrapper]')).filter(el => {
+            if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+            if (promptContainer && (promptContainer === el || promptContainer.contains(el) || el.contains(promptContainer))) return false;
+            return true;
+          });
+          if (unwanted.length === 0) break;
+          this.addLog('⚠️ Popover/menu externo detectado antes do envio. Fechando...', 'info');
           document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
           await new Promise(r => setTimeout(r, 400));
         }
