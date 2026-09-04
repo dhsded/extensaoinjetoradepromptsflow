@@ -1233,7 +1233,9 @@ class FlowMacroEngine {
 
     // Prioridade 3: Botão contendo o texto ou aria-label "Criar", "Gerar", "Create"
     const srElements = Array.from(document.querySelectorAll('button, [role="button"]')).filter(btn => {
-      if (!FlowMacroEngine.isElementVisible(btn) || btn.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      if (!FlowMacroEngine.isElementVisible(btn) || !FlowMacroEngine.isSafeToClick(btn) || btn.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      // Rejeita estritamente botões dentro de popovers/modais de filtros ou cabeçalho
+      if (btn.closest('[role="dialog"], [role="menu"], [class*="popover" i], [class*="filter" i]')) return false;
       const t = (btn.textContent || btn.innerText || '').trim().toLowerCase();
       const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
       return (
@@ -1427,22 +1429,14 @@ class FlowMacroEngine {
   }
 
   /**
-   * Verifica com precisão se os chips/miniaturas dos personagens já estão anexados à barra de comando
-   * (Escopo estrito à barra de prompt, nunca confundindo com imagens do Canvas)
-   * @returns {boolean}
+   * Retorna os chips de personagens ativos anexados dentro da barra de comando do FLOW
+   * @returns {HTMLElement[]}
    */
-  hasCharacterChipsAttached() {
+  getPromptAttachedChips() {
     const promptContainer = this.getPromptContainer();
-    if (!promptContainer || promptContainer === document.body) return false;
+    if (!promptContainer || promptContainer === document.body) return [];
 
-    const activeChars = (this.characters && this.characters.length > 0)
-      ? this.characters.filter(c => c.enabled !== false)
-      : [];
-    if (activeChars.length === 0) return true;
-    const expectedCount = activeChars.length;
-
-    // Busca apenas chips contendo imagens dentro do container do prompt
-    const chips = Array.from(promptContainer.querySelectorAll([
+    return Array.from(promptContainer.querySelectorAll([
       '[data-slate-node="element"]:has(img)',
       '[data-type*="ingredient" i]',
       '[data-type*="mention" i]',
@@ -1451,149 +1445,132 @@ class FlowMacroEngine {
       'div[class*="ingredient" i]',
       'div[class*="asset" i]:has(img)',
       'span[class*="chip" i]:has(img)',
-      'span[class*="ingredient" i]'
+      'span[class*="ingredient" i]',
+      'img[alt*="cerebro" i]',
+      'img[alt*="cora" i]',
+      'img[alt*="char" i]'
     ].join(', '))).filter(el => {
       if (!FlowMacroEngine.isElementVisible(el)) return false;
       if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-      // Nunca conta botões como chips
       if (el.closest('button[aria-label*="Criar" i]') || el.closest('button[aria-label*="add" i]')) return false;
       return true;
     });
+  }
 
+  /**
+   * Verifica com precisão se os chips/miniaturas dos personagens já estão anexados à barra de comando
+   * (Escopo estrito à barra de prompt, nunca confundindo com imagens do Canvas)
+   * @returns {boolean}
+   */
+  hasCharacterChipsAttached() {
+    const activeChars = (this.characters && this.characters.length > 0)
+      ? this.characters.filter(c => c.enabled !== false)
+      : [];
+    if (activeChars.length === 0) return true;
+    const expectedCount = activeChars.length;
+
+    const chips = this.getPromptAttachedChips();
     return chips.length >= expectedCount;
   }
 
   /**
-   * Localiza o botão "+" (adicionar recursos/personagens) na barra de prompt (Passo 3)
+   * Verifica se a biblioteca / galeria de mídia do FLOW já está aberta e visível na tela
+   * @returns {boolean}
+   */
+  isFlowLibraryOpen() {
+    const list = document.querySelector('[data-testid="virtuoso-item-list"]');
+    if (list && FlowMacroEngine.isElementVisible(list)) return true;
+
+    const cards = Array.from(document.querySelectorAll('div.sc-b0e5-14, div.sc-a0e2840-0')).filter(el => {
+      return FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]');
+    });
+    return cards.length > 0;
+  }
+
+  /**
+   * Retorna os cards de mídia visíveis dentro da biblioteca do FLOW
+   * @returns {HTMLElement[]}
+   */
+  getLibraryMediaCards() {
+    const virtuosoList = document.querySelector('[data-testid="virtuoso-item-list"]');
+    if (virtuosoList) {
+      const items = Array.from(virtuosoList.querySelectorAll(':scope > div, div.sc-b0e5-14')).filter(el => {
+        return FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]');
+      });
+      if (items.length > 0) return items;
+    }
+
+    return Array.from(document.querySelectorAll([
+      '[data-testid="virtuoso-item-list"] > div',
+      '[data-testid="virtuoso-item-list"] div.sc-b0e5-14',
+      'div.sc-b0e5-14',
+      'div.sc-a0e2840-0'
+    ].join(', '))).filter(el => FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]'));
+  }
+
+  /**
+   * Localiza o botão "+" (adicionar recursos/personagens) na barra de prompt (Passo 2)
+   * Blindado contra qualquer elemento de filtro, busca ou cabeçalho
    * @returns {HTMLElement|null}
    */
   findPlusButton() {
-    // 0. Verifica seletor aprendido
+    // 0. Verifica seletor aprendido se válido e na região inferior
     const learned = this.resolveLearnedSelector('plusButton');
-    if (learned && FlowMacroEngine.isElementVisible(learned) && !learned.closest('nav, aside, header, [role="navigation"], [class*="sidebar" i]')) {
-      return learned;
-    }
-
-    // Prioridade 1: Botão "+" exato do FLOW gravado no DevTools
-    const exactPlus = document.querySelector('div.sc-5c3af813-2 > button.sc-e8425ea6-0, div.sc-5c3af813-2 button, button[aria-label*="add_2 Criar" i], button[aria-label*="add_2" i]');
-    if (exactPlus && FlowMacroEngine.isElementVisible(exactPlus) && !exactPlus.closest('nav, aside, header')) {
-      return exactPlus;
+    if (learned && FlowMacroEngine.isElementVisible(learned) && FlowMacroEngine.isSafeToClick(learned)) {
+      const rect = learned.getBoundingClientRect();
+      if (rect.top > 250) {
+        return learned;
+      }
     }
 
     const promptContainer = this.getPromptContainer();
     const promptInput = this.findPromptInput();
 
-    // Prioridade 2 (Detecção Geométrica): O botão "+" fica posicionado imediatamente à esquerda do campo de prompt
-    if (promptContainer && promptInput) {
-      const allBtns = Array.from(promptContainer.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => FlowMacroEngine.isElementVisible(b) && !b.closest('[id*="fd-"], [class*="fd-"]'));
-      const inputRect = promptInput.getBoundingClientRect();
-      const leftBtns = allBtns.filter(b => {
-        if (b === promptInput || b.contains(promptInput)) return false;
-        const bRect = b.getBoundingClientRect();
-        return bRect.right <= inputRect.left + 25;
+    // Prioridade 1: Botão "+" exato do FLOW gravado no DevTools (div.sc-5c3af813-2 button)
+    const exactSelectors = [
+      'div.sc-5c3af813-2 > button.sc-e8425ea6-0',
+      'div.sc-5c3af813-2 button',
+      'button[aria-label*="add_2 Criar" i]',
+      'button[aria-label*="add_2" i]',
+      'button[aria-label*="adicionar ao prompt" i]',
+      'button[aria-label*="adicionar ao comando" i]'
+    ];
+
+    for (const sel of exactSelectors) {
+      const candidates = promptContainer
+        ? Array.from(promptContainer.querySelectorAll(sel))
+        : Array.from(document.querySelectorAll(sel));
+
+      const found = candidates.find(el => {
+        if (!FlowMacroEngine.isElementVisible(el) || !FlowMacroEngine.isSafeToClick(el)) return false;
+        const rect = el.getBoundingClientRect();
+        return rect.top > 250;
       });
-      if (leftBtns.length > 0) {
-        return leftBtns[leftBtns.length - 1];
+      if (found) return found;
+    }
+
+    // Prioridade 2: Busca botões dentro do promptContainer
+    if (promptContainer) {
+      const containerButtons = Array.from(promptContainer.querySelectorAll('button, [role="button"], div[role="button"], div[tabindex="0"]')).filter(b => {
+        if (!FlowMacroEngine.isElementVisible(b) || !FlowMacroEngine.isSafeToClick(b)) return false;
+        if (b === promptInput || b.contains(promptInput)) return false;
+        return true;
+      });
+
+      for (const btn of containerButtons) {
+        if (this.isPlusButtonMatch(btn, promptInput)) {
+          return btn;
+        }
       }
     }
 
-    const isMatch = (btn) => {
-      if (!btn || !FlowMacroEngine.isElementVisible(btn)) return false;
-      if (btn === promptInput || (promptInput && btn.contains(promptInput))) return false;
-      if (btn.closest('[id*="fd-"], [class*="fd-"]')) return false;
-
-      // REJEITA estritamente qualquer link ou botão de navegação da barra lateral ou cabeçalho
-      if (btn.tagName === 'A' || btn.closest('a') || btn.closest('nav, aside, header, [role="navigation"], [class*="sidebar" i], [class*="navbar" i]')) {
-        return false;
-      }
-      const href = (btn.getAttribute('href') || btn.getAttribute('data-href') || '').toLowerCase();
-      if (href) return false;
-
-      const text = (btn.textContent || btn.innerText || '').trim();
-      const lowerText = text.toLowerCase();
-      const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
-      const title = (btn.getAttribute('title') || '').toLowerCase();
-      const tooltip = (btn.getAttribute('data-tooltip') || '').toLowerCase();
-      const testid = (btn.getAttribute('data-testid') || '').toLowerCase();
-
-      // Evita termos de navegação de projetos
-      if (
-        lowerText.includes('personagens') || lowerText.includes('characters') || lowerText.includes('projetos') || lowerText.includes('projects') ||
-        aria.includes('personagens') || aria.includes('characters') || aria.includes('navegar') || aria.includes('menu') || aria.includes('voltar') ||
-        title.includes('personagens') || title.includes('characters') || tooltip.includes('personagens') || tooltip.includes('characters')
-      ) {
-        return false;
-      }
-
-      // Evita botões de configurações (Banana / Proporção)
-      if (lowerText.includes('vídeo') || lowerText.includes('video') || lowerText.includes('banana') || lowerText.includes('720p') || lowerText.includes('16:9') || lowerText.includes('9:16') || lowerText.includes('1:1') || lowerText.includes('x4') || lowerText.includes('x1')) {
-        return false;
-      }
-      if (aria.includes('arrow_forward') || lowerText.includes('arrow_forward')) {
-        return false;
-      }
-
-      // Verifica ícones do Google Symbols / Material Symbols
-      const symbolEl = btn.querySelector('.google-symbols, .material-symbols-outlined, i, span');
-      const symText = symbolEl ? (symbolEl.textContent || symbolEl.innerText || '').trim().toLowerCase() : '';
-
-      if (symText === 'arrow_forward' || symText === 'send' || symText === 'arrow_back' || symText === 'close') {
-        return false;
-      }
-
-      const addSymbols = [
-        'add', 'add_2', 'add_box', 'add_circle', 'add_photo_alternate', 'add_to_photos',
-        'library_add', 'post_add', 'control_point', 'attachment', 'attach_file',
-        'image', 'photo', 'collections', 'face', 'person_add', 'upload',
-        'smart_toy', 'widgets', 'folder_special'
-      ];
-
-      const isSymbolMatch = addSymbols.includes(symText);
-
-      // Verifica SVG contendo o ícone "+"
-      const svg = btn.querySelector('svg');
-      const hasPlusSvg = svg && (
-        svg.getAttribute('aria-label') === 'Add' ||
-        (svg.innerHTML && (svg.innerHTML.includes('19 13') || svg.innerHTML.includes('12 4v16') || svg.innerHTML.includes('11 11V5')))
-      );
-
-      const isTextMatch = (
-        text === '+' || text.startsWith('+') || lowerText === '+ adicionar' || lowerText === '+ add' ||
-        lowerText === 'adicionar' || lowerText === 'add' || lowerText === 'anexar' || lowerText === 'attach' ||
-        lowerText === 'recurso' || lowerText === 'resource' || lowerText === 'ingrediente' || lowerText === 'ingredient' ||
-        lowerText === 'elemento' || lowerText === 'element' || lowerText === 'mídia' || lowerText === 'media' ||
-        lowerText.includes('adicionar recurso') || lowerText.includes('add asset') || lowerText.includes('add ingredient')
-      );
-
-      const isAttrMatch = (
-        aria.includes('adicionar') || aria.includes('add') || aria.includes('recurso') || aria.includes('resource') ||
-        aria.includes('ingrediente') || aria.includes('ingredient') || aria.includes('elemento') || aria.includes('element') ||
-        aria.includes('mídia') || aria.includes('media') || aria.includes('imagem') || aria.includes('image') ||
-        aria.includes('referência') || aria.includes('reference') || aria.includes('asset') || aria.includes('anexar') ||
-        aria.includes('attach') || aria.includes('upload') ||
-        title.includes('adicionar') || title.includes('add') || title.includes('recurso') || title.includes('ingrediente') ||
-        tooltip.includes('adicionar') || tooltip.includes('add') || tooltip.includes('recurso') || tooltip.includes('ingrediente') ||
-        testid.includes('add') || testid.includes('asset') || testid.includes('ingredient') || testid.includes('resource')
-      );
-
-      return isSymbolMatch || hasPlusSvg || isTextMatch || isAttrMatch;
-    };
-
-    // 1. Procura dentro do container do prompt
-    const containerButtons = Array.from(promptContainer.querySelectorAll('button, [role="button"], div[tabindex="0"], div[role="button"]'));
-    for (const btn of containerButtons) {
-      if (isMatch(btn)) {
-        return btn;
-      }
-    }
-
-    // 2. Procura na região inferior da tela (últimos 35% de altura)
+    // Prioridade 3: Região inferior da tela (últimos 350px de altura)
     if (promptInput) {
-      const inputRect = promptInput.getBoundingClientRect();
       const nearbyButtons = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(btn => {
-        if (!isMatch(btn)) return false;
+        if (!FlowMacroEngine.isElementVisible(btn) || !FlowMacroEngine.isSafeToClick(btn)) return false;
         const rect = btn.getBoundingClientRect();
-        return rect.bottom >= window.innerHeight - 350 && rect.left > 150 && Math.abs(rect.top - inputRect.top) < 200;
+        if (rect.top < window.innerHeight - 350) return false;
+        return this.isPlusButtonMatch(btn, promptInput);
       });
 
       if (nearbyButtons.length > 0) {
@@ -1601,15 +1578,87 @@ class FlowMacroEngine {
       }
     }
 
-    // Fallback: Primeiro botão válido no container
-    if (promptInput) {
-      const candidates = containerButtons.filter(b => isMatch(b) && b !== promptInput && !b.contains(promptInput));
-      if (candidates.length > 0) {
-        return candidates[0];
-      }
+    return null;
+  }
+
+  /**
+   * Valida se um elemento é de fato o botão "+" da barra de prompt
+   * Rejeita estritamente filtros, ferramentas de pesquisa, cabeçalhos e configurações
+   * @param {HTMLElement} btn - Elemento a validar
+   * @param {HTMLElement} promptInput - Campo de prompt
+   * @returns {boolean}
+   */
+  isPlusButtonMatch(btn, promptInput) {
+    if (!btn || !FlowMacroEngine.isElementVisible(btn)) return false;
+    if (btn === promptInput || (promptInput && btn.contains(promptInput))) return false;
+    if (!FlowMacroEngine.isSafeToClick(btn)) return false;
+
+    // REJEIÇÃO GEOMÉTRICA: Botões acima da metade inferior da tela nunca são o botão do prompt
+    const rect = btn.getBoundingClientRect();
+    if (rect.top < 250) return false;
+
+    // REJEIÇÃO ESTRITA POR TAG: Links de navegação
+    if (btn.tagName === 'A' || btn.closest('a') || btn.closest('nav, aside, header, [role="navigation"], [class*="sidebar" i], [class*="navbar" i]')) {
+      return false;
     }
 
-    return null;
+    const text = (btn.textContent || btn.innerText || '').trim();
+    const lowerText = text.toLowerCase();
+    const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+    const title = (btn.getAttribute('title') || '').toLowerCase();
+    const tooltip = (btn.getAttribute('data-tooltip') || '').toLowerCase();
+    const testid = (btn.getAttribute('data-testid') || '').toLowerCase();
+
+    // REJEIÇÃO ABSOLUTA: Filtros, ordenação, busca, lixeira, configurações de proporção/banana, submit
+    if (
+      aria.includes('filtro') || aria.includes('filter') || aria.includes('filtrar') ||
+      title.includes('filtro') || title.includes('filter') || title.includes('filtrar') ||
+      tooltip.includes('filtro') || tooltip.includes('filter') || testid.includes('filter') ||
+      aria.includes('ordenar') || aria.includes('sort') ||
+      aria.includes('pesquisar') || aria.includes('search') || testid.includes('search') ||
+      aria.includes('arrow_forward') || lowerText.includes('arrow_forward') ||
+      lowerText.includes('banana') || lowerText.includes('720p') || lowerText.includes('16:9') || lowerText.includes('9:16') || lowerText.includes('1:1') || lowerText.includes('x4') || lowerText.includes('x1') ||
+      aria.includes('lixeira') || aria.includes('trash') || aria.includes('delete')
+    ) {
+      return false;
+    }
+
+    // Verifica ícones do Google Symbols / Material Symbols
+    const symbolEl = btn.querySelector('.google-symbols, .material-symbols-outlined, i, span');
+    const symText = symbolEl ? (symbolEl.textContent || symbolEl.innerText || '').trim().toLowerCase() : '';
+
+    if (['filter_list', 'tune', 'filter_alt', 'search', 'sort', 'arrow_forward', 'send', 'arrow_back', 'close'].includes(symText)) {
+      return false;
+    }
+
+    const addSymbols = [
+      'add', 'add_2', 'add_box', 'add_circle', 'add_photo_alternate', 'add_to_photos',
+      'library_add', 'attachment', 'attach_file'
+    ];
+    if (addSymbols.includes(symText)) return true;
+
+    // Verifica SVG contendo o ícone "+"
+    const svg = btn.querySelector('svg');
+    if (svg) {
+      const svgAria = (svg.getAttribute('aria-label') || '').toLowerCase();
+      if (svgAria === 'add' || svgAria.includes('add') || svgAria.includes('adicionar')) return true;
+      if (svg.innerHTML && (svg.innerHTML.includes('19 13') || svg.innerHTML.includes('12 4v16') || svg.innerHTML.includes('11 11V5'))) return true;
+    }
+
+    // Texto de adição
+    if (text === '+' || text.startsWith('+') || lowerText === '+ adicionar' || lowerText === '+ add' || lowerText === 'adicionar' || lowerText === 'add') {
+      return true;
+    }
+
+    // Aria-labels específicos gravados
+    if (
+      aria === 'add_2 criar' || aria.includes('add_2') ||
+      aria.includes('adicionar referência') || aria.includes('adicionar imagem') || aria.includes('anexar imagem')
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
   /**
@@ -1679,12 +1728,6 @@ class FlowMacroEngine {
     // 0. Fecha qualquer banner de onboarding ou tutorial
     this.dismissFlowOnboardingBanners();
 
-    // Se as imagens já estiverem anexadas à barra de comando, não precisa reenviar
-    if (this.hasCharacterChipsAttached()) {
-      this.addLog('ℹ️ Personagens já anexados na barra de prompt.', 'info');
-      return true;
-    }
-
     const activeChars = (this.characters && this.characters.length > 0)
       ? this.characters.filter(c => c.enabled !== false)
       : [];
@@ -1693,98 +1736,88 @@ class FlowMacroEngine {
       return true; // Nenhum personagem configurado, avança imediatamente
     }
 
+    // Se todos os personagens já estiverem anexados à barra de comando, não precisa reenviar
+    if (this.hasCharacterChipsAttached()) {
+      this.addLog(`ℹ️ Todos os ${activeChars.length} personagens já anexados na barra de prompt.`, 'info');
+      return true;
+    }
+
     this.addLog(`🎭 [Passos 2, 3 e 4] Anexando ${activeChars.length} personagem(ns) de referência no FLOW...`, 'info');
 
-    // Itera sequencialmente sobre cada personagem ativo (Passos 2 -> 3 -> 4, retornando ao 2 se > 1)
+    // Itera sequencialmente sobre cada personagem ativo (Passos 2 -> 3 -> 4)
     for (let cIdx = 0; cIdx < activeChars.length; cIdx++) {
       const char = activeChars[cIdx];
-      const rawName = (char.name || char.tag || '').trim();
-      const cleanName = rawName.replace(/^char_/i, '').replace(/\.(png|jpg|jpeg|webp)$/i, '').replace(/_/g, ' ').trim();
-      const charNameQuery = (char.tag || cleanName || rawName).toLowerCase();
       const avatarData = char.avatarUrl || char.avatar;
 
       this.currentAction = `🎭 Anexando personagem: ${char.name} (${cIdx + 1}/${activeChars.length})...`;
       this.notify();
 
-      // =========================================================================
-      // RETRY LOOP: Tenta até 3 vezes o ciclo completo (Passos 2→3→4) para cada
-      // personagem, garantindo que o chip seja de fato anexado à barra de prompt.
-      // =========================================================================
+      // Verifica se este personagem específico já está presente na barra de prompt
+      const existingChips = this.getPromptAttachedChips();
+      if (existingChips.length >= (cIdx + 1)) {
+        this.addLog(`ℹ️ Personagem [${char.name}] (${cIdx + 1}/${activeChars.length}) já anexado ao prompt.`, 'info');
+        continue;
+      }
+
       let chipConfirmedForChar = false;
 
       for (let attempt = 0; attempt < 3; attempt++) {
         if (attempt > 0) {
           this.addLog(`🔄 [Tentativa ${attempt + 1}/3] Re-tentando anexar [${char.name}]...`, 'warning');
-          // Aguarda antes de re-tentar para o FLOW estabilizar
           await new Promise(r => setTimeout(r, 1000));
         }
 
-        // =========================================================================
-        // Passo 2: Clicar no botão "+" na barra de prompt do FLOW
-        // =========================================================================
         this.dismissFlowOnboardingBanners();
-        const plusBtn = this.findPlusButton();
-        if (!plusBtn) {
-          this.addLog('⚠️ [Passo 2] Botão "+" da barra de prompt não encontrado.', 'warning');
-          if (attempt < 2) continue; // Tenta novamente
-          return false;
-        }
-
-        this.addLog(`➕ [Passo 2] Clicando no botão "+" para anexar [${char.name}] (${cIdx + 1}/${activeChars.length})...`, 'info');
-        this.simulateClick(plusBtn);
-
-        // Aguarda o modal de recursos abrir e estabilizar no DOM
-        let dialogContainer = null;
-        for (let w = 0; w < 20; w++) {
-          dialogContainer = Array.from(document.querySelectorAll([
-            '[role="dialog"]',
-            '[role="menu"]',
-            '[role="listbox"]',
-            '[class*="modal" i]',
-            '[class*="popover" i]',
-            '[class*="picker" i]',
-            '[class*="drawer" i]',
-            '[class*="sheet" i]',
-            '[class*="panel" i]',
-            '[data-radix-popper-content-wrapper]',
-            'div:has(input[placeholder*="Pesquisar" i])',
-            'div:has(input[placeholder*="Search" i])',
-            'div:has(input[placeholder*="Buscar" i])'
-          ].join(', '))).find(el => FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]'));
-
-          if (dialogContainer) break;
-          await new Promise(r => setTimeout(r, 250));
-        }
-
-        if (!dialogContainer) {
-          this.addLog('⚠️ Modal de recursos do FLOW não abriu após clicar em "+".', 'warning');
-          if (attempt < 2) continue;
-          return false;
-        }
-
-        await this.stepDelay(null, 'Modal aberto. Buscando personagem na biblioteca...');
 
         // =========================================================================
-        // Passo 3: Carregar imagem na biblioteca do FLOW (Apenas se ainda não estiver na biblioteca)
-        // Regra do Usuário: Não reenviar se a biblioteca já tiver a imagem.
+        // Passo 2: Garantir que a biblioteca/galeria de mídia do FLOW está aberta
+        // Se já estiver aberta na tela (por exemplo, do personagem anterior),
+        // NÃO clica no "+" para não fechar/alternar o drawer!
         // =========================================================================
+        let libraryOpen = this.isFlowLibraryOpen();
 
-        // 3.0: Verifica se já existem itens/imagens na lista de recursos (Virtuoso)
-        const virtuosoItems = Array.from(dialogContainer.querySelectorAll([
-          '[data-testid="virtuoso-item-list"] > div',
-          '[data-testid="virtuoso-item-list"] div.sc-b0e5-14',
-          'div.sc-b0e5-14',
-          'div.sc-a0e2840-0'
-        ].join(', '))).filter(el => FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]'));
+        if (!libraryOpen) {
+          const plusBtn = this.findPlusButton();
+          if (!plusBtn) {
+            this.addLog('⚠️ [Passo 2] Botão "+" da barra de prompt não encontrado.', 'warning');
+            if (attempt < 2) continue;
+            return false;
+          }
 
-        const libraryHasItemForChar = virtuosoItems.length > cIdx;
-        const alreadyUploadedThisSession = this.uploadedAvatarsInFlow && this.uploadedAvatarsInFlow.has(char.name);
+          this.addLog(`➕ [Passo 2] Clicando no botão "+" para abrir biblioteca para [${char.name}] (${cIdx + 1}/${activeChars.length})...`, 'info');
+          this.simulateClick(plusBtn);
 
-        if (avatarData && avatarData.startsWith('data:') && !libraryHasItemForChar && !alreadyUploadedThisSession) {
+          // Aguarda a biblioteca abrir
+          for (let w = 0; w < 16; w++) {
+            await new Promise(r => setTimeout(r, 250));
+            if (this.isFlowLibraryOpen()) {
+              libraryOpen = true;
+              break;
+            }
+          }
+
+          if (!libraryOpen) {
+            this.addLog('⚠️ Biblioteca do FLOW não abriu após clicar em "+".', 'warning');
+            if (attempt < 2) continue;
+            return false;
+          }
+        } else {
+          this.addLog(`📂 [Passo 2] Biblioteca do FLOW já aberta. Selecionando personagem [${char.name}]...`, 'info');
+        }
+
+        await this.stepDelay(null, `Buscando imagem de [${char.name}] na biblioteca...`);
+
+        // =========================================================================
+        // Passo 3: Upload do personagem se a biblioteca ainda não tiver cards suficientes
+        // =========================================================================
+        let mediaCards = this.getLibraryMediaCards();
+        const hasCardForThisChar = mediaCards.length > cIdx;
+
+        if (avatarData && avatarData.startsWith('data:') && !hasCardForThisChar) {
           try {
-            // Localiza ou abre o seletor de arquivos (input[type="file"])
-            const uploadBtn = Array.from(dialogContainer.querySelectorAll('button, [role="button"]')).find(b => {
-              if (!FlowMacroEngine.isElementVisible(b)) return false;
+            // Localiza botão de upload ("Enviar mídia" / "Upload")
+            const uploadBtn = Array.from(document.querySelectorAll('button, [role="button"]')).find(b => {
+              if (!FlowMacroEngine.isElementVisible(b) || !FlowMacroEngine.isSafeToClick(b)) return false;
               const t = (b.textContent || b.innerText || '').toLowerCase();
               const aria = (b.getAttribute('aria-label') || '').toLowerCase();
               return t.includes('enviar mídia') || t.includes('enviar media') || t.includes('upload') || aria.includes('enviar');
@@ -1794,9 +1827,9 @@ class FlowMacroEngine {
               await new Promise(r => setTimeout(r, 400));
             }
 
-            const fileInput = dialogContainer.querySelector('input[type="file"]') || document.querySelector('body > input[type="file"], input[type="file"]');
+            const fileInput = document.querySelector('input[type="file"]:not([id*="fd-"])');
             if (fileInput) {
-              this.addLog(`📤 [Passo 3] Enviando imagem de [${char.name}] para o FLOW (1ª vez)...`, 'info');
+              this.addLog(`📤 [Passo 3] Enviando imagem de [${char.name}] para a biblioteca do FLOW...`, 'info');
               const blob = await fetch(avatarData).then(r => r.blob());
               const file = new File([blob], `${char.name || 'char'}_${cIdx + 1}.jpeg`, { type: blob.type || 'image/jpeg' });
               const dt = new DataTransfer();
@@ -1805,63 +1838,39 @@ class FlowMacroEngine {
               fileInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
               fileInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
 
-              // Marca como enviado nesta sessão para nunca reenviar
-              if (!this.uploadedAvatarsInFlow) this.uploadedAvatarsInFlow = new Set();
-              this.uploadedAvatarsInFlow.add(char.name);
+              // Aguarda ativamente o novo card aparecer na biblioteca (até 12s)
+              this.addLog('⏳ [Passo 3] Imagem enviada! Aguardando o FLOW processar e exibir na galeria...', 'info');
+              for (let pw = 0; pw < 24; pw++) {
+                await new Promise(r => setTimeout(r, 500));
+                mediaCards = this.getLibraryMediaCards();
+                if (mediaCards.length > cIdx) break;
+              }
 
-              // ESPERA SILENCIOSA: Aguarda o FLOW processar e renderizar
-              this.addLog('⏳ [Passo 3] Imagem enviada! Aguardando o FLOW exibir na biblioteca...', 'info');
-              await new Promise(r => setTimeout(r, 3000));
+              if (this.uploadedAvatarsInFlow) this.uploadedAvatarsInFlow.add(char.name);
             }
           } catch (err) {
             console.warn('[FLOW Macro] Aviso no upload de avatar:', err);
           }
-        } else if (libraryHasItemForChar || alreadyUploadedThisSession) {
-          this.addLog(`ℹ️ [Passo 3] Imagem de [${char.name}] já disponível na biblioteca do FLOW. Pulando upload repetido.`, 'info');
-          await new Promise(r => setTimeout(r, 500));
-        } else {
-          await new Promise(r => setTimeout(r, 600));
         }
 
-        // =========================================================================
-        // Passo 4: Clicar no card do personagem na biblioteca (DevTools Recorder exato)
-        // Seletor gravado: [data-testid='virtuoso-item-list'] > div:nth-of-type(1) div.sc-b0e5-14
-        // =========================================================================
+        // Atualiza a lista de cards
+        mediaCards = this.getLibraryMediaCards();
 
+        // =========================================================================
+        // Passo 4: Clicar no card correspondente ao personagem atual
+        // =========================================================================
         let targetCard = null;
-        for (let cWait = 0; cWait < 15; cWait++) {
-          const cardCandidateSelectors = [
-            `[data-testid='virtuoso-item-list'] > div:nth-of-type(${cIdx + 1}) div.sc-b0e5-14`,
-            `[data-testid='virtuoso-item-list'] > div:nth-of-type(${cIdx + 1})`,
-            `[data-testid='virtuoso-item-list'] div.sc-b0e5-14`,
-            `[data-testid='virtuoso-item-list'] > div:nth-of-type(1) div.sc-b0e5-14`,
-            `[data-testid='virtuoso-item-list'] > div:nth-of-type(1)`,
-            `div.sc-b0e5-14`,
-            `[data-testid='virtuoso-item-list'] img`
-          ];
-
-          for (const sel of cardCandidateSelectors) {
-            const el = dialogContainer.querySelector(sel);
-            if (el && FlowMacroEngine.isElementVisible(el)) {
-              targetCard = el;
-              break;
-            }
+        for (let cWait = 0; cWait < 12; cWait++) {
+          mediaCards = this.getLibraryMediaCards();
+          if (cIdx < mediaCards.length) {
+            targetCard = mediaCards[cIdx];
+            break;
           }
 
-          if (targetCard) break;
-
-          // Fallback: primeira imagem visível da biblioteca
-          const libraryImgs = Array.from(dialogContainer.querySelectorAll('img')).filter(img => {
-            if (!FlowMacroEngine.isElementVisible(img)) return false;
-            if (img.closest('[id*="fd-"], [class*="fd-"]')) return false;
-            const rect = img.getBoundingClientRect();
-            if (rect.width < 35 || rect.height < 35) return false;
-            const src = (img.src || '').toLowerCase();
-            return !src.includes('googleusercontent.com/a/') && !src.includes('avatar');
-          });
-
-          if (libraryImgs.length > 0) {
-            targetCard = libraryImgs[cIdx] || libraryImgs[0];
+          // Busca pelo seletor indexado gravado no DevTools
+          const nthCard = document.querySelector(`[data-testid='virtuoso-item-list'] > div:nth-of-type(${cIdx + 1}) div.sc-b0e5-14, [data-testid='virtuoso-item-list'] > div:nth-of-type(${cIdx + 1})`);
+          if (nthCard && FlowMacroEngine.isElementVisible(nthCard)) {
+            targetCard = nthCard;
             break;
           }
 
@@ -1869,9 +1878,8 @@ class FlowMacroEngine {
         }
 
         if (targetCard) {
-          this.addLog(`🎯 [Passo 4] Clicando com botão esquerdo uma única vez no card de [${char.name}] na biblioteca...`, 'info');
+          this.addLog(`🎯 [Passo 4] Clicando com botão esquerdo uma única vez no card de [${char.name}] (${cIdx + 1}/${activeChars.length})...`, 'info');
 
-          // Localiza o elemento alvo específico gravado no DevTools (div.sc-b0e5-14 ou imagem/card)
           const elToClick = targetCard.matches('div.sc-b0e5-14')
             ? targetCard
             : (targetCard.querySelector('div.sc-b0e5-14') || targetCard);
@@ -1879,10 +1887,8 @@ class FlowMacroEngine {
           elToClick.scrollIntoView({ behavior: 'instant', block: 'center' });
           if (elToClick.focus) elToClick.focus();
 
-          // Dispara um ÚNICO clique com botão esquerdo (conforme instrução e gravação do usuário)
           this.simulateClick(elToClick);
 
-          // Dispara o manipulador React do elemento caso presente
           try {
             const propKey = Object.keys(elToClick).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
             if (propKey && elToClick[propKey] && typeof elToClick[propKey].onClick === 'function') {
@@ -1892,14 +1898,16 @@ class FlowMacroEngine {
 
           await new Promise(r => setTimeout(r, 600));
         } else {
-          this.addLog(`⚠️ [Passo 4] Card de imagem não localizado na biblioteca do FLOW.`, 'warning');
+          this.addLog(`⚠️ [Passo 4] Card para [${char.name}] não encontrado na biblioteca. Tentativa ${attempt + 1}/3.`, 'warning');
+          if (attempt < 2) continue;
+          return false;
         }
 
         // =========================================================================
-        // 4.3: Detectar e clicar no botão "Incluir no comando" (DevTools Recorder: div.sc-4da33547-5 button)
+        // 4.3: Detectar e clicar no botão "Incluir no comando"
         // =========================================================================
         let includeBtn = null;
-        for (let bWait = 0; bWait < 8; bWait++) {
+        for (let bWait = 0; bWait < 12; bWait++) {
           const exactBtn = document.querySelector([
             'div.sc-4da33547-5 button',
             'button.gecFQL',
@@ -1911,15 +1919,13 @@ class FlowMacroEngine {
             'button[aria-label*="incluir no prompt" i]'
           ].join(', '));
 
-          if (exactBtn && FlowMacroEngine.isElementVisible(exactBtn) && !exactBtn.disabled) {
+          if (exactBtn && FlowMacroEngine.isElementVisible(exactBtn) && !exactBtn.disabled && FlowMacroEngine.isSafeToClick(exactBtn)) {
             includeBtn = exactBtn;
             break;
           }
 
-          // Fallback textual universal
           const allButtons = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
-            if (!FlowMacroEngine.isElementVisible(b)) return false;
-            if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
+            if (!FlowMacroEngine.isElementVisible(b) || !FlowMacroEngine.isSafeToClick(b)) return false;
             return true;
           });
 
@@ -1946,7 +1952,6 @@ class FlowMacroEngine {
           const targetToClick = overlay || includeBtn;
           this.simulateClick(targetToClick);
 
-          // Dispara também o handler React
           [includeBtn, overlay].filter(Boolean).forEach(el => {
             try {
               const propKey = Object.keys(el).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
@@ -1957,77 +1962,46 @@ class FlowMacroEngine {
           });
 
           await new Promise(r => setTimeout(r, 800));
-        } else {
-          this.addLog(`ℹ️ [Passo 4] Imagem anexada diretamente pelo clique no card.`, 'info');
         }
 
         // =========================================================================
-        // 4.4: Validação se o personagem foi anexado à barra de comando
+        // 4.4: Validação se o personagem foi anexado à barra de comando (STRICT CHECK)
+        // Requer estritamente promptChips.length >= (cIdx + 1)
         // =========================================================================
         this.addLog(`⏳ [Passo 4] Validando anexo do personagem [${char.name}] na barra de comando...`, 'info');
         let chipAttached = false;
 
-        for (let chk = 0; chk < 12; chk++) {
-          // 1. Se o modal/drawer fechou automaticamente após o clique, confirma o anexo!
-          if (!FlowMacroEngine.isElementVisible(dialogContainer)) {
+        for (let chk = 0; chk < 15; chk++) {
+          const promptChips = this.getPromptAttachedChips();
+
+          // Validação estrita: exige que a contagem atinja o índice atual (1 para o 1º, 2 para o 2º, etc.)
+          if (promptChips.length >= (cIdx + 1)) {
             chipAttached = true;
             break;
-          }
-
-          // 2. Verifica se chips ou miniaturas apareceram na barra de comando
-          const promptContainer = this.getPromptContainer() || document.querySelector('form, footer, div.sc-5c3af813-1');
-          if (promptContainer) {
-            const promptChips = Array.from(promptContainer.querySelectorAll([
-              '[data-slate-node="element"]:has(img)',
-              '[data-type*="ingredient" i]',
-              '[data-type*="mention" i]',
-              'div[class*="chip" i]:has(img)',
-              'div[class*="pill" i]:has(img)',
-              'div[class*="ingredient" i]',
-              'div[class*="asset" i]:has(img)',
-              'button[class*="chip" i]',
-              'span[class*="chip" i]:has(img)',
-              'img[alt*="cerebro" i]',
-              'img[alt*="cora" i]',
-              'img[alt*="char" i]',
-              'img[src*="googleusercontent"]'
-            ].join(', '))).filter(el => {
-              if (!FlowMacroEngine.isElementVisible(el)) return false;
-              if (dialogContainer && dialogContainer.contains(el)) return false;
-              if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-              if (el.closest('button[aria-label*="Criar" i]') || el.closest('button[aria-label*="add" i]')) return false;
-              return true;
-            });
-
-            if (promptChips.length >= (cIdx + 1) || promptChips.length > 0) {
-              chipAttached = true;
-              break;
-            }
           }
 
           await new Promise(r => setTimeout(r, 400));
         }
 
         if (chipAttached) {
-          this.addLog(`✅ [Passo 4 Concluído] Personagem [${char.name}] anexado com sucesso ao comando!`, 'success');
+          this.addLog(`✅ [Passo 4 Concluído] Personagem [${char.name}] (${cIdx + 1}/${activeChars.length}) anexado com sucesso ao comando!`, 'success');
           chipConfirmedForChar = true;
 
-          // Se o modal ainda estiver visível, fecha com segurança
-          this.closeResourceModal(dialogContainer);
+          // Se for o ÚLTIMO personagem, fecha qualquer modal/drawer de detalhes remanescente
+          if (cIdx === activeChars.length - 1) {
+            this.closeResourceModal();
+          }
+
           await new Promise(r => setTimeout(r, 500));
           break; // Sai do retry loop com sucesso!
         } else {
           this.addLog(`⚠️ [Passo 4] Anexo de [${char.name}] não confirmado na barra de prompt. Tentativa ${attempt + 1}/3.`, 'warning');
-
-          // Fecha o modal antes de re-tentar
-          this.closeResourceModal(dialogContainer);
-          await new Promise(r => setTimeout(r, 500));
+          await new Promise(r => setTimeout(r, 600));
         }
       } // fim do retry loop (3 tentativas)
 
-      // Se após 3 tentativas o chip não foi confirmado, INTERROMPE com erro claro
       if (!chipConfirmedForChar) {
-        this.addLog(`❌ [ERRO CRÍTICO] Não foi possível anexar o personagem [${char.name}] após 3 tentativas. O macro NÃO prosseguirá sem os personagens de referência.`, 'error');
+        this.addLog(`❌ [ERRO CRÍTICO] Não foi possível anexar o personagem [${char.name}] após 3 tentativas. O macro NÃO prosseguirá sem todos os personagens de referência.`, 'error');
         this.stop();
         return false;
       }
@@ -2039,17 +2013,25 @@ class FlowMacroEngine {
       await FlowMacroEngine.ensureOnFlowCanvas();
     }
 
+    this.addLog(`✨ Todos os ${activeChars.length} personagem(ns) confirmados na barra de comando!`, 'success');
     return true;
   }
 
   /**
-   * Fecha o modal de recursos do FLOW de forma segura (botão Fechar / X, nunca Escape)
-   * @param {HTMLElement} dialogContainer - Container do modal
+   * Fecha qualquer detalhe ou modal de recursos de forma segura (sem clicar em filtros ou cabeçalho)
+   * @param {HTMLElement} [dialogContainer] - Container opcional
    */
   closeResourceModal(dialogContainer) {
     try {
       if (!dialogContainer) {
-        dialogContainer = document.querySelector('[role="dialog"], [class*="modal" i], [class*="drawer" i], [class*="panel" i]');
+        // Seleciona apenas modais/drawers legítimos (NUNCA containers com input de busca)
+        const candidates = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal" i], [class*="drawer" i], [class*="sheet" i]')).filter(el => {
+          if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+          // Rejeita se contiver a barra de pesquisa do projeto (cabeçalho)
+          if (el.querySelector('input[placeholder*="Pesquisar" i], input[placeholder*="Search" i]')) return false;
+          return true;
+        });
+        if (candidates.length > 0) dialogContainer = candidates[0];
       }
       if (!dialogContainer) return;
 
@@ -2058,14 +2040,14 @@ class FlowMacroEngine {
         ? dialogContainer.querySelector('button[aria-label*="fechar" i], button[aria-label*="close" i], button[aria-label*="dismiss" i], button.sc-close, [data-testid*="close" i]')
         : null;
 
-      if (closeBtn && FlowMacroEngine.isElementVisible(closeBtn)) {
+      if (closeBtn && FlowMacroEngine.isElementVisible(closeBtn) && FlowMacroEngine.isSafeToClick(closeBtn)) {
         this.simulateClick(closeBtn);
         return;
       }
 
       // 2. Busca botão de fechar genérico em todo o modal
       const allCloseButtons = Array.from(dialogContainer.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
-        if (!FlowMacroEngine.isElementVisible(b)) return false;
+        if (!FlowMacroEngine.isElementVisible(b) || !FlowMacroEngine.isSafeToClick(b)) return false;
         const t = (b.textContent || b.innerText || '').trim().toLowerCase();
         const aria = (b.getAttribute('aria-label') || '').toLowerCase();
         return t === 'close' || t === 'fechar' || t === '✕' || t === '×' || t === 'x' ||
@@ -2079,12 +2061,12 @@ class FlowMacroEngine {
 
       // 3. Clica fora do modal (no backdrop/overlay)
       const backdrop = document.querySelector('[class*="backdrop" i], [class*="overlay" i], [class*="scrim" i]');
-      if (backdrop && FlowMacroEngine.isElementVisible(backdrop)) {
+      if (backdrop && FlowMacroEngine.isElementVisible(backdrop) && FlowMacroEngine.isSafeToClick(backdrop)) {
         backdrop.click();
         return;
       }
 
-      // 4. Se nada funcionar, usa Escape como último recurso absoluto
+      // 4. Se nada funcionar, usa Escape como último recurso
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
     } catch (e) { /* ignora */ }
   }
@@ -3164,6 +3146,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       if (this.currentIndex === 0) {
         this.settingsConfiguredForProject = false;
         this.lastConfiguredProjectId = null;
+        this.uploadedAvatarsInFlow = new Set();
       }
     }
 
@@ -3327,10 +3310,44 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
     // Nunca clica dentro da interface da própria extensão
     if (element.closest('[id*="fd-"], [class*="fd-"]')) return false;
 
+    // NUNCA clica em filtros, ordenação ou ferramentas de busca do FLOW
+    const text = (element.textContent || element.innerText || '').toLowerCase().trim();
+    const aria = (element.getAttribute('aria-label') || '').toLowerCase();
+    const title = (element.getAttribute('title') || '').toLowerCase();
+    const testid = (element.getAttribute('data-testid') || '').toLowerCase();
+
+    if (
+      aria.includes('filtro') || aria.includes('filter') || aria.includes('filtrar') ||
+      title.includes('filtro') || title.includes('filter') || title.includes('filtrar') ||
+      aria.includes('ordenar') || aria.includes('sort') ||
+      aria.includes('pesquisar') || aria.includes('search') ||
+      text === 'filtros' || text === 'filter' || text === 'filters' ||
+      testid.includes('filter') || testid.includes('search')
+    ) {
+      return false;
+    }
+
+    // Verifica se possui ícones de filtro ou busca do Google Symbols
+    const symbol = element.querySelector('.google-symbols, .material-symbols-outlined, i, span');
+    if (symbol) {
+      const sym = (symbol.textContent || symbol.innerText || '').trim().toLowerCase();
+      if (['filter_list', 'tune', 'filter_alt', 'search', 'sort'].includes(sym)) {
+        return false;
+      }
+    }
+
     // Nunca clica em menus de navegação ou barra lateral durante a geração
     if (element.closest('nav, aside, header, [role="navigation"], [class*="sidebar" i], [class*="navbar" i]')) {
       return false;
     }
+
+    // Bloqueia qualquer elemento posicionado no cabeçalho superior (Y < 120px)
+    try {
+      const rect = element.getBoundingClientRect();
+      if (rect.top < 120 && rect.left < window.innerWidth - 80) {
+        return false;
+      }
+    } catch (e) {}
 
     // Nunca clica em links que saiam do editor para /characters, /assets, /gallery, etc.
     const aTag = element.closest('a');
