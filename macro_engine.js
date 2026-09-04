@@ -1486,52 +1486,25 @@ class FlowMacroEngine {
     const promptInput = this.findPromptInput();
     if (!promptInput) return null;
 
-    // 1. Sobe na árvore de pais procurando o container que engloba o editor e os controles inferiores
+    // 1. Sobe na árvore de pais procurando o container pai mais adequado
     let curr = promptInput.parentElement;
     let bestContainer = curr;
     let depth = 0;
 
-    while (curr && curr !== document.body && depth < 14) {
+    while (curr && curr !== document.body && depth < 12) {
       if (curr.closest && curr.closest('[id*="fd-"], [class*="fd-"]')) {
-        break; // Ignora o modal da extensão
+        break;
       }
-      const rect = curr.getBoundingClientRect();
-      if (rect.width > 280 && rect.height >= 60 && rect.height <= 600) {
-        const text = (curr.textContent || '').toLowerCase();
-        const hasControls = text.includes('agente') || text.includes('banana') || text.includes('criar') ||
-                            text.includes('9:16') || text.includes('16:9') || text.includes('1:1');
-        const hasSubmitLike = curr.querySelector('button[aria-label*="Criar" i], button[aria-label*="arrow_forward" i], div.sc-5c3af813-10, button.sc-e8425ea6-0');
-        const btns = curr.querySelectorAll('button, [role="button"], div[tabindex="0"]');
-
-        if (btns.length >= 2 && (hasControls || hasSubmitLike)) {
+      const btns = curr.querySelectorAll('button, [role="button"], div[tabindex="0"]');
+      if (btns.length >= 2) {
+        bestContainer = curr;
+        const rect = curr.getBoundingClientRect();
+        if (rect.width > 280) {
           return curr;
-        }
-
-        if (btns.length >= 2) {
-          bestContainer = curr;
         }
       }
       curr = curr.parentElement;
       depth++;
-    }
-
-    // 2. Fallback para seletores semânticos
-    const container = promptInput.closest([
-      'form',
-      'footer',
-      '[class*="prompt" i]',
-      '[class*="composer" i]',
-      '[class*="dock" i]',
-      '[class*="bottom" i]',
-      '[class*="toolbar" i]',
-      '[class*="card" i]',
-      '[data-testid*="prompt" i]',
-      '[data-testid*="composer" i]',
-      '[data-testid*="bottom" i]'
-    ].join(', '));
-
-    if (container && container !== document.body && !container.closest('[id*="fd-"], [class*="fd-"]')) {
-      return container;
     }
 
     return bestContainer;
@@ -1543,123 +1516,39 @@ class FlowMacroEngine {
    */
   getPromptAttachedChips() {
     const promptContainer = this.getPromptContainer();
-    const promptInput = this.findPromptInput();
+    if (!promptContainer || promptContainer === document.body) return [];
 
-    // 1. Identifica os containers principais da barra de comando
-    const searchContainers = new Set();
-    if (promptContainer && promptContainer !== document.body) {
-      searchContainers.add(promptContainer);
-      if (promptContainer.parentElement && promptContainer.parentElement !== document.body) {
-        const pRect = promptContainer.parentElement.getBoundingClientRect();
-        if (pRect.height < 650 && pRect.width < window.innerWidth * 0.98) {
-          searchContainers.add(promptContainer.parentElement);
-        }
-      }
-    }
+    // 1. Busca qualquer <img> visível dentro do promptContainer que seja um chip/miniatura
+    const imgs = Array.from(promptContainer.querySelectorAll('img')).filter(img => {
+      if (!FlowMacroEngine.isElementVisible(img)) return false;
+      if (img.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const rect = img.getBoundingClientRect();
+      if (rect.width < 12 || rect.width > 250 || rect.height < 12 || rect.height > 250) return false;
+      const src = img.getAttribute('src') || img.src || '';
+      if (!src || src.length < 5) return false;
+      return true;
+    });
 
-    if (searchContainers.size === 0 && promptInput) {
-      let p = promptInput.parentElement;
-      for (let i = 0; i < 6 && p && p !== document.body; i++) {
-        searchContainers.add(p);
-        p = p.parentElement;
-      }
-    }
+    if (imgs.length > 0) return imgs;
 
-    const chipsFound = new Set();
+    // 2. Seletores semânticos clássicos
+    const semanticChips = Array.from(promptContainer.querySelectorAll([
+      '[data-slate-node="element"]:has(img)',
+      '[data-type*="ingredient" i]',
+      '[data-type*="mention" i]',
+      'div[class*="chip" i]:has(img)',
+      'div[class*="pill" i]:has(img)',
+      'div[class*="ingredient" i]',
+      'div[class*="asset" i]:has(img)',
+      'span[class*="chip" i]:has(img)',
+      'span[class*="ingredient" i]'
+    ].join(', '))).filter(el => {
+      if (!FlowMacroEngine.isElementVisible(el)) return false;
+      if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      return true;
+    });
 
-    // 2. Busca miniaturas <img> legítimas nos containers da barra de prompt
-    for (const container of searchContainers) {
-      const imgs = Array.from(container.querySelectorAll('img')).filter(img => {
-        if (!FlowMacroEngine.isElementVisible(img)) return false;
-        // Ignora elementos da extensão FLOW Downloader Pro
-        if (img.closest('[id*="fd-"], [class*="fd-"]')) return false;
-        // Ignora se estiver dentro de botões de envio ou controle
-        if (img.closest('button[aria-label*="Criar" i], button[aria-label*="arrow_forward" i]')) return false;
-
-        const rect = img.getBoundingClientRect();
-        // Chips/miniaturas de anexos no FLOW têm entre 16px e 250px
-        if (rect.width < 16 || rect.width > 250 || rect.height < 16 || rect.height > 250) return false;
-
-        // Fonte válida de imagem (blob, http/https, data URL)
-        const src = img.getAttribute('src') || img.src || '';
-        if (!src || src.length < 5) return false;
-        if (src.includes('data:image/gif;base64,R0lGOD') && rect.width <= 16) return false;
-
-        return true;
-      });
-
-      for (const img of imgs) {
-        chipsFound.add(img);
-      }
-    }
-
-    // 3. Busca por containers com background-image (caso o FLOW renderize via div estilizada)
-    if (chipsFound.size === 0) {
-      for (const container of searchContainers) {
-        const bgElements = Array.from(container.querySelectorAll('div, span')).filter(el => {
-          if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-          if (el.querySelector('img')) return false; // Evita duplicação se houver <img> interno
-          const rect = el.getBoundingClientRect();
-          if (rect.width < 16 || rect.width > 250 || rect.height < 16 || rect.height > 250) return false;
-          try {
-            const bg = window.getComputedStyle(el).backgroundImage;
-            return bg && bg.startsWith('url(') && !bg.includes('none');
-          } catch (e) {
-            return false;
-          }
-        });
-
-        for (const el of bgElements) {
-          chipsFound.add(el);
-        }
-      }
-    }
-
-    // 4. Seletores semânticos complementares
-    for (const container of searchContainers) {
-      const semanticEls = Array.from(container.querySelectorAll([
-        '[data-slate-node="element"]:has(img)',
-        '[data-type*="ingredient" i]',
-        '[data-type*="mention" i]',
-        'div[class*="chip" i]:has(img)',
-        'div[class*="pill" i]:has(img)',
-        'div[class*="ingredient" i]',
-        'div[class*="asset" i]:has(img)',
-        'span[class*="chip" i]:has(img)',
-        'span[class*="ingredient" i]'
-      ].join(', '))).filter(el => {
-        if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-        if (el.closest('button[aria-label*="Criar" i]') || el.closest('button[aria-label*="add" i]')) return false;
-        return true;
-      });
-
-      for (const el of semanticEls) {
-        const alreadyCovered = Array.from(chipsFound).some(c => el.contains(c) || c.contains(el));
-        if (!alreadyCovered) {
-          chipsFound.add(el);
-        }
-      }
-    }
-
-    // 5. Fallback geométrico infalível na área inferior do dock de prompt (x >= 220, bottom >= innerHeight * 0.35)
-    if (chipsFound.size === 0) {
-      const geometricImgs = Array.from(document.querySelectorAll('img')).filter(img => {
-        if (!FlowMacroEngine.isElementVisible(img) || img.closest('[id*="fd-"], [class*="fd-"]')) return false;
-        if (img.closest('button[aria-label*="Criar" i]')) return false;
-        const rect = img.getBoundingClientRect();
-        if (rect.width < 16 || rect.width > 220 || rect.height < 16 || rect.height > 220) return false;
-        if (rect.bottom < window.innerHeight * 0.35) return false;
-        if (rect.left < 220) return false; // Ignora cards da barra lateral de biblioteca (x < 220)
-        const src = img.getAttribute('src') || img.src || '';
-        return src.length > 5 && !src.includes('data:image/gif;base64,R0lGOD');
-      });
-
-      for (const img of geometricImgs) {
-        chipsFound.add(img);
-      }
-    }
-
-    return Array.from(chipsFound);
+    return semanticChips;
   }
 
   /**
@@ -2189,53 +2078,43 @@ class FlowMacroEngine {
    * @returns {HTMLElement|null}
    */
   findIncludeInCommandButton() {
-    // 1. Busca por todos os botões visíveis fora do modal da extensão
-    const allButtons = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
+    // 1. Seletores CSS exatos do botão "Incluir no comando" (gravados no DevTools)
+    const exactSelectors = [
+      'div.sc-4da33547-5 button',
+      'button[aria-label*="incluir no comando" i]',
+      'button[aria-label*="incluir no prompt" i]'
+    ];
+
+    for (const sel of exactSelectors) {
+      const btn = document.querySelector(sel);
+      if (btn && FlowMacroEngine.isElementVisible(btn) && !btn.closest('[id*="fd-"], [class*="fd-"]')) {
+        return btn;
+      }
+    }
+
+    // 2. Busca textual: SOMENTE usa textContent PRÓPRIO do botão (não de filhos distantes)
+    const allButtons = Array.from(document.querySelectorAll('button, [role="button"]')).filter(b => {
       if (!FlowMacroEngine.isElementVisible(b)) return false;
       if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
       return true;
     });
 
-    const isIncludeMatch = (b) => {
+    return allButtons.find(b => {
+      // Usa textContent limpo do botão
       const t = (b.textContent || b.innerText || '').toLowerCase().trim();
       const aria = (b.getAttribute('aria-label') || '').toLowerCase();
 
-      // REJEIÇÃO ESTRITA: Botões que NUNCA são o botão de inclusão (ex: Baixar, Excluir, Fechar, Filtros)
-      if (t.includes('baixar') || aria.includes('baixar') || t.includes('download') || aria.includes('download')) return false;
-      if (t.includes('excluir') || aria.includes('excluir') || t.includes('cancelar') || aria.includes('cancelar') || t.includes('lixeira') || t.includes('trash') || t.includes('delete')) return false;
-      if (t.includes('fechar') || aria.includes('fechar') || t.includes('close') || t === '✕' || t === '×') return false;
-      if (t.includes('filtros') || aria.includes('filtros') || t.includes('filter')) return false;
-      if (t.includes('novo projeto') || aria.includes('novo projeto') || t.includes('new project')) return false;
-      if (t.includes('agente') || t.includes('banana') || t.includes('criar') || t.includes('gerar') || aria.includes('arrow_forward')) return false;
-
-      // 1. Correspondência textual explícita
-      if (
-        t.includes('incluir no comando') || aria.includes('incluir no comando') ||
-        t.includes('incluir no prompt') || aria.includes('incluir no prompt') ||
-        t.includes('adicionar ao comando') || aria.includes('adicionar ao comando') ||
-        t.includes('adicionar ao prompt') || aria.includes('adicionar ao prompt') ||
-        t.includes('usar no comando') || aria.includes('usar no comando') ||
-        t.includes('usar no prompt') || aria.includes('usar no prompt') ||
-        t.includes('usar imagem') || aria.includes('usar imagem') ||
-        t.includes('use image') || aria.includes('use image') ||
-        t.includes('add to prompt') || aria.includes('add to prompt') ||
-        t.includes('include in prompt') || aria.includes('include in prompt') ||
-        (t.includes('incluir') && (t.includes('comando') || t.includes('prompt') || t.includes('command')))
-      ) {
-        return true;
-      }
-
-      // 2. Se estiver dentro do drawer/painel de detalhes do card selecionado
-      if (b.closest('div.sc-4da33547-5, [class*="drawer" i], [class*="detail" i]')) {
-        if (t === 'incluir' || aria === 'incluir' || t.includes('incluir') || t.includes('usar') || t.includes('adicionar')) {
-          return true;
-        }
-      }
-
-      return false;
-    };
-
-    return allButtons.find(isIncludeMatch) || null;
+      // O botão de inclusão tem texto exato ou muito curto contendo "incluir"
+      return (
+        t === 'incluir no comando' || aria.includes('incluir no comando') ||
+        t === 'incluir no prompt' || aria.includes('incluir no prompt') ||
+        t === 'incluir' ||
+        t === 'adicionar ao comando' ||
+        t === 'usar imagem' ||
+        t === 'use image' ||
+        (t.length < 40 && t.includes('incluir') && (t.includes('comando') || t.includes('prompt')))
+      );
+    }) || null;
   }
 
   /**
@@ -2473,27 +2352,10 @@ class FlowMacroEngine {
         if (targetCard) {
           this.addLog(`🎯 [Passo 4] Clicando no card de [${char.name}] (${cIdx + 1}/${activeChars.length})...`, 'info');
 
-          const imgEl = targetCard.querySelector('img');
-          if (imgEl && FlowMacroEngine.isElementVisible(imgEl)) {
-            this.clickElementWithOverlay(imgEl);
-          }
-          const elToClick = targetCard.matches('div.sc-b0e5-14')
-            ? targetCard
-            : (targetCard.querySelector('div.sc-b0e5-14') || targetCard);
-
+          // Clique único e preciso no card (a imagem na biblioteca)
+          const elToClick = targetCard.querySelector('img') || targetCard.querySelector('div.sc-b0e5-14') || targetCard;
           this.clickElementWithOverlay(elToClick);
-          await new Promise(r => setTimeout(r, 600));
-
-          // Valida se o clique na imagem da biblioteca já anexou o personagem diretamente ao comando
-          if (await this.validateCharacterChipAttached(char, cIdx)) {
-            this.addLog(`✅ [Passo 4 Concluído] Personagem [${char.name}] anexado diretamente ao clicar na imagem da biblioteca!`, 'success');
-            chipConfirmedForChar = true;
-            if (cIdx === activeChars.length - 1) {
-              this.closeResourceModal();
-            }
-            await new Promise(r => setTimeout(r, 500));
-            break;
-          }
+          await new Promise(r => setTimeout(r, 800));
         } else {
           this.addLog(`⚠️ [Passo 4] Card para [${char.name}] não encontrado na biblioteca. Tentativa ${attempt + 1}/3.`, 'warning');
           if (attempt < 2) continue;
@@ -2502,40 +2364,30 @@ class FlowMacroEngine {
         }
 
         // =========================================================================
-        // 4.3: Detectar e aguardar o botão "Incluir no comando" estar ativo e liberado
+        // 4.3: Verificar se já foi anexado diretamente OU buscar "Incluir no comando"
         // =========================================================================
         let includeBtn = null;
-        for (let bWait = 0; bWait < 20; bWait++) {
-          // Verifica se o chip já foi anexado diretamente pelo clique no card (visual ou contagem)
-          if (await this.validateCharacterChipAttached(char, cIdx)) {
-            this.addLog(`ℹ️ [Passo 4] Personagem [${char.name}] já anexado diretamente ao comando pelo card.`, 'info');
-            break;
-          }
-
-          const btn = this.findIncludeInCommandButton();
-          if (btn) {
-            const isDisabled = btn.disabled ||
-                               btn.getAttribute('aria-disabled') === 'true' ||
-                               btn.classList.contains('disabled') ||
-                               btn.getAttribute('disabled') !== null;
-            const btnText = (btn.textContent || '').toLowerCase();
-            const isProcessing = btnText.includes('enviando') || btnText.includes('upload');
-
-            if (!isDisabled && !isProcessing) {
+        const chipsBeforeInclude = this.getPromptAttachedChips();
+        if (chipsBeforeInclude.length >= (cIdx + 1)) {
+          this.addLog(`ℹ️ [Passo 4] Personagem [${char.name}] já anexado diretamente ao comando pelo card.`, 'info');
+        } else {
+          // Busca o botão "Incluir no comando" por até 8 segundos
+          for (let bWait = 0; bWait < 20; bWait++) {
+            const btn = this.findIncludeInCommandButton();
+            if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
               includeBtn = btn;
               break;
-            } else {
-              this.currentAction = `⏳ Aguardando liberação do botão "Incluir no comando" para [${char.name}]...`;
-              this.notify();
             }
-          } else if ((bWait === 4 || bWait === 10) && targetCard) {
-            // Re-clica no card caso o botão de inclusão demore a abrir a gaveta de detalhes
-            this.addLog(`🔄 [Passo 4] Re-selecionando card de [${char.name}]...`, 'info');
-            const elToClick = targetCard.matches('div.sc-b0e5-14') ? targetCard : (targetCard.querySelector('div.sc-b0e5-14') || targetCard.querySelector('img') || targetCard);
-            this.clickElementWithOverlay(elToClick);
-          }
 
-          await new Promise(r => setTimeout(r, 400));
+            // Re-clica no card se necessário
+            if ((bWait === 5 || bWait === 12) && targetCard) {
+              this.addLog(`🔄 [Passo 4] Re-selecionando card de [${char.name}]...`, 'info');
+              const reClick = targetCard.querySelector('img') || targetCard.querySelector('div.sc-b0e5-14') || targetCard;
+              this.clickElementWithOverlay(reClick);
+            }
+
+            await new Promise(r => setTimeout(r, 400));
+          }
         }
 
         if (includeBtn) {
@@ -2547,14 +2399,14 @@ class FlowMacroEngine {
         }
 
         // =========================================================================
-        // 4.4: Validação se o personagem foi anexado à barra de comando (STRICT CHECK)
-        // Requer confirmação por similaridade visual de pixels OU contagem de chips
+        // 4.4: Validação se o personagem foi anexado à barra de comando
         // =========================================================================
         this.addLog(`⏳ [Passo 4] Validando anexo do personagem [${char.name}] na barra de comando...`, 'info');
         let chipAttached = false;
 
-        for (let chk = 0; chk < 20; chk++) {
-          if (await this.validateCharacterChipAttached(char, cIdx)) {
+        for (let chk = 0; chk < 15; chk++) {
+          const promptChips = this.getPromptAttachedChips();
+          if (promptChips.length >= (cIdx + 1)) {
             chipAttached = true;
             break;
           }
