@@ -4511,7 +4511,11 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         if (!isFirstSlideOfCarousel && this.config.reusePreviousCommand !== false) {
           this.currentAction = '🔁 Reutilizando comando do slide anterior...';
           this.notify();
-          reused = await this.reuseLatestCommand();
+          for (let rTry = 0; rTry < 3; rTry++) {
+            reused = await this.reuseLatestCommand();
+            if (reused) break;
+            if (rTry < 2) await new Promise(r => setTimeout(r, 1000));
+          }
           await this.stepDelay(null, 'Aguardando FLOW carregar comando...');
         }
 
@@ -4541,8 +4545,8 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           await this.stepDelay(null, 'Verificando configurações...');
 
           // Passo 1 (Continuação): Verificação de formato de imagem (SOMENTE no 1º slide de cada projeto)
-          // REGRA DE OURO: A verificação de formato de imagem acontece EXCLUSIVAMENTE no 1º slide de cada projeto!
-          if (!this.isCurrentProjectConfigured()) {
+          // REGRA DE OURO: A verificação de formato de imagem acontece EXCLUSIVAMENTE no 1º slide de cada projeto e ANTES dos personagens/envio!
+          if (isFirstSlideOfCarousel && !this.isCurrentProjectConfigured()) {
             this.currentAction = '⚙️ [Passo 1] Verificando configurações de imagem do projeto (1ª vez)...';
             this.notify();
             await this.applyFlowSettings();
