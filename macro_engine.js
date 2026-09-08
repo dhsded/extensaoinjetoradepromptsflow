@@ -1081,10 +1081,21 @@ class FlowMacroEngine {
   static async computeImageSimilarity(imgEl, referenceDataUrl) {
     if (!imgEl || !referenceDataUrl) return 0;
 
+    // Timeout de segurança: evita bloquear a macro por CORS ou imagens lentas
+    const SIMILARITY_TIMEOUT_MS = 3000;
+
     return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(0), SIMILARITY_TIMEOUT_MS);
+
       try {
         const targetSrc = imgEl.getAttribute('src') || imgEl.src || '';
-        if (!targetSrc) return resolve(0);
+        if (!targetSrc) { clearTimeout(timer); return resolve(0); }
+
+        // Rejeita URLs que redirecionam para login do Google (causam CORS)
+        if (targetSrc.includes('accounts.google.com') || targetSrc.includes('/ServiceLogin')) {
+          clearTimeout(timer);
+          return resolve(0);
+        }
 
         const refImg = new Image();
         refImg.crossOrigin = 'anonymous';
@@ -1109,9 +1120,10 @@ class FlowMacroEngine {
                 ctx2.drawImage(imgEl, 0, 0, size, size);
                 const d2 = ctx2.getImageData(0, 0, size, size).data;
                 const sim = FlowMacroEngine.calculatePixelSimilarity(d1, d2);
+                clearTimeout(timer);
                 return resolve(sim);
               } catch (e) {
-                // Cross-origin taint pode ocorrer, continua tentativa via Image()
+                // Cross-origin taint, continua tentativa via Image()
               }
             }
 
@@ -1122,21 +1134,32 @@ class FlowMacroEngine {
                 ctx2.drawImage(domImg, 0, 0, size, size);
                 const d2 = ctx2.getImageData(0, 0, size, size).data;
                 const sim = FlowMacroEngine.calculatePixelSimilarity(d1, d2);
+                clearTimeout(timer);
                 resolve(sim);
               } catch (e) {
+                clearTimeout(timer);
                 resolve(0);
               }
             };
-            domImg.onerror = () => resolve(0);
-            domImg.src = targetSrc;
+            domImg.onerror = () => { clearTimeout(timer); resolve(0); };
+
+            // Rejeita URLs Google que vão redirecionar para login
+            if (targetSrc.includes('googleusercontent.com') && !targetSrc.startsWith('data:')) {
+              // Tenta carregar mas com timeout curto (CORS frequente)
+              domImg.src = targetSrc;
+            } else {
+              domImg.src = targetSrc;
+            }
           } catch (err) {
+            clearTimeout(timer);
             resolve(0);
           }
         };
 
-        refImg.onerror = () => resolve(0);
+        refImg.onerror = () => { clearTimeout(timer); resolve(0); };
         refImg.src = referenceDataUrl;
       } catch (err) {
+        clearTimeout(timer);
         resolve(0);
       }
     });
@@ -5020,6 +5043,19 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
             // Pausa de segurança pós-chips para o React estabilizar completamente
             await new Promise(r => setTimeout(r, 1500));
             this.addLog('✅ Todos os personagens confirmados na barra de prompt. Preparando envio...', 'success');
+
+            // CORREÇÃO CRÍTICA: Verifica se o prompt de texto ainda está presente após anexar personagens
+            // O processo de anexar pode ter limpado/sobrescrito o texto do prompt
+            const postCharInputEl = this.findPromptInput();
+            const postCharText = postCharInputEl ? (postCharInputEl.value || postCharInputEl.innerText || postCharInputEl.textContent || '').trim() : '';
+            if (!postCharText || postCharText.length < 10) {
+              this.addLog('⚠️ Prompt de texto foi removido durante anexação de personagens! Re-inserindo...', 'warning');
+              const composedText = this.composePromptText(item);
+              await this.setPromptInputValue(postCharInputEl, composedText);
+              await new Promise(r => setTimeout(r, 500));
+              this.addLog('📝 Prompt de texto re-inserido com sucesso.', 'info');
+            }
+
             await this.stepDelay(null, 'Validando prompt completo...');
           }
         } else {
