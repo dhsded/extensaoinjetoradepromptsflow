@@ -3490,7 +3490,10 @@ class FlowMacroEngine {
 
         if (includeBtn) {
           this.addLog(`✨ [Passo 4] Botão "Adicionar ao comando" pronto! Clicando...`, 'success');
+          includeBtn.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+          if (includeBtn.focus) includeBtn.focus();
           this.clickElementWithOverlay(includeBtn);
+          try { includeBtn.click(); } catch (e) {}
           await new Promise(r => setTimeout(r, 1000));
         } else {
           this.addLog(`⚠️ [Passo 4] Botão "Adicionar ao comando" não encontrado para [${char.name}].`, 'warning');
@@ -4080,6 +4083,9 @@ class FlowMacroEngine {
       target.dispatchEvent(new MouseEvent('mouseup', eventOpts));
 
       try { target.click(); } catch (e) {}
+      if (target !== element) {
+        try { element.click(); } catch (e) {}
+      }
       return true;
     } catch (e) {
       return false;
