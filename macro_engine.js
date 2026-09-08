@@ -3995,18 +3995,22 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
   }
 
   /**
-   * Retorna a URL limpa da página inicial (Hub) do Google FLOW respeitando o idioma da página
-   * @returns {string} - URL do Hub (ex: "https://labs.google/fx/pt/tools/flow")
+   * Retorna a URL limpa da página inicial (Hub) do Google FLOW respeitando o domínio atual (flow.google.com ou labs.google)
+   * @returns {string} - URL do Hub (ex: "https://flow.google.com/" ou "https://labs.google/fx/pt/tools/flow")
    */
   static getHubUrl() {
-    if (typeof window === 'undefined') return 'https://labs.google/fx/pt/tools/flow';
-    const origin = window.location.origin || 'https://labs.google';
+    if (typeof window === 'undefined') return 'https://flow.google.com/';
+    const origin = window.location.origin || 'https://flow.google.com';
+    const host = (window.location.hostname || '').toLowerCase();
+    if (host.includes('flow.google')) {
+      return `${origin}/`;
+    }
     const pathname = window.location.pathname || '';
     const match = pathname.match(/(\/fx(?:\/[a-zA-Z-]+)?\/tools\/flow)/i);
     if (match) {
       return `${origin}${match[1]}`;
     }
-    return 'https://labs.google/fx/pt/tools/flow';
+    return `${origin}/`;
   }
 
   /**
@@ -4018,10 +4022,11 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
     if (!url || typeof url !== 'string') return true;
     try {
       const parsed = new URL(url, window.location.origin);
-      if (!parsed.hostname.includes('labs.google')) return false;
+      const host = parsed.hostname.toLowerCase();
+      if (!host.includes('flow.google') && !host.includes('labs.google') && !host.includes('withgoogle.com')) return false;
       const p = parsed.pathname.toLowerCase();
-      const isHub = (p.includes('/tools/flow') || p.endsWith('/flow')) && !p.includes('/project/');
-      const isProject = p.includes('/tools/flow/project/') || p.includes('/project/');
+      const isHub = (host.includes('flow.google') && (p === '/' || p === '')) || ((p.includes('/tools/flow') || p.endsWith('/flow')) && !p.includes('/project/'));
+      const isProject = p.includes('/project/');
       return isHub || isProject;
     } catch (e) {
       return false;
@@ -4125,7 +4130,11 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
    */
   static isFlowHubPage() {
     if (typeof window === 'undefined') return false;
+    const host = (window.location.hostname || '').toLowerCase();
     const path = (window.location.pathname || '').toLowerCase();
+    if (host.includes('flow.google')) {
+      return !path.includes('/project/');
+    }
     return (path.includes('/tools/flow') || path.endsWith('/flow')) && !path.includes('/project/');
   }
 
@@ -4383,9 +4392,16 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
     if (FlowMacroEngine.isFlowProjectPage()) {
       this.addLog('↩️ Navegando para o Hub inicial do FLOW...', 'info');
       
-      const homeLink = Array.from(document.querySelectorAll('a')).find(a => {
+      const homeLink = Array.from(document.querySelectorAll('a, button, [role="button"]')).find(a => {
         const href = (a.getAttribute('href') || a.href || '').toLowerCase();
-        return href.endsWith('/tools/flow') || href.endsWith('/tools/flow/') || href.endsWith('/pt/tools/flow');
+        const aria = (a.getAttribute('aria-label') || '').toLowerCase();
+        const text = (a.textContent || '').toLowerCase();
+        return (
+          href.endsWith('/tools/flow') || href.endsWith('/tools/flow/') || href.endsWith('/pt/tools/flow') ||
+          href === '/' || href.endsWith('flow.google.com/') || href.endsWith('flow.google.com') ||
+          aria.includes('início') || aria.includes('home') || aria.includes('projetos') ||
+          text.includes('projetos') || text.includes('flow')
+        );
       });
 
       if (homeLink) {

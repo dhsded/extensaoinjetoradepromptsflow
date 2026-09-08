@@ -102,6 +102,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   /**
    * Verifica se uma URL pertence ao ambiente oficial do Google FLOW
+   * Suporta flow.google.com, labs.google/fx/tools/flow e aitestkitchen
    * @param {string} url - URL da aba
    * @returns {boolean}
    */
@@ -112,8 +113,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       return false;
     }
     return (
-      (u.includes('labs.google') && (u.includes('flow') || u.includes('/fx/'))) ||
-      u.includes('aitestkitchen.withgoogle.com')
+      u.includes('flow.google') ||
+      u.includes('labs.google') ||
+      u.includes('aitestkitchen.withgoogle.com') ||
+      (u.includes('google.com') && (u.includes('/flow') || u.includes('/fx/')))
     );
   }
 
@@ -187,7 +190,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       try {
         let targetTab = null;
 
-        // 1. Se a aba ativa atual já for do Google FLOW, usa ela diretamente
+        // 1. Se a aba ativa atual já for do Google FLOW (flow.google.com ou labs.google), usa ela diretamente
         if (activeTab && isFlowUrl(activeTab.url)) {
           targetTab = activeTab;
         } else {
@@ -204,17 +207,27 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         }
 
-        // 3. Se nenhuma aba do FLOW estiver aberta, cria uma nova aba com o FLOW
+        // 3. Se nenhuma aba do FLOW estiver aberta, cria uma nova aba diretamente em flow.google.com
         if (!targetTab) {
           btnOpenMacroStudio.innerHTML = '<span>🚀 Abrindo FLOW...</span>';
-          await chrome.tabs.create({
-            url: 'https://labs.google/fx/pt/tools/flow',
+          targetTab = await chrome.tabs.create({
+            url: 'https://flow.google.com/',
             active: true
           });
-          setTimeout(() => {
-            window.close();
-          }, 800);
-          return;
+          // Aguarda a nova aba carregar para abrir o Macro Studio
+          await new Promise((resolve) => {
+            const updateListener = (tabId, changeInfo) => {
+              if (tabId === targetTab.id && changeInfo.status === 'complete') {
+                chrome.tabs.onUpdated.removeListener(updateListener);
+                resolve();
+              }
+            };
+            chrome.tabs.onUpdated.addListener(updateListener);
+            setTimeout(() => {
+              chrome.tabs.onUpdated.removeListener(updateListener);
+              resolve();
+            }, 6000);
+          });
         }
 
         // 4. Garante que os scripts de automação estão ativos e respondendo na aba

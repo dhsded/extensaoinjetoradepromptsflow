@@ -50,9 +50,11 @@
 
   // content.js é dedicado exclusivamente ao ambiente Google FLOW
   const isFlowPage = 
+    window.location.hostname.includes('flow.google') ||
     window.location.hostname.includes('labs.google') || 
     window.location.pathname.includes('/flow') ||
-    window.location.href.includes('/tools/flow');
+    window.location.href.includes('/tools/flow') ||
+    window.location.hostname.includes('aitestkitchen.withgoogle.com');
 
   if (!isFlowPage) {
     return;
