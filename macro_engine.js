@@ -1802,13 +1802,16 @@ class FlowMacroEngine {
   isFlowLibraryOpen() {
     if (this.isImageExpanded()) return false;
 
-    // 1. Campo de busca de recursos (presente exclusivamente no topo da gaveta lateral)
+    // 1. Campo de busca de recursos (presente na gaveta lateral OU no modal centralizado)
     const searchInput = document.querySelector('input[placeholder*="Pesquisar recursos" i], input[placeholder*="search" i]');
     if (searchInput && FlowMacroEngine.isElementVisible(searchInput) && !searchInput.closest('[id*="fd-"], [class*="fd-"]')) {
       return true;
     }
 
-    // 2. Botão "Enviar mídia" ou "Upload" visível na gaveta de mídia (região esquerda x < 500px)
+    // 2. Modal centralizado de recursos (diálogo com categorias como Imagens, Vídeos, Personagens)
+    if (this._isResourceModalOpen()) return true;
+
+    // 3. Botão "Enviar mídia" ou "Upload" visível na gaveta de mídia (região esquerda x < 500px)
     const mediaActions = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
       if (!FlowMacroEngine.isElementVisible(b) || b.closest('[id*="fd-"], [class*="fd-"]')) return false;
       const rect = b.getBoundingClientRect();
@@ -1818,15 +1821,14 @@ class FlowMacroEngine {
     });
     if (mediaActions.length > 0) return true;
 
-    // 3. Lista virtual de mídias situada estritamente na gaveta lateral (x < 550)
+    // 4. Lista virtual de mídias (gaveta lateral OU modal centralizado)
     const lists = Array.from(document.querySelectorAll('[data-testid="virtuoso-item-list"]')).filter(el => {
       if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-      const rect = el.getBoundingClientRect();
-      return rect.right < 550;
+      return true;
     });
     if (lists.length > 0) return true;
 
-    // 4. Mensagem de gaveta de mídia vazia ("Nenhum resultado encontrado")
+    // 5. Mensagem de gaveta de mídia vazia ("Nenhum resultado encontrado")
     const emptyMsg = Array.from(document.querySelectorAll('div, p, span')).find(el => {
       if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
       const rect = el.getBoundingClientRect();
@@ -1836,13 +1838,47 @@ class FlowMacroEngine {
     });
     if (emptyMsg) return true;
 
-    // 5. Cards de mídia styled-components situados na gaveta esquerda (x < 500)
+    // 6. Cards de mídia styled-components situados na gaveta esquerda (x < 500)
     const cards = Array.from(document.querySelectorAll('div.sc-b0e5-14, div.sc-a0e2840-0')).filter(el => {
       if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
       const rect = el.getBoundingClientRect();
       return rect.right < 500;
     });
     return cards.length > 0;
+  }
+
+  /**
+   * Detecta se o modal centralizado de recursos ("Pesquisar recursos") está aberto no FLOW
+   * O FLOW pode exibir a biblioteca como um diálogo modal com categorias e botão "Adicionar ao comando"
+   * @returns {boolean}
+   */
+  _isResourceModalOpen() {
+    // Busca por modais/diálogos visíveis contendo o campo "Pesquisar recursos" ou categorias
+    const modals = Array.from(document.querySelectorAll('div[role="dialog"], div[role="presentation"], div[class*="modal" i], div[class*="overlay" i], div[class*="dialog" i]')).filter(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const t = (el.textContent || '').toLowerCase();
+      // Modal de recursos tem campo de busca E categorias de mídia
+      return (
+        (t.includes('pesquisar recursos') || t.includes('search resources')) &&
+        (t.includes('imagens') || t.includes('vídeos') || t.includes('videos') || t.includes('personagens'))
+      );
+    });
+    if (modals.length > 0) return true;
+
+    // Busca containers genéricos (styled-components) com "Pesquisar recursos" + categorias + "Adicionar ao comando"
+    const resourceContainers = Array.from(document.querySelectorAll('div')).filter(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const rect = el.getBoundingClientRect();
+      // Modal centralizado: ocupa boa parte da tela e está centrado
+      if (rect.width < 300 || rect.height < 300) return false;
+      const hasSearch = el.querySelector('input[placeholder*="Pesquisar recursos" i], input[placeholder*="search" i]');
+      const hasAddBtn = Array.from(el.querySelectorAll('button, [role="button"]')).some(b => {
+        const bt = (b.textContent || '').toLowerCase().trim();
+        return bt === 'adicionar ao comando' || bt === 'incluir no comando' || bt.includes('add to');
+      });
+      return hasSearch && hasAddBtn;
+    });
+    return resourceContainers.length > 0;
   }
 
   /**
@@ -1855,7 +1891,7 @@ class FlowMacroEngine {
       return [];
     }
 
-    // Procura lista virtuoso na gaveta lateral (rect.right < 550)
+    // 1. Procura lista virtuoso na gaveta lateral (rect.right < 550)
     const virtuosoList = Array.from(document.querySelectorAll('[data-testid="virtuoso-item-list"]')).find(el => {
       if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
       const rect = el.getBoundingClientRect();
@@ -1869,7 +1905,26 @@ class FlowMacroEngine {
       if (children.length > 0) return children;
     }
 
-    // Cards styled-components na gaveta lateral (rect.right < 500)
+    // 2. Se o modal centralizado de recursos está aberto, busca cards DENTRO dele
+    if (this._isResourceModalOpen()) {
+      const modalCards = this._getResourceModalCards();
+      if (modalCards.length > 0) return modalCards;
+    }
+
+    // 3. Procura lista virtuoso em qualquer posição (modal centralizado)
+    const anyVirtuosoList = Array.from(document.querySelectorAll('[data-testid="virtuoso-item-list"]')).find(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      return true;
+    });
+
+    if (anyVirtuosoList) {
+      const children = Array.from(anyVirtuosoList.children).filter(el => {
+        return FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]');
+      });
+      if (children.length > 0) return children;
+    }
+
+    // 4. Cards styled-components na gaveta lateral (rect.right < 500)
     const scCards = Array.from(document.querySelectorAll('div.sc-b0e5-14, div.sc-a0e2840-0')).filter(el => {
       if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
       const rect = el.getBoundingClientRect();
@@ -1878,6 +1933,39 @@ class FlowMacroEngine {
     if (scCards.length > 0) return scCards;
 
     return [];
+  }
+
+  /**
+   * Retorna cards de mídia visíveis dentro do modal centralizado de recursos do FLOW
+   * O modal pode exibir a imagem como um item clicável com o nome do arquivo e um botão "Adicionar ao comando"
+   * @returns {HTMLElement[]}
+   */
+  _getResourceModalCards() {
+    const results = [];
+
+    // Busca items clicáveis no modal que contenham imagens (thumbnails dos recursos)
+    const resourceItems = Array.from(document.querySelectorAll('div[role="dialog"] div, div[role="presentation"] div')).filter(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      // Item de recurso geralmente contém uma imagem e texto com o nome do arquivo
+      const hasImg = el.querySelector('img') !== null;
+      const t = (el.textContent || '').toLowerCase();
+      const hasFileExt = t.includes('.jpeg') || t.includes('.jpg') || t.includes('.png') || t.includes('.webp');
+      // Evitar containers muito grandes (o modal inteiro)
+      const rect = el.getBoundingClientRect();
+      return hasImg && hasFileExt && rect.height < 200 && rect.height > 20;
+    });
+
+    if (resourceItems.length > 0) return resourceItems;
+
+    // Fallback: busca items na lista de resultados do modal (podem ser botões ou divs clicáveis)
+    const clickableItems = Array.from(document.querySelectorAll('[role="option"], [role="listitem"], div[tabindex="0"]')).filter(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const hasImg = el.querySelector('img') !== null;
+      const t = (el.textContent || '').toLowerCase();
+      return hasImg && (t.includes('imagem') || t.includes('.jpeg') || t.includes('.jpg') || t.includes('.png'));
+    });
+
+    return clickableItems;
   }
 
   /**
@@ -2273,6 +2361,34 @@ class FlowMacroEngine {
         targetCard = document.querySelector(`[data-testid='virtuoso-item-list'] > div:nth-of-type(${cIdx + 1}) div.sc-b0e5-14, [data-testid='virtuoso-item-list'] > div:nth-of-type(${cIdx + 1})`);
       }
 
+      // Se não encontrou card por índice, verifica se o modal centralizado de recursos está aberto
+      // e tenta detectar progresso de upload diretamente no modal
+      if (!targetCard && this._isResourceModalOpen()) {
+        const modalProgress = this._detectResourceModalUploadProgress(charName);
+        if (modalProgress.isUploading) {
+          stableCompleteChecks = 0;
+          if (modalProgress.percent !== null && modalProgress.percent !== lastLoggedPercent) {
+            lastLoggedPercent = modalProgress.percent;
+            this.addLog(`📊 [Upload Modal] [${charName}]: ${modalProgress.percent}% enviado...`, 'info');
+          }
+          this.currentAction = `⏳ Upload de [${charName}]: ${modalProgress.percent !== null ? modalProgress.percent + '%' : 'em andamento'}...`;
+          this.notify();
+          await new Promise(r => setTimeout(r, 400));
+          continue;
+        } else if (modalProgress.isComplete) {
+          stableCompleteChecks++;
+          if (stableCompleteChecks >= 2) {
+            this.addLog(`✅ [Passo 3 Concluído] Imagem de [${charName}] pronta no modal de recursos!`, 'success');
+            await new Promise(r => setTimeout(r, 600));
+            return true;
+          }
+          await new Promise(r => setTimeout(r, 400));
+          continue;
+        }
+        await new Promise(r => setTimeout(r, 400));
+        continue;
+      }
+
       if (!targetCard) {
         // Card ainda não renderizado na lista, aguarda
         await new Promise(r => setTimeout(r, 400));
@@ -2317,6 +2433,78 @@ class FlowMacroEngine {
   }
 
   /**
+   * Detecta progresso de upload dentro do modal centralizado de recursos do FLOW
+   * Procura por spinners de carregamento, porcentagens e imagens carregadas no modal
+   * @param {string} charName - Nome do personagem para log
+   * @returns {{isUploading: boolean, percent: number|null, isComplete: boolean}}
+   */
+  _detectResourceModalUploadProgress(charName) {
+    const result = { isUploading: false, percent: null, isComplete: false };
+
+    // Busca todos os elementos dentro do modal de recursos
+    const modalElements = Array.from(document.querySelectorAll('div[role="dialog"], div[role="presentation"]')).filter(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const t = (el.textContent || '').toLowerCase();
+      return t.includes('pesquisar recursos') || t.includes('adicionar ao comando');
+    });
+
+    for (const modal of modalElements) {
+      const modalText = (modal.textContent || '').trim();
+
+      // Detecta porcentagem de upload no modal
+      const pctMatch = modalText.match(/\b(\d{1,3})\s*%/);
+      if (pctMatch) {
+        const val = parseInt(pctMatch[1], 10);
+        if (!isNaN(val) && val >= 0 && val <= 100) {
+          result.percent = val;
+          if (val >= 100) {
+            result.isComplete = true;
+          } else {
+            result.isUploading = true;
+          }
+        }
+      }
+
+      // Detecta spinners de carregamento no modal
+      const spinner = modal.querySelector([
+        '[class*="spinner" i]', '[class*="loading" i]', '[class*="uploading" i]',
+        'svg[class*="spin" i]', 'circle[stroke-dashoffset]',
+        '[data-testid*="loading" i]', '[data-testid*="progress" i]'
+      ].join(', '));
+      if (spinner && FlowMacroEngine.isElementVisible(spinner)) {
+        result.isUploading = true;
+      }
+
+      // Detecta barra de progresso no modal
+      const progressBar = modal.querySelector('[role="progressbar"], progress, [aria-valuenow]');
+      if (progressBar) {
+        result.isUploading = true;
+        const now = progressBar.getAttribute('aria-valuenow') || progressBar.getAttribute('value');
+        const max = progressBar.getAttribute('aria-valuemax') || progressBar.getAttribute('max') || '100';
+        if (now !== null) {
+          const pNow = parseFloat(now);
+          const pMax = parseFloat(max);
+          if (!isNaN(pNow) && !isNaN(pMax) && pMax > 0) {
+            result.percent = Math.round((pNow / pMax) * 100);
+            if (result.percent >= 100) {
+              result.isComplete = true;
+              result.isUploading = false;
+            }
+          }
+        }
+      }
+
+      // Se tem imagem carregada (preview completo) e sem spinners, está completo
+      const previewImg = modal.querySelector('img[src]:not([src^="data:image/svg"])');
+      if (previewImg && previewImg.complete && previewImg.naturalWidth > 50 && !spinner && !progressBar) {
+        result.isComplete = true;
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Localiza o botão "Incluir no comando" no FLOW
    * @returns {HTMLElement|null}
    */
@@ -2325,7 +2513,9 @@ class FlowMacroEngine {
     const exactSelectors = [
       'div.sc-4da33547-5 button',
       'button[aria-label*="incluir no comando" i]',
-      'button[aria-label*="incluir no prompt" i]'
+      'button[aria-label*="incluir no prompt" i]',
+      'button[aria-label*="adicionar ao comando" i]',
+      'button[aria-label*="add to prompt" i]'
     ];
 
     for (const sel of exactSelectors) {
@@ -2335,29 +2525,51 @@ class FlowMacroEngine {
       }
     }
 
-    // 2. Busca textual: SOMENTE usa textContent PRÓPRIO do botão (não de filhos distantes)
-    const allButtons = Array.from(document.querySelectorAll('button, [role="button"]')).filter(b => {
+    // 2. Busca textual em todos os botões visíveis na página
+    const allButtons = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
       if (!FlowMacroEngine.isElementVisible(b)) return false;
       if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
       return true;
     });
 
-    return allButtons.find(b => {
+    const textMatchBtn = allButtons.find(b => {
       // Usa textContent limpo do botão
       const t = (b.textContent || b.innerText || '').toLowerCase().trim();
       const aria = (b.getAttribute('aria-label') || '').toLowerCase();
 
-      // O botão de inclusão tem texto exato ou muito curto contendo "incluir"
+      // O botão de inclusão tem texto exato ou muito curto contendo "incluir" ou "adicionar"
       return (
         t === 'incluir no comando' || aria.includes('incluir no comando') ||
         t === 'incluir no prompt' || aria.includes('incluir no prompt') ||
         t === 'incluir' ||
-        t === 'adicionar ao comando' ||
+        t === 'adicionar ao comando' || aria.includes('adicionar ao comando') ||
+        t === 'adicionar ao prompt' || aria.includes('adicionar ao prompt') ||
         t === 'usar imagem' ||
         t === 'use image' ||
-        (t.length < 40 && t.includes('incluir') && (t.includes('comando') || t.includes('prompt')))
+        (t.length < 40 && t.includes('incluir') && (t.includes('comando') || t.includes('prompt'))) ||
+        (t.length < 40 && t.includes('adicionar') && (t.includes('comando') || t.includes('prompt')))
       );
-    }) || null;
+    });
+
+    if (textMatchBtn) return textMatchBtn;
+
+    // 3. Busca especificamente dentro do modal centralizado de recursos (dialog/presentation)
+    const modalContainers = document.querySelectorAll('div[role="dialog"], div[role="presentation"]');
+    for (const modal of modalContainers) {
+      if (!FlowMacroEngine.isElementVisible(modal) || modal.closest('[id*="fd-"], [class*="fd-"]')) continue;
+      const modalBtns = Array.from(modal.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
+        if (!FlowMacroEngine.isElementVisible(b) || b.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        const t = (b.textContent || b.innerText || '').toLowerCase().trim();
+        return (
+          t.includes('adicionar ao comando') || t.includes('incluir no comando') ||
+          t.includes('adicionar ao prompt') || t.includes('incluir no prompt') ||
+          t === 'adicionar' || t === 'incluir'
+        );
+      });
+      if (modalBtns.length > 0) return modalBtns[0];
+    }
+
+    return null;
   }
 
   /**
@@ -2620,16 +2832,22 @@ class FlowMacroEngine {
         if (chipsBeforeInclude.length >= (cIdx + 1)) {
           this.addLog(`ℹ️ [Passo 4] Personagem [${char.name}] já anexado diretamente ao comando pelo card.`, 'info');
         } else {
-          // Busca o botão "Incluir no comando" por até 8 segundos
-          for (let bWait = 0; bWait < 20; bWait++) {
+          // Busca o botão "Incluir no comando" / "Adicionar ao comando" por até 15 segundos
+          for (let bWait = 0; bWait < 37; bWait++) {
             const btn = this.findIncludeInCommandButton();
-            if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
-              includeBtn = btn;
-              break;
+            if (btn) {
+              // Verifica se o botão está habilitado (pode estar desabilitado durante upload)
+              const isDisabled = btn.disabled || btn.getAttribute('aria-disabled') === 'true';
+              if (!isDisabled) {
+                includeBtn = btn;
+                break;
+              } else if (bWait % 5 === 0) {
+                this.addLog(`⏳ [Passo 4] Botão "Adicionar ao comando" encontrado mas desabilitado (upload em andamento). Aguardando...`, 'info');
+              }
             }
 
-            // Re-clica no card se necessário
-            if ((bWait === 5 || bWait === 12) && targetCard) {
+            // Re-clica no card a cada ~3 segundos se necessário
+            if ((bWait === 7 || bWait === 15 || bWait === 25) && targetCard) {
               this.addLog(`🔄 [Passo 4] Re-selecionando card de [${char.name}]...`, 'info');
               const reClick = targetCard.querySelector('img') || targetCard.querySelector('div.sc-b0e5-14') || targetCard;
               this.clickElementWithOverlay(reClick);
@@ -2640,9 +2858,9 @@ class FlowMacroEngine {
         }
 
         if (includeBtn) {
-          this.addLog(`✨ [Passo 4] Botão "Incluir no comando" pronto! Clicando...`, 'success');
+          this.addLog(`✨ [Passo 4] Botão "Adicionar ao comando" pronto! Clicando...`, 'success');
           this.clickElementWithOverlay(includeBtn);
-          await new Promise(r => setTimeout(r, 800));
+          await new Promise(r => setTimeout(r, 1000));
         } else {
           this.addLog(`ℹ️ [Passo 4] Verificando anexo do chip na barra de comando...`, 'info');
         }
@@ -2653,7 +2871,7 @@ class FlowMacroEngine {
         this.addLog(`⏳ [Passo 4] Validando anexo do personagem [${char.name}] na barra de comando...`, 'info');
         let chipAttached = false;
 
-        for (let chk = 0; chk < 15; chk++) {
+        for (let chk = 0; chk < 25; chk++) {
           const promptChips = this.getPromptAttachedChips();
           if (promptChips.length >= (cIdx + 1)) {
             chipAttached = true;
@@ -2704,14 +2922,33 @@ class FlowMacroEngine {
   closeResourceModal(dialogContainer) {
     try {
       if (!dialogContainer) {
-        // Seleciona apenas modais/drawers legítimos (NUNCA containers com input de busca)
-        const candidates = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal" i], [class*="drawer" i], [class*="sheet" i]')).filter(el => {
-          if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-          // Rejeita se contiver a barra de pesquisa do projeto (cabeçalho)
-          if (el.querySelector('input[placeholder*="Pesquisar" i], input[placeholder*="Search" i]')) return false;
-          return true;
-        });
-        if (candidates.length > 0) dialogContainer = candidates[0];
+        // Prioridade 1: Tenta fechar o modal centralizado de recursos
+        if (this._isResourceModalOpen()) {
+          const resourceModals = Array.from(document.querySelectorAll('div[role="dialog"], div[role="presentation"], div[class*="modal" i], div[class*="overlay" i]')).filter(el => {
+            if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+            const t = (el.textContent || '').toLowerCase();
+            return (t.includes('pesquisar recursos') || t.includes('adicionar ao comando'));
+          });
+          if (resourceModals.length > 0) dialogContainer = resourceModals[0];
+        }
+
+        // Prioridade 2: Seleciona modais/drawers legítimos (exclui containers com barra de pesquisa do PROJETO)
+        if (!dialogContainer) {
+          const candidates = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal" i], [class*="drawer" i], [class*="sheet" i]')).filter(el => {
+            if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+            // Rejeita se contiver a barra de pesquisa do projeto no cabeçalho (NÃO a do modal de recursos)
+            const searchInput = el.querySelector('input[placeholder*="Pesquisar" i], input[placeholder*="Search" i]');
+            if (searchInput) {
+              // Se o input for "Pesquisar recursos", é o modal de recursos → aceitar
+              const placeholder = (searchInput.getAttribute('placeholder') || '').toLowerCase();
+              if (placeholder.includes('recursos') || placeholder.includes('resources')) return true;
+              // Caso contrário, é a barra de pesquisa do projeto → rejeitar
+              return false;
+            }
+            return true;
+          });
+          if (candidates.length > 0) dialogContainer = candidates[0];
+        }
       }
       if (!dialogContainer) return;
 
