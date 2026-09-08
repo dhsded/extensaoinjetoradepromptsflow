@@ -8,8 +8,15 @@
 // 4. Analisar e estruturar roteiros em Carrosséis (Lotes) e Slides com diálogos e prompts de imagem.
 // 5. Detectar e catalogar chaves de API de I.A (Gemini, Groq, OpenRouter) coladas pelo usuário.
 // ============================================================================
+(function () {
+  'use strict';
 
-class FlowPdfExtractor {
+  // Evita erro de redeclaração se o script for reinjetado na mesma aba
+  if (typeof window !== 'undefined' && window.FlowPdfExtractor) {
+    return;
+  }
+
+  class FlowPdfExtractor {
   /**
    * Extrai o texto completo de um arquivo ou buffer de PDF
    * @param {File|ArrayBuffer|Uint8Array} source - Arquivo PDF recebido do input ou drag-and-drop
@@ -670,7 +677,10 @@ class FlowPdfExtractor {
   }
 }
 
-// Torna o extrator disponível globalmente no escopo do navegador
-if (typeof window !== 'undefined') {
-  window.FlowPdfExtractor = FlowPdfExtractor;
-}
+  // Torna o extrator disponível globalmente no escopo do navegador
+  if (typeof window !== 'undefined') {
+    window.FlowPdfExtractor = FlowPdfExtractor;
+  }
+})();
+
+var FlowPdfExtractor = (typeof window !== 'undefined') ? window.FlowPdfExtractor : undefined;

@@ -34,6 +34,14 @@ try {
   }
 } catch (e) { /* ignora se já estiver protegido */ }
 
+(function () {
+  'use strict';
+
+  // Evita erro de redeclaração se o script for reinjetado na mesma aba
+  if (typeof window !== 'undefined' && window.FlowMacroEngine) {
+    return;
+  }
+
 class FlowMacroEngine {
   // ============================================================================
   // Banco de Imagens de Referência para Detecção por Similaridade Visual
@@ -4791,10 +4799,16 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
   }
 }
 
-// =========================================================================
-// Inicialização e Exportação Global da Instância do Motor
-// =========================================================================
-if (typeof window !== 'undefined') {
-  window.FlowMacroEngine = FlowMacroEngine;
-  window.flowMacroInstance = new FlowMacroEngine();
-}
+  // =========================================================================
+  // Inicialização e Exportação Global da Instância do Motor
+  // =========================================================================
+  if (typeof window !== 'undefined') {
+    window.FlowMacroEngine = FlowMacroEngine;
+    if (!window.flowMacroInstance) {
+      window.flowMacroInstance = new FlowMacroEngine();
+    }
+  }
+})();
+
+var FlowMacroEngine = (typeof window !== 'undefined') ? window.FlowMacroEngine : undefined;
+var flowMacroInstance = (typeof window !== 'undefined') ? window.flowMacroInstance : undefined;
