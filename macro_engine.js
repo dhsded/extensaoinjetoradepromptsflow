@@ -3264,69 +3264,102 @@ class FlowMacroEngine {
   }
 
   /**
+   * Verifica em tempo real se o Canvas do Google FLOW está com geração de imagens ativa
+   * Detecta porcentagens (ex: 87%), barras de progresso, spinners e placeholders
+   * @returns {{ generating: boolean, reason: string }}
+   */
+  isCanvasGenerating() {
+    // 1. Elementos com texto de porcentagem no Canvas (ex: "87%", "15%", "0%")
+    const percentageNodes = Array.from(document.querySelectorAll('span, div, p, text, b, strong')).filter(el => {
+      if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      if (!FlowMacroEngine.isElementVisible(el)) return false;
+      const t = (el.textContent || el.innerText || '').trim();
+      return /^\d{1,3}\s*%$/.test(t) || /\b\d{1,2}%\b/.test(t);
+    });
+
+    if (percentageNodes.length > 0) {
+      const pcts = percentageNodes.map(n => n.textContent.trim()).filter(Boolean);
+      return { generating: true, reason: `Geração em andamento: ${pcts.slice(0, 4).join(', ')}` };
+    }
+
+    // 2. Elementos com papéis ou classes de progresso / carregamento
+    const progressEls = Array.from(document.querySelectorAll([
+      '[role="progressbar"]',
+      'progress',
+      'circle[stroke-dasharray]',
+      '[class*="shimmer" i]',
+      '[class*="skeleton" i]',
+      'div[aria-label*="gerando" i]',
+      'div[aria-label*="generating" i]',
+      'div[aria-label*="criando" i]'
+    ].join(', '))).filter(el => {
+      if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      return FlowMacroEngine.isElementVisible(el);
+    });
+
+    if (progressEls.length > 0) {
+      return { generating: true, reason: 'Barra de progresso ativa no Canvas' };
+    }
+
+    // 3. Botão de submit desabilitado com indicador de loading
+    const submitBtn = this.findSubmitButton();
+    if (submitBtn) {
+      const isSubDisabled = submitBtn.getAttribute('aria-disabled') === 'true' || submitBtn.disabled;
+      const hasSpinner = !!submitBtn.querySelector('[class*="spinner" i], [class*="loading" i], [class*="progress" i]');
+      if (isSubDisabled && hasSpinner) {
+        return { generating: true, reason: 'Botão de envio processando' };
+      }
+    }
+
+    return { generating: false, reason: '' };
+  }
+
+  /**
    * Monitora e aguarda a conclusão da geração da imagem no Canvas do FLOW
-   * Detecta spinners, classes de loading e mudança no estado do botão de envio
-   * @param {number} maxWaitSeconds - Tempo máximo de espera em segundos (padrão: 45s)
+   * Espera até que TODAS as porcentagens (ex: 87%) desapareçam e as imagens sejam renderizadas
+   * @param {number} maxWaitSeconds - Tempo máximo de espera em segundos (padrão: 90s)
    * @returns {Promise<boolean>}
    */
-  async waitForGenerationToComplete(maxWaitSeconds = 45) {
+  async waitForGenerationToComplete(maxWaitSeconds = 90) {
     this.addLog('⏳ [FLOW] Aguardando geração da imagem ser concluída no Canvas...', 'info');
     const startTime = Date.now();
     const maxMs = maxWaitSeconds * 1000;
 
-    // Período de carência inicial para o React registrar o início da geração
-    await new Promise(r => setTimeout(r, 2000));
+    // Período de carência inicial para o FLOW registrar o envio e criar os cards no Canvas
+    await new Promise(r => setTimeout(r, 2500));
+
+    let sawGenerating = false;
+    let consecutiveIdleChecks = 0;
 
     while (Date.now() - startTime < maxMs) {
       if (this.state !== 'running' && this.state !== 'idle') break;
 
-      // 1. Verifica se o botão de envio está em estado de loading/desabilitado
-      const submitBtn = this.findSubmitButton();
-      const isSubmitLoading = submitBtn && (
-        submitBtn.getAttribute('aria-disabled') === 'true' ||
-        submitBtn.disabled ||
-        submitBtn.querySelector('[class*="spinner" i], [class*="loading" i], [class*="progress" i]')
-      );
+      const check = this.isCanvasGenerating();
 
-      // 2. Verifica cards com indicadores de progresso/carregamento no Canvas
-      const loadingCards = Array.from(document.querySelectorAll([
-        '[class*="loading" i]',
-        '[class*="spinner" i]',
-        '[class*="progress" i]',
-        '[class*="shimmer" i]',
-        '[class*="skeleton" i]',
-        'div[aria-label*="gerando" i]',
-        'div[aria-label*="generating" i]',
-        'div[aria-label*="criando" i]'
-      ].join(', '))).filter(el => {
-        if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-        return FlowMacroEngine.isElementVisible(el);
-      });
-
-      // Verifica textos nos cards indicando "Gerando..." ou "Criando..."
-      const textNodes = Array.from(document.querySelectorAll('span, div, p')).filter(el => {
-        if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-        if (!FlowMacroEngine.isElementVisible(el)) return false;
-        const t = (el.textContent || el.innerText || '').trim().toLowerCase();
-        return t === 'gerando...' || t === 'criando...' || t === 'generating...' || t.startsWith('gerando') || t.startsWith('criando');
-      });
-
-      const isStillGenerating = isSubmitLoading || loadingCards.length > 0 || textNodes.length > 0;
-
-      // Se a geração terminou e já se passaram mais de 4 segundos
-      if (!isStillGenerating && (Date.now() - startTime > 4000)) {
-        this.addLog('✨ [FLOW] Imagem gerada e carregada no Canvas com sucesso!', 'success');
-        return true;
+      if (check.generating) {
+        sawGenerating = true;
+        consecutiveIdleChecks = 0;
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
+        this.currentAction = `⏳ ${check.reason} (${elapsed}s)...`;
+        this.notify();
+      } else {
+        // Se a geração já esteve em andamento ou se já se passaram pelo menos 10 segundos
+        if (sawGenerating || (Date.now() - startTime > 10000)) {
+          consecutiveIdleChecks++;
+          // Exige 3 verificações consecutivas vazias (3s de estabilidade confirmada)
+          if (consecutiveIdleChecks >= 3) {
+            const totalElapsed = Math.round((Date.now() - startTime) / 1000);
+            this.addLog(`✨ [FLOW] Geração de imagens concluída no Canvas (${totalElapsed}s)!`, 'success');
+            await new Promise(r => setTimeout(r, 2000));
+            return true;
+          }
+        }
       }
-
-      const elapsed = Math.round((Date.now() - startTime) / 1000);
-      this.currentAction = `⏳ FLOW gerando imagem (${elapsed}s)...`;
-      this.notify();
 
       await new Promise(r => setTimeout(r, 1000));
     }
 
-    this.addLog('⏱️ Tempo de espera de geração concluído.', 'info');
+    this.addLog('⏱️ Tempo de espera da geração concluído.', 'info');
     return true;
   }
 
@@ -3582,38 +3615,35 @@ class FlowMacroEngine {
    * @param {HTMLElement} popover - Container do popover aberto
    */
   async closeSettingsPopover(settingsTrigger, popover) {
-    // 1. Envia eventos da tecla Escape para window e document
+    const getOpenPopover = () => {
+      const candidates = Array.from(document.querySelectorAll('[role="dialog"], [role="menu"], [class*="popover" i], [data-radix-popper-content-wrapper], [data-side]')).filter(el => {
+        if (el.closest && el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        return FlowMacroEngine.isElementVisible(el);
+      });
+      return candidates.length > 0 ? candidates[0] : null;
+    };
+
+    let openEl = getOpenPopover();
+    if (!openEl) return;
+
+    // Envia tecla Escape para fechar o popover
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
     document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
+    await new Promise(r => setTimeout(r, 150));
 
-    // 2. Clica novamente no gatilho para alternar estado
-    if (settingsTrigger) {
-      try {
-        settingsTrigger.click();
-      } catch (e) {}
-    }
-
-    // 3. Foca e clica de volta no campo de prompt
-    const promptInput = this.findPromptInput();
-    if (promptInput) {
-      try {
-        promptInput.focus();
-        promptInput.click();
-      } catch (e) {}
-    }
-
-    // 4. Aguarda confirmação do fechamento do popover
-    for (let w = 0; w < 10; w++) {
-      await new Promise(r => setTimeout(r, 150));
-      const stillOpen = document.querySelector('[role="dialog"], [role="menu"], [class*="popover" i], [data-radix-popper-content-wrapper]');
-      if (!stillOpen || !FlowMacroEngine.isElementVisible(stillOpen)) {
-        break;
+    // Se ainda estiver visível, clica no campo de prompt para fechar sem reabrir
+    openEl = getOpenPopover();
+    if (openEl) {
+      const promptInput = this.findPromptInput();
+      if (promptInput) {
+        try {
+          promptInput.focus();
+          promptInput.click();
+        } catch (e) {}
       }
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
+      await new Promise(r => setTimeout(r, 150));
     }
-
-    await new Promise(r => setTimeout(r, 200));
   }
 
   /**
@@ -3637,8 +3667,8 @@ class FlowMacroEngine {
 
   /**
    * Ajusta as configurações do FLOW (Passo 1 do fluxograma oficial):
-   * Abre o menu "Nano Banana", define Proporção, Modo Imagem e Quantidade, e fecha a janela.
-   * REGRA DE OURO: Executa EXCLUSIVAMENTE no 1º slide de cada projeto!
+   * Localiza o botão de proporção na barra inferior, define 1:1 (ou ratio desejado) e fecha a janela.
+   * REGRA DE OURO: Executa no 1º slide de cada projeto ou quando ainda não configurado!
    * @returns {Promise<boolean>}
    */
   async applyFlowSettings() {
@@ -3647,7 +3677,7 @@ class FlowMacroEngine {
     try {
       this.dismissFlowOnboardingBanners();
 
-      const targetRatio = this.config.aspectRatio || '9:16';
+      const targetRatio = this.config.aspectRatio || '1:1';
       const targetQuantity = `x${this.config.quantity || 4}`;
 
       const promptInput = this.findPromptInput();
@@ -3655,37 +3685,66 @@ class FlowMacroEngine {
 
       if (!promptContainer) return true;
 
-      // 1. Localiza a pílula de gatilho das configurações na barra inferior (ex: "✨ Nano Banana Pro [] x4")
-      const candidateTriggers = Array.from(promptContainer.querySelectorAll('button, [role="button"], div[tabindex="0"], div[class*="pill" i], div[class*="setting" i]')).filter(el => {
+      // 1. Coleta elementos interativos dentro do container de prompt (excluindo extensão, textarea, submit e plus)
+      const submitBtn = this.findSubmitButton();
+      const plusBtn = this.findPlusButton();
+
+      const promptClickables = Array.from(promptContainer.querySelectorAll('button, [role="button"], div[tabindex="0"], div[class*="pill" i], div[class*="setting" i], span[role="button"]')).filter(el => {
         if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        if (el === promptInput || el.contains(promptInput)) return false;
+        if (submitBtn && (el === submitBtn || el.contains(submitBtn))) return false;
+        if (plusBtn && (el === plusBtn || el.contains(plusBtn))) return false;
         const t = (el.textContent || el.innerText || '').toLowerCase();
         const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-        if (t.includes('agente') || aria.includes('agente') || aria.includes('arrow_forward') || aria.includes('criar') || t.includes('enviar')) return false;
+        if (t.includes('agente') || aria.includes('agente') || aria.includes('arrow_forward') || aria.includes('arrow_upward') || aria.includes('criar') || t.includes('enviar')) return false;
+        if (t.includes('adicionar') || aria.includes('adicionar') || t === '+' || aria === '+') return false;
+        return true;
+      });
+
+      // 2. Localiza especificamente o gatilho da PROPORÇÃO (ícone [ ] entre modelo e x4 na pílula do FLOW)
+      let ratioTrigger = promptClickables.find(b => {
+        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        const title = (b.getAttribute('title') || '').toLowerCase();
+        const t = (b.textContent || b.innerText || '').trim().toLowerCase();
         return (
-          t.includes('banana') || t.includes('imagem') || t.includes('vídeo') || t.includes('video') ||
-          t.includes('16:9') || t.includes('9:16') || t.includes('1:1') || t.includes('4:3') || t.includes('3:4') ||
-          t.includes('x4') || t.includes('x1') || t.includes('x2') || t.includes('x3') ||
-          aria.includes('banana') || aria.includes('crop_') || aria.includes('proporção')
+          aria.includes('proporç') || aria.includes('aspect') || aria.includes('ratio') || aria.includes('crop') ||
+          aria.includes('formato') || aria.includes('tamanho') || aria.includes('dimens') ||
+          title.includes('proporç') || title.includes('aspect') || title.includes('ratio') || title.includes('crop') ||
+          t === '1:1' || t === '9:16' || t === '16:9' || t === '4:3' || t === '3:4' ||
+          aria.includes('1:1') || aria.includes('9:16') || aria.includes('16:9') ||
+          aria.includes('portrait') || aria.includes('square') || aria.includes('landscape')
         );
       });
 
-      let settingsTrigger = candidateTriggers[0] || null;
-      if (!settingsTrigger) {
-        // Fallback: procura botões no promptContainer na região direita (antes do botão de envio)
-        const allPromptBtns = Array.from(promptContainer.querySelectorAll('button, [role="button"]')).filter(b => {
-          if (!FlowMacroEngine.isElementVisible(b) || b.closest('[id*="fd-"], [class*="fd-"]')) return false;
-          const t = (b.textContent || b.innerText || '').toLowerCase();
-          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-          return !t.includes('agente') && !aria.includes('agente') && !aria.includes('arrow_forward') && !aria.includes('criar') && b !== promptInput;
+      if (!ratioTrigger) {
+        ratioTrigger = promptClickables.find(b => {
+          const html = b.innerHTML.toLowerCase();
+          return html.includes('crop_') || html.includes('aspect') || html.includes('crop-') || html.includes('square') || html.includes('portrait') || html.includes('landscape');
         });
-        if (allPromptBtns.length > 0) {
-          settingsTrigger = allPromptBtns[allPromptBtns.length - 1];
+      }
+
+      // Se há o botão do modelo ('banana') e botão de quantidade ('x4'), o botão intermediário é a proporção!
+      if (!ratioTrigger) {
+        const modelBtn = promptClickables.find(b => {
+          const t = (b.textContent || '').toLowerCase();
+          return t.includes('banana') || t.includes('nano') || t.includes('pro');
+        });
+        const qtyBtn = promptClickables.find(b => {
+          const t = (b.textContent || '').trim().toLowerCase();
+          return /^x[1-4]$/i.test(t) || /^[1-4]$/.test(t);
+        });
+        if (modelBtn && qtyBtn) {
+          ratioTrigger = promptClickables.find(b => b !== modelBtn && b !== qtyBtn && !b.contains(modelBtn) && !b.contains(qtyBtn));
         }
       }
 
-      if (!settingsTrigger) {
-        this.addLog('⚠️ [Passo 1] Pílula de configurações do FLOW não localizada no container do prompt.', 'warning');
-        return false;
+      // Fallback
+      if (!ratioTrigger) {
+        ratioTrigger = promptClickables.find(el => {
+          const t = (el.textContent || '').toLowerCase();
+          const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+          return t.includes('banana') || t.includes('1:1') || t.includes('9:16') || t.includes('16:9') || aria.includes('banana') || aria.includes('crop_') || aria.includes('proporção');
+        }) || promptClickables[0];
       }
 
       const ratioAliases = {
@@ -3697,277 +3756,170 @@ class FlowMacroEngine {
       };
       const currentRatioAliases = ratioAliases[targetRatio] || [targetRatio];
 
-      const qtyNum = `${this.config.quantity || 4}`;
-      const qtyAliases = [
-        targetQuantity.toLowerCase(),
-        `x${qtyNum}`, `${qtyNum}x`, `×${qtyNum}`, qtyNum,
-        `${qtyNum} imagens`, `${qtyNum} images`, `${qtyNum} fotos`
-      ];
-
-      // 2. Abre o popover de opções com re-tentativas
+      // 3. Abre o menu da Proporção
       let popover = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        this.addLog(`⚙️ [Passo 1] Abrindo painel de configurações (tentativa ${attempt + 1}/3)...`, 'info');
-        this.clickElementWithOverlay(settingsTrigger);
+      if (ratioTrigger) {
+        this.addLog(`⚙️ [Passo 1] Abrindo seletor de proporção no FLOW...`, 'info');
+        this.clickElementWithOverlay(ratioTrigger);
         await new Promise(r => setTimeout(r, 600));
 
+        // Busca o popover aberto (sem rejeitar popovers montados próximos à barra de prompt)
         for (let w = 0; w < 10; w++) {
-          // Busca TODOS os popovers/dialogs flutuantes (excluindo a barra de prompt e a extensão)
           const allCandidates = Array.from(document.querySelectorAll(
             '[role="dialog"], [role="menu"], [role="listbox"], [class*="popover" i], [class*="menu" i], [class*="dropdown" i], [data-radix-popper-content-wrapper], [data-radix-popper-content], [data-side]'
           )).filter(el => {
             if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
             if (el.id === 'fd-macro-studio-modal' || el.querySelector('#fd-macro-studio-modal')) return false;
-            // NUNCA seleciona o próprio container de prompt ou seus filhos como popover
-            if (promptContainer && (promptContainer === el || promptContainer.contains(el) || el.contains(promptContainer))) return false;
+            if (el === promptContainer || el === promptInput) return false;
 
             const t = (el.textContent || '').toLowerCase();
             const aria = (el.getAttribute('aria-label') || '').toLowerCase();
             const combined = `${t} ${aria}`;
 
-            // O popover de configurações contém abas de modo (Imagem/Video) OU proporções OU quantidades
+            const hasRatios = ['16:9', '9:16', '1:1', '4:3', '3:4', 'crop_square', 'square', 'quadrad', 'landscape', 'portrait'].some(k => combined.includes(k));
+            const hasQuantity = ['x1', 'x2', 'x3', 'x4'].some(k => combined.includes(k));
             const hasModeTabs = (combined.includes('imagem') || combined.includes('image')) && (combined.includes('vídeo') || combined.includes('video'));
-            const hasRatios = ['16:9', '9:16', '1:1', '4:3', '3:4', 'crop_square', 'square', 'quadrad', 'landscape', 'paisagem', 'portrait', 'retrato'].some(k => combined.includes(k));
-            const hasQuantity = ['x1', 'x2', 'x3', 'x4', '×1', '×2', '×3', '×4'].some(k => combined.includes(k));
 
-            return hasModeTabs || hasRatios || hasQuantity;
+            return hasRatios || hasQuantity || hasModeTabs;
           });
 
           if (allCandidates.length > 0) {
-            // Pontua candidatos para priorizar o popover com mais elementos relevantes (evita tooltips)
-            allCandidates.sort((a, b) => {
-              const aText = (a.textContent || '').toLowerCase();
-              const bText = (b.textContent || '').toLowerCase();
-              const aScore = (a.matches('[data-radix-popper-content-wrapper], [role="dialog"]') ? 5 : 0) +
-                (['1:1', '16:9', '9:16', 'square', 'quadrad'].some(k => aText.includes(k)) ? 4 : 0) +
-                (['x4', 'x1', 'x2'].some(k => aText.includes(k)) ? 3 : 0) +
-                (['imagem', 'image'].some(k => aText.includes(k)) ? 2 : 0);
-              const bScore = (b.matches('[data-radix-popper-content-wrapper], [role="dialog"]') ? 5 : 0) +
-                (['1:1', '16:9', '9:16', 'square', 'quadrad'].some(k => bText.includes(k)) ? 4 : 0) +
-                (['x4', 'x1', 'x2'].some(k => bText.includes(k)) ? 3 : 0) +
-                (['imagem', 'image'].some(k => bText.includes(k)) ? 2 : 0);
-              return bScore - aScore;
-            });
             popover = allCandidates[0];
             break;
           }
           await new Promise(r => setTimeout(r, 150));
         }
-
-        if (popover && FlowMacroEngine.isElementVisible(popover)) break;
       }
 
-      if (!popover || !FlowMacroEngine.isElementVisible(popover)) {
-        this.addLog('⚠️ [Passo 1] Não foi possível abrir o menu de configurações do FLOW.', 'warning');
-        return false;
-      }
-
-      this.addLog('📋 [Passo 1] Popover de configurações encontrado! Aplicando ajustes...', 'info');
-
-      let searchRoot = popover;
-      // Seletor amplo: abrange buttons, tabs, options, rádios e divs interativos
-      const POPOVER_CLICKABLE_SELECTOR = 'button, [role="button"], [role="tab"], [role="option"], [role="menuitemradio"], [role="menuitem"], [role="radio"], div[role="radio"], div[tabindex], span[tabindex], label[tabindex], [data-state], [data-value]';
-      
-      // Coleta botões visíveis no popover (sem restrições de tela que filtram botões de topo)
-      let allButtons = Array.from(searchRoot.querySelectorAll(POPOVER_CLICKABLE_SELECTOR)).filter(b => 
-        FlowMacroEngine.isElementVisible(b) && !b.closest('[id*="fd-"], [class*="fd-"]')
-      );
-
-      this.addLog(`🔍 [Passo 1] ${allButtons.length} elementos interativos detectados no popover.`, 'info');
-
-      // 3. Seção 1: Garantir modo "Imagem" (nunca Vídeo)
-      const exactImageBtn = searchRoot.querySelector('button[id*="-trigger-IMAGE" i], button[id*="image" i], [role="tab"][id*="image" i], [aria-label*="Imagem" i], [aria-label*="image" i]');
-      let imageBtn = exactImageBtn || allButtons.find(b => {
-        const t = (b.textContent || b.innerText || '').trim().toLowerCase();
-        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-        const title = (b.getAttribute('title') || '').toLowerCase();
-        const isImg = (t === 'imagem' || t === 'image' || t.includes('imagem') || t.includes('image') || aria.includes('imagem') || aria.includes('image') || title.includes('imagem') || title.includes('image'));
-        const isVid = t.includes('vídeo') || t.includes('video') || aria.includes('vídeo') || aria.includes('video');
-        return isImg && !isVid && !t.includes('elemento');
-      });
-
-      // Fallback nível 2: busca por nós folha com texto "Imagem" / "Image"
-      if (!imageBtn) {
-        imageBtn = Array.from(searchRoot.querySelectorAll('*')).find(el => {
-          if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-          const t = (el.textContent || el.innerText || '').trim().toLowerCase();
-          const isLeaf = el.children.length === 0 || (el.children.length <= 2 && t.length < 20);
-          return isLeaf && (t === 'imagem' || t === 'image');
-        });
-      }
-
-      if (imageBtn) {
-        if (!this.isButtonSelected(imageBtn)) {
-          this.addLog('⚙️ [Passo 1] Alterando para modo "Imagem"...', 'info');
-          const elClick = imageBtn.closest('button, [role="button"], [role="tab"]') || imageBtn;
-          this.clickElementWithOverlay(elClick);
-          await new Promise(r => setTimeout(r, 800));
-          // Atualiza lista de botões pois as proporções mudam após trocar para modo Imagem
-          allButtons = Array.from(searchRoot.querySelectorAll(POPOVER_CLICKABLE_SELECTOR)).filter(b => 
-            FlowMacroEngine.isElementVisible(b) && !b.closest('[id*="fd-"], [class*="fd-"]')
-          );
-        } else {
-          this.addLog('✅ [Passo 1] Modo "Imagem" já selecionado.', 'info');
-        }
-      } else {
-        this.addLog('ℹ️ [Passo 1] Modo Imagem já ativo por padrão no FLOW.', 'info');
-      }
-
-      // 4. Seção 2: Ajustar Proporção da Imagem (1:1, 16:9, 9:16, 3:4, 4:3)
-      const ratioSelectorMap = {
-        '1:1': 'button[id*="-trigger-SQUARE" i], button[id*="square" i], [aria-label*="1:1"], [data-value="1:1"], [data-value="SQUARE" i]',
-        '9:16': 'button[id*="-trigger-PORTRAIT" i]:not([id*="3_4" i]), button[id*="portrait" i]:not([id*="3_4" i]), [aria-label*="9:16"], [data-value="9:16"], [data-value="PORTRAIT" i]:not([data-value*="3_4" i])',
-        '16:9': 'button[id*="-trigger-LANDSCAPE" i]:not([id*="4_3" i]), button[id*="landscape" i]:not([id*="4_3" i]), [aria-label*="16:9"], [data-value="16:9"], [data-value="LANDSCAPE" i]:not([data-value*="4_3" i])',
-        '3:4': 'button[id*="3_4" i], [aria-label*="3:4"], [data-value="3:4"], [data-value*="3_4" i]',
-        '4:3': 'button[id*="4_3" i], [aria-label*="4:3"], [data-value="4:3"], [data-value*="4_3" i]'
-      };
-
-      // 4.1 Prioridade Máxima: Botão com texto idêntico ao ratio (ex: "9:16", "16:9", "1:1")
-      let targetRatioBtn = allButtons.find(b => {
-        const t = (b.textContent || b.innerText || '').trim();
-        return t === targetRatio;
-      });
-
-      // 4.2 Prioridade 2: Atributos com igualdade exata de ratio
-      if (!targetRatioBtn) {
-        targetRatioBtn = allButtons.find(b => {
-          const aria = (b.getAttribute('aria-label') || '').trim();
-          const title = (b.getAttribute('title') || '').trim();
-          const val = (b.getAttribute('data-value') || '').trim();
-          return aria === targetRatio || title === targetRatio || val === targetRatio;
-        });
-      }
-
-      // 4.3 Prioridade 3: Seletor específico de ID / data-value de Radix
-      if (!targetRatioBtn && ratioSelectorMap[targetRatio]) {
-        targetRatioBtn = searchRoot.querySelector(ratioSelectorMap[targetRatio]);
-      }
-
-      // 4.4 Prioridade 4: Aliases mais amplos
-      if (!targetRatioBtn) {
-        targetRatioBtn = allButtons.find(b => {
-          const t = (b.textContent || b.innerText || '').trim().toLowerCase();
-          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-          const title = (b.getAttribute('title') || '').toLowerCase();
-          const id = (b.id || '').toLowerCase();
-          const val = (b.getAttribute('data-value') || '').toLowerCase();
-          return currentRatioAliases.some(alias => 
-            t === alias || t.includes(alias) || aria.includes(alias) || title.includes(alias) || id.includes(alias) || val === alias
-          );
-        });
-      }
-
-      // Fallback nível 5: busca por nós folha com o alias da proporção (ex: "9:16", "crop_square", "1:1")
-      if (!targetRatioBtn) {
-        targetRatioBtn = Array.from(searchRoot.querySelectorAll('*')).find(el => {
-          if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-          const t = (el.textContent || el.innerText || '').trim().toLowerCase();
-          const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-          const title = (el.getAttribute('title') || '').toLowerCase();
-          const isLeaf = el.children.length === 0 || (el.children.length <= 2 && t.length < 25);
-          return isLeaf && currentRatioAliases.some(alias => t === alias || t.includes(alias) || aria.includes(alias) || title.includes(alias));
-        });
-      }
-
-      // Fallback nível 6: busca em todos os popovers/dialogs abertos na tela
-      if (!targetRatioBtn) {
-        const openPoppers = Array.from(document.querySelectorAll('[data-radix-popper-content-wrapper], [role="dialog"], [data-side]')).filter(el => 
-          FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]')
-        );
-        for (const p of openPoppers) {
-          const btn = Array.from(p.querySelectorAll('button, [role="button"], [role="radio"], [role="tab"], div[tabindex], span')).find(b => {
-            if (!FlowMacroEngine.isElementVisible(b) || b.closest('[id*="fd-"], [class*="fd-"]')) return false;
-            const t = (b.textContent || b.innerText || '').trim().toLowerCase();
-            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-            const title = (b.getAttribute('title') || '').toLowerCase();
-            return currentRatioAliases.some(alias => t === alias || t.includes(alias) || aria.includes(alias) || title.includes(alias));
+      // Se ainda não abriu o popover com o gatilho isolado, tenta os demais botões da pílula
+      if (!popover) {
+        for (const candidate of promptClickables) {
+          if (candidate === ratioTrigger) continue;
+          this.clickElementWithOverlay(candidate);
+          await new Promise(r => setTimeout(r, 500));
+          const found = Array.from(document.querySelectorAll('[role="dialog"], [role="menu"], [class*="popover" i], [data-radix-popper-content-wrapper]')).find(el => {
+            if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+            const t = (el.textContent || '').toLowerCase();
+            return t.includes('1:1') || t.includes('16:9') || t.includes('9:16') || t.includes('square');
           });
-          if (btn) {
-            targetRatioBtn = btn;
+          if (found) {
+            popover = found;
             break;
           }
         }
       }
 
-      let ratioApplied = false;
-      if (targetRatioBtn) {
-        const clickableRatio = targetRatioBtn.closest('button, [role="button"], [role="radio"], [role="tab"]') || targetRatioBtn;
-        this.addLog(`⚙️ [Passo 1] Selecionando proporção ${targetRatio} no FLOW...`, 'info');
-        
-        clickableRatio.scrollIntoView({ behavior: 'instant', block: 'nearest' });
-        clickableRatio.focus();
-        this.clickElementWithOverlay(clickableRatio);
-        this.simulateClick(clickableRatio);
-        try { clickableRatio.click(); } catch(e) {}
-        
-        // Dispara handlers do React se disponíveis
-        try {
-          const propKey = Object.keys(clickableRatio).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
-          if (propKey && clickableRatio[propKey]) {
-            if (typeof clickableRatio[propKey].onClick === 'function') clickableRatio[propKey].onClick({ preventDefault: () => {}, stopPropagation: () => {}, target: clickableRatio, currentTarget: clickableRatio });
-            if (typeof clickableRatio[propKey].onPointerDown === 'function') clickableRatio[propKey].onPointerDown({ preventDefault: () => {}, stopPropagation: () => {}, target: clickableRatio, currentTarget: clickableRatio });
-          }
-        } catch (e) {}
+      if (popover && FlowMacroEngine.isElementVisible(popover)) {
+        this.addLog('📋 [Passo 1] Menu de configurações/proporção aberto. Aplicando seleção...', 'info');
 
-        await new Promise(r => setTimeout(r, 500));
-        ratioApplied = true;
-        this.addLog(`✅ [Passo 1] Proporção ${targetRatio} acionada com sucesso.`, 'info');
-      } else {
-        const ratioTexts = allButtons.map(b => `"${(b.textContent || b.getAttribute('aria-label') || b.getAttribute('title') || '').trim().substring(0, 25)}"`).filter(t => t.length > 2).slice(0, 15).join(', ');
-        this.addLog(`⚠️ [Passo 1] Botão de proporção ${targetRatio} não encontrado no popover. Textos detectados: [${ratioTexts}]`, 'warning');
-      }
+        const POPOVER_CLICKABLE_SELECTOR = 'button, [role="button"], [role="tab"], [role="option"], [role="menuitemradio"], [role="menuitem"], [role="radio"], div[role="radio"], div[tabindex], span[tabindex], label[tabindex], [data-state], [data-value]';
+        let allButtons = Array.from(popover.querySelectorAll(POPOVER_CLICKABLE_SELECTOR)).filter(b =>
+          FlowMacroEngine.isElementVisible(b) && !b.closest('[id*="fd-"], [class*="fd-"]')
+        );
 
-      // 5. Seção 3: Ajustar Quantidade de Imagens (x1, x2, x3, x4)
-      const qtySelectorMap = {
-        'x1': 'button[id*="-trigger-1" i], [aria-label="x1" i], [aria-label="1" i], [data-value="1"], [data-value="x1"]',
-        'x2': 'button[id*="-trigger-2" i], [aria-label="x2" i], [aria-label="2" i], [data-value="2"], [data-value="x2"]',
-        'x3': 'button[id*="-trigger-3" i], [aria-label="x3" i], [aria-label="3" i], [data-value="3"], [data-value="x3"]',
-        'x4': 'button[id*="-trigger-4" i], [aria-label="x4" i], [aria-label="4" i], [data-value="4"], [data-value="x4"]'
-      };
-
-      const exactQtyBtn = qtySelectorMap[targetQuantity.toLowerCase()] ? searchRoot.querySelector(qtySelectorMap[targetQuantity.toLowerCase()]) : null;
-      let targetQtyBtn = exactQtyBtn || allButtons.find(b => {
-        const t = (b.textContent || b.innerText || '').trim().toLowerCase();
-        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-        const title = (b.getAttribute('title') || '').toLowerCase();
-        const val = (b.getAttribute('data-value') || '').toLowerCase();
-        return qtyAliases.some(q => t === q || t.includes(q) || aria.includes(q) || title.includes(q) || val === q);
-      });
-
-      // Fallback nível 2: procura nós folha com a quantidade
-      if (!targetQtyBtn) {
-        targetQtyBtn = Array.from(searchRoot.querySelectorAll('*')).find(el => {
-          if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-          const t = (el.textContent || el.innerText || '').trim().toLowerCase();
-          const isLeaf = el.children.length === 0 || (el.children.length <= 2 && t.length < 10);
-          return isLeaf && qtyAliases.some(q => t === q);
+        // Se houver abas de Imagem / Vídeo, garante Imagem
+        const imageBtn = allButtons.find(b => {
+          const t = (b.textContent || b.innerText || '').trim().toLowerCase();
+          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+          return (t === 'imagem' || t === 'image' || aria.includes('imagem') || aria.includes('image')) && !t.includes('vídeo') && !t.includes('video');
         });
-      }
-
-      let qtyApplied = false;
-      if (targetQtyBtn) {
-        const clickableQty = targetQtyBtn.closest('button, [role="button"], [role="radio"], [role="tab"]') || targetQtyBtn;
-        this.addLog(`⚙️ [Passo 1] Ajustando quantidade para ${targetQuantity}...`, 'info');
-        this.clickElementWithOverlay(clickableQty);
-        this.simulateClick(clickableQty);
-        try { clickableQty.click(); } catch(e) {}
-        await new Promise(r => setTimeout(r, 400));
-        qtyApplied = true;
-      } else {
-        this.addLog(`ℹ️ [Passo 1] Quantidade ${targetQuantity} mantida conforme padrão da interface.`, 'info');
-      }
-
-      // 6. Fechar janela de configurações
-      this.addLog('🔒 [Passo 1] Fechando janela de configurações do FLOW...', 'info');
-      await this.closeSettingsPopover(settingsTrigger, popover);
-
-      // 7. Validação pós-fechamento
-      if (settingsTrigger) {
-        const afterText = (settingsTrigger.textContent || settingsTrigger.innerText || '').toLowerCase();
-        const afterAria = (settingsTrigger.getAttribute('aria-label') || '').toLowerCase();
-        if (currentRatioAliases.some(a => afterText.includes(a) || afterAria.includes(a))) {
-          ratioApplied = true;
+        if (imageBtn && !this.isButtonSelected(imageBtn)) {
+          this.addLog('⚙️ [Passo 1] Selecionando aba "Imagem"...', 'info');
+          const elClick = imageBtn.closest('button, [role="button"], [role="tab"]') || imageBtn;
+          this.clickElementWithOverlay(elClick);
+          await new Promise(r => setTimeout(r, 600));
+          allButtons = Array.from(popover.querySelectorAll(POPOVER_CLICKABLE_SELECTOR)).filter(b =>
+            FlowMacroEngine.isElementVisible(b) && !b.closest('[id*="fd-"], [class*="fd-"]')
+          );
         }
+
+        // 4. Seleciona a Proporção desejada (ex: 1:1)
+        let targetRatioBtn = allButtons.find(b => {
+          const t = (b.textContent || b.innerText || '').trim();
+          return t === targetRatio;
+        });
+
+        if (!targetRatioBtn) {
+          targetRatioBtn = allButtons.find(b => {
+            const aria = (b.getAttribute('aria-label') || '').trim();
+            const title = (b.getAttribute('title') || '').trim();
+            const val = (b.getAttribute('data-value') || '').trim();
+            return aria === targetRatio || title === targetRatio || val === targetRatio;
+          });
+        }
+
+        if (!targetRatioBtn) {
+          targetRatioBtn = allButtons.find(b => {
+            const t = (b.textContent || b.innerText || '').trim().toLowerCase();
+            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+            const title = (b.getAttribute('title') || '').toLowerCase();
+            const id = (b.id || '').toLowerCase();
+            const val = (b.getAttribute('data-value') || '').toLowerCase();
+            return currentRatioAliases.some(alias =>
+              t === alias || t.includes(alias) || aria.includes(alias) || title.includes(alias) || id.includes(alias) || val === alias
+            );
+          });
+        }
+
+        // Positional fallback: os 5 botões de proporção do FLOW ['16:9', '4:3', '1:1', '3:4', '9:16']
+        if (!targetRatioBtn) {
+          const ratioOrder = ['16:9', '4:3', '1:1', '3:4', '9:16'];
+          const targetIdx = ratioOrder.indexOf(targetRatio);
+          const ratioGroupButtons = allButtons.filter(b => {
+            const t = (b.textContent || b.innerText || '').trim();
+            return ratioOrder.includes(t) || ratioOrder.some(r => t.includes(r));
+          });
+          if (ratioGroupButtons.length === 5 && targetIdx >= 0) {
+            targetRatioBtn = ratioGroupButtons[targetIdx];
+          }
+        }
+
+        if (targetRatioBtn) {
+          const clickableRatio = targetRatioBtn.closest('button, [role="button"], [role="radio"], [role="tab"]') || targetRatioBtn;
+          this.addLog(`⚙️ [Passo 1] Selecionando proporção ${targetRatio} no FLOW...`, 'info');
+          clickableRatio.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+          clickableRatio.focus();
+
+          // Sequência limpa de eventos (down -> up -> click)
+          clickableRatio.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, view: window }));
+          clickableRatio.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+          await new Promise(r => setTimeout(r, 60));
+          clickableRatio.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, view: window }));
+          clickableRatio.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+          clickableRatio.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+          try { clickableRatio.click(); } catch (e) {}
+
+          await new Promise(r => setTimeout(r, 400));
+          this.addLog(`✅ [Passo 1] Proporção ${targetRatio} selecionada com sucesso!`, 'success');
+        } else {
+          this.addLog(`⚠️ [Passo 1] Botão de proporção ${targetRatio} não encontrado no menu aberto.`, 'warning');
+        }
+
+        // 5. Quantidade de Imagens (se presente no mesmo popover)
+        const qtyNum = `${this.config.quantity || 4}`;
+        const qtyAliases = [
+          targetQuantity.toLowerCase(),
+          `x${qtyNum}`, `${qtyNum}x`, `×${qtyNum}`, qtyNum,
+          `${qtyNum} imagens`, `${qtyNum} images`, `${qtyNum} fotos`
+        ];
+        const targetQtyBtn = allButtons.find(b => {
+          const t = (b.textContent || b.innerText || '').trim().toLowerCase();
+          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+          const val = (b.getAttribute('data-value') || '').toLowerCase();
+          return qtyAliases.some(q => t === q || t.includes(q) || aria.includes(q) || val === q);
+        });
+
+        if (targetQtyBtn) {
+          const clickableQty = targetQtyBtn.closest('button, [role="button"], [role="radio"], [role="tab"]') || targetQtyBtn;
+          clickableQty.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+          await new Promise(r => setTimeout(r, 300));
+          this.addLog(`✅ [Passo 1] Quantidade ${targetQuantity} selecionada.`, 'info');
+        }
+
+        // 6. Fecha o popover
+        await this.closeSettingsPopover(ratioTrigger, popover);
+      } else {
+        this.addLog('ℹ️ [Passo 1] Configurações já aplicadas ou menu não necessário.', 'info');
       }
 
       this.settingsConfiguredForProject = true;
@@ -5192,7 +5144,8 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
 
     const prevIndex = this.currentIndex;
     this.currentIndex = this.prompts.indexOf(item);
-    await this.executeSlide(item, false, item.index, 1, item.carouselTitle || 'Carrossel');
+    const needConfig = !this.isCurrentProjectConfigured();
+    await this.executeSlide(item, needConfig, item.index, 1, item.carouselTitle || 'Carrossel');
     this.currentIndex = prevIndex;
     this.notify();
   }
@@ -5318,6 +5271,14 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       this.notify();
 
       try {
+        // 0. Garante que o Canvas do FLOW não está com geração ativa em andamento antes de iniciar
+        const activeGenCheck = this.isCanvasGenerating();
+        if (activeGenCheck.generating) {
+          this.addLog(`⏳ [Canvas Ocupado] ${activeGenCheck.reason}. Aguardando conclusão da geração anterior...`, 'info');
+          await this.waitForGenerationToComplete(90);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+
         // Garante que estamos na tela do Canvas
         if (FlowMacroEngine.isFlowCharactersPage()) {
           this.addLog('↩️ Corrigindo página: retornando da tela de personagens para o Canvas do projeto...', 'info');
@@ -5382,25 +5343,13 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           this.addLog(`📝 [${isRepetition ? `Repetição ${rep + 1}/${targetRepeats}` : 'Passo 1'}] Prompt inserido no campo de texto.`, 'info');
           await this.stepDelay(null, isRepetition ? 'Reanexando personagens...' : 'Verificando configurações...');
 
-          // Passo 1 (Continuação): Configuração de formato e proporção de imagem (executado APENAS no 1º slide do carrossel, NUNCA em repetições)
-          if (isFirstSlideOfCarousel && !isRepetition) {
+          // Passo 1 (Continuação): Configuração de formato e proporção de imagem
+          // Executa se o projeto ainda não foi configurado OU no 1º slide do carrossel, NUNCA em repetições
+          const needSettingsConfig = (!this.isCurrentProjectConfigured() || isFirstSlideOfCarousel) && !isRepetition;
+          if (needSettingsConfig) {
             this.currentAction = '⚙️ [Passo 1] Configurando proporção e formato de imagem do carrossel...';
             this.notify();
             await this.applyFlowSettings();
-
-            // CORREÇÃO: Garante que nenhum menu de configurações externo ficou aberto após configurações
-            for (let closeWait = 0; closeWait < 5; closeWait++) {
-              const promptContainer = this.getPromptContainer();
-              const unwanted = Array.from(document.querySelectorAll('[role="dialog"], [role="menu"], [class*="popover" i], [data-radix-popper-content-wrapper]')).filter(el => {
-                if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-                if (promptContainer && (promptContainer === el || promptContainer.contains(el) || el.contains(promptContainer))) return false;
-                return true;
-              });
-              if (unwanted.length === 0) break;
-              this.addLog('⚠️ Popover de configurações ainda aberto. Fechando...', 'info');
-              document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
-              await new Promise(r => setTimeout(r, 400));
-            }
             await this.stepDelay(null, 'Verificando personagens...');
           }
 
@@ -5484,6 +5433,14 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           }
         }
 
+        // Garante que o Canvas está 100% desocupado antes de clicar no botão de envio
+        const preSubmitGen = this.isCanvasGenerating();
+        if (preSubmitGen.generating) {
+          this.addLog(`⏳ [Aguardando Canvas Livre] FLOW ainda gerando imagens (${preSubmitGen.reason}). Aguardando término antes de enviar...`, 'info');
+          await this.waitForGenerationToComplete(90);
+          await new Promise(r => setTimeout(r, 1500));
+        }
+
         // Passo 5: Clicar na seta no campo direito para enviar o prompt e gerar imagens no FLOW
         this.currentAction = '🚀 Enviando prompt para geração no FLOW...';
         this.notify();
@@ -5493,7 +5450,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         if (submitted) {
           this.addLog(`✅ [Passo 5] Inserção ${rep + 1}/${targetRepeats} disparada no FLOW: ${item.slideTitle || item.title}`, 'success');
           // Aguarda a geração da imagem ser concluída no Canvas do FLOW antes do intervalo/próximo slide
-          await this.waitForGenerationToComplete(60);
+          await this.waitForGenerationToComplete(90);
         } else {
           throw new Error('Não foi possível acionar o botão de envio nem a tecla Enter no FLOW.');
         }
@@ -5501,10 +5458,10 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         item.completedRepeats = rep + 1;
         this.saveState();
 
-        // Se houver repetições configuradas para o mesmo slide, aguarda delay pré-configurado de 10s
+        // Se houver repetições configuradas para o mesmo slide, aguarda delay pré-configurado
         if (rep + 1 < targetRepeats && (this.state === 'running' || this.state === 'idle')) {
-          const repDelay = parseInt(this.config.repeatDelaySeconds, 10) || 10;
-          this.addLog(`⏳ [Intervalo de Repetição] Aguardando ${repDelay}s para repetir prompt com mesmas imagens...`, 'info');
+          const repDelay = Math.max(10, parseInt(this.config.repeatDelaySeconds, 10) || 15);
+          this.addLog(`⏳ [Intervalo de Repetição] Geração 100% concluída! Aguardando delay de ${repDelay}s para repetir prompt com mesmas imagens...`, 'info');
           await this.waitWithCountdown(repDelay, `Próxima repetição (${rep + 2}/${targetRepeats})`);
         }
       } catch (err) {
