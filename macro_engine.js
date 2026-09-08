@@ -2208,7 +2208,7 @@ class FlowMacroEngine {
     const modalContainers = Array.from(document.querySelectorAll('div[role="dialog"], div[role="presentation"]')).filter(el => {
       if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
       const t = (el.textContent || '').toLowerCase();
-      return (t.includes('pesquisar recursos') || t.includes('adicionar ao comando') || t.includes('personagens'));
+      return (t.includes('pesquisar recursos') || t.includes('adicionar ao comando') || t.includes('incluir no comando') || t.includes('personagens') || t.includes('carregam') || t.includes('carregar multimídia'));
     });
 
     if (modalContainers.length === 0) return [];
@@ -2219,8 +2219,8 @@ class FlowMacroEngine {
       if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
       const hasImg = el.querySelector('img') !== null;
       const rect = el.getBoundingClientRect();
-      // Itens da lista central do modal têm altura entre 25px e 160px e largura > 80px
-      return hasImg && rect.height >= 25 && rect.height <= 160 && rect.width >= 80 && rect.width < 500;
+      // Itens da lista central do modal têm altura entre 20px e 300px e largura > 40px
+      return hasImg && rect.height >= 20 && rect.height <= 300 && rect.width >= 40 && rect.width < 600;
     });
 
     if (resourceItems.length > 0) return resourceItems;
@@ -2230,7 +2230,7 @@ class FlowMacroEngine {
       if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
       const hasImg = el.querySelector('img') !== null;
       const rect = el.getBoundingClientRect();
-      return hasImg && rect.height >= 25 && rect.height <= 120 && rect.width >= 100 && rect.width <= 380;
+      return hasImg && rect.height >= 20 && rect.height <= 300 && rect.width >= 40 && rect.width <= 600;
     });
 
     return genericItems;
@@ -2238,31 +2238,44 @@ class FlowMacroEngine {
 
   /**
    * Alterna para a aba desejada no menu lateral do modal de recursos do FLOW
-   * (Ex: "Personagens", "Avatares", "Imagens")
+   * (Ex: "Carregamentos", "Personagens", "Avatares", "Tudo")
    * @param {string} tabName - Nome da aba
    * @returns {Promise<boolean>}
    */
-  async selectLibraryModalTab(tabName = 'Personagens') {
+  async selectLibraryModalTab(tabName = 'Carregamentos') {
     try {
       const modalContainers = Array.from(document.querySelectorAll('div[role="dialog"], div[role="presentation"]')).filter(el => {
         if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
         const t = (el.textContent || '').toLowerCase();
-        return t.includes('pesquisar recursos') || t.includes('adicionar ao comando') || t.includes('personagens');
+        return t.includes('pesquisar recursos') || t.includes('adicionar ao comando') || t.includes('incluir no comando') || t.includes('carregam') || t.includes('personagens') || t.includes('carregar multimídia');
       });
 
       if (modalContainers.length === 0) return false;
       const modal = modalContainers[0];
 
+      const searchKey = (tabName || '').toLowerCase().trim();
+
       // Busca na coluna esquerda do modal por botões/divs com o nome da aba
       const candidates = Array.from(modal.querySelectorAll('button, [role="tab"], [role="button"], div[tabindex="0"], div, span')).filter(el => {
         if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-        const t = (el.textContent || el.innerText || '').trim();
-        return t.toLowerCase() === tabName.toLowerCase();
+        const t = (el.textContent || el.innerText || '').trim().toLowerCase();
+        if (searchKey.startsWith('carregam') || searchKey.startsWith('upload')) {
+          return t.startsWith('carregam') || t.startsWith('upload') || t.includes('carregam');
+        }
+        if (searchKey.startsWith('personagen') || searchKey.startsWith('character')) {
+          return t.startsWith('personagen') || t.startsWith('character') || t.includes('personagen');
+        }
+        if (searchKey.startsWith('avatar')) {
+          return t.startsWith('avatar') || t.includes('avatar');
+        }
+        if (searchKey === 'tudo' || searchKey === 'all') {
+          return t === 'tudo' || t === 'all';
+        }
+        return t === searchKey || t.includes(searchKey);
       });
 
       if (candidates.length === 0) {
-        // Fallback: busca por Avatares se Personagens não foi encontrado
-        if (tabName.toLowerCase() === 'personagens') {
+        if (searchKey.startsWith('personagen')) {
           return await this.selectLibraryModalTab('Avatares');
         }
         return false;
@@ -2672,6 +2685,19 @@ class FlowMacroEngine {
       const mediaCards = this.getLibraryMediaCards();
       let targetCard = (cIdx < mediaCards.length) ? mediaCards[cIdx] : null;
 
+      // Também tenta localizar o card pelo nome do personagem na lista
+      if (!targetCard && charName) {
+        const nameLower = charName.toLowerCase().replace(/_/g, ' ');
+        const nameUnder = charName.toLowerCase().replace(/\s+/g, '_');
+        for (const c of mediaCards) {
+          const t = (c.textContent || '').toLowerCase();
+          if (t.includes(charName.toLowerCase()) || t.includes(nameLower) || t.includes(nameUnder)) {
+            targetCard = c;
+            break;
+          }
+        }
+      }
+
       if (!targetCard) {
         targetCard = document.querySelector(`[data-testid='virtuoso-item-list'] > div:nth-of-type(${cIdx + 1}) div.sc-b0e5-14, [data-testid='virtuoso-item-list'] > div:nth-of-type(${cIdx + 1})`);
       }
@@ -2760,7 +2786,7 @@ class FlowMacroEngine {
     const modalElements = Array.from(document.querySelectorAll('div[role="dialog"], div[role="presentation"]')).filter(el => {
       if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
       const t = (el.textContent || '').toLowerCase();
-      return t.includes('pesquisar recursos') || t.includes('adicionar ao comando');
+      return t.includes('pesquisar recursos') || t.includes('adicionar ao comando') || t.includes('incluir no comando') || t.includes('carregam') || t.includes('personagens') || t.includes('carregar multimídia');
     });
 
     for (const modal of modalElements) {
@@ -2905,9 +2931,16 @@ class FlowMacroEngine {
 
     // Prioridade 1: Busca por texto contendo o nome do personagem na biblioteca
     if (charNameClean) {
+      const nameWithSpaces = charNameClean.replace(/_/g, ' ');
+      const nameWithUnderscores = charNameClean.replace(/\s+/g, '_');
       for (const card of mediaCards) {
         const cardText = (card.textContent || '').toLowerCase();
-        if (cardText.includes(charNameClean) || cardText.includes(`${charNameClean}_`)) {
+        if (
+          cardText.includes(charNameClean) ||
+          cardText.includes(nameWithSpaces) ||
+          cardText.includes(nameWithUnderscores) ||
+          cardText.includes(`${charNameClean}_`)
+        ) {
           this.addLog(`🎯 [Passo 4] Card de [${char.name}] localizado pelo nome na biblioteca!`, 'info');
           return card;
         }
@@ -2938,15 +2971,9 @@ class FlowMacroEngine {
       }
     }
 
-    // Prioridade 3: Filtra cards ignorando itens que contenham subtítulo explícito de "Imagem" gerada
-    const characterOnlyCards = mediaCards.filter(card => {
-      const cardText = (card.textContent || '').toLowerCase();
-      return !cardText.includes('\nimagem') && !cardText.endsWith('imagem');
-    });
-
-    const candidates = characterOnlyCards.length > 0 ? characterOnlyCards : mediaCards;
-    if (cIdx < candidates.length) {
-      return candidates[cIdx];
+    // Prioridade 3: Posição indexada na lista de mídia
+    if (cIdx < mediaCards.length) {
+      return mediaCards[cIdx];
     }
 
     return null;
@@ -3026,8 +3053,8 @@ class FlowMacroEngine {
   /**
    * Anexa imagens de personagens de referência no FLOW via modal de biblioteca/upload
    * Executa os Passos 2, 3 e 4 do fluxograma oficial:
-   * - Passo 2: Clica no botão "+" na barra de prompt para anexar imagens.
-   * - Passo 3: Busca na biblioteca do FLOW na aba "Personagens".
+   * - Passo 2: Clica no botão "+" na barra de prompt para anexar imagens e seleciona a aba "Carregamentos".
+   * - Passo 3: Se o personagem ainda não estiver na biblioteca no primeiro slide, faz upload silencioso do avatar e aguarda 100%.
    * - Passo 4: Seleciona o card do personagem, clica em "Adicionar ao comando", valida o chip e fecha o modal.
    * @returns {Promise<boolean>}
    */
@@ -3102,36 +3129,115 @@ class FlowMacroEngine {
           this.addLog(`📂 [Passo 2] Biblioteca do FLOW já aberta. Selecionando personagem [${char.name}]...`, 'info');
         }
 
-        // Garante que estamos na aba "Personagens" e NÃO em "Tudo"
-        await this.selectLibraryModalTab('Personagens');
-        await this.stepDelay(null, `Buscando imagem de [${char.name}] na biblioteca...`);
-
-        // Se houver nome configurado, busca pelo campo de texto "Pesquisar recursos" no modal
+        // Garante que o campo de busca de recursos está limpo para exibir todos os itens
         const modalEl = document.querySelector('div[role="dialog"], div[role="presentation"]');
-        if (modalEl && char.name) {
+        if (modalEl) {
           const searchInput = modalEl.querySelector('input[placeholder*="Pesquisar recursos" i], input[placeholder*="search" i]');
-          if (searchInput) {
-            searchInput.focus();
-            searchInput.value = char.name;
+          if (searchInput && searchInput.value) {
+            searchInput.value = '';
             searchInput.dispatchEvent(new Event('input', { bubbles: true }));
             searchInput.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        }
+
+        // Garante que estamos na aba "Carregamentos" (onde imagens enviadas ficam)
+        await this.selectLibraryModalTab('Carregamentos');
+        await this.stepDelay(null, `Buscando imagem de [${char.name}] na biblioteca...`);
+
+        // Busca o card na biblioteca do FLOW
+        let targetCard = null;
+        for (let cWait = 0; cWait < 8; cWait++) {
+          targetCard = await this.findCharacterCardInLibrary(char, cIdx);
+          if (targetCard) break;
+          await new Promise(r => setTimeout(r, 300));
+        }
+
+        // Se não encontrou em Carregamentos, verifica também na aba Personagens
+        if (!targetCard) {
+          const switchedToChars = await this.selectLibraryModalTab('Personagens');
+          if (switchedToChars) {
             await new Promise(r => setTimeout(r, 400));
+            targetCard = await this.findCharacterCardInLibrary(char, cIdx);
+          }
+        }
+
+        const avatarData = char.avatarUrl || char.avatar;
+
+        // =========================================================================
+        // Passo 3: Se o card NÃO foi encontrado na biblioteca e temos imagem de avatar:
+        // Realiza o upload no primeiro slide do projeto via file input silencioso
+        // (sem simular clique no botão para evitar o bloqueio de ativação do Chrome)
+        // =========================================================================
+        if (!targetCard && avatarData && avatarData.startsWith('data:')) {
+          this.addLog(`📤 [Passo 3] Card para [${char.name}] não encontrado na biblioteca. Fazendo upload do avatar para Carregamentos no FLOW...`, 'info');
+
+          // Volta para a aba Carregamentos antes de enviar
+          await this.selectLibraryModalTab('Carregamentos');
+          await new Promise(r => setTimeout(r, 400));
+
+          try {
+            // Localiza input de arquivos silencioso
+            let fileInput = document.querySelector('input[type="file"]:not([id*="fd-"]):not([class*="fd-"])');
+            if (!fileInput && modalEl) {
+              fileInput = modalEl.querySelector('input[type="file"]:not([id*="fd-"]):not([class*="fd-"])');
+            }
+            if (!fileInput) {
+              const uploadBtn = Array.from(document.querySelectorAll('button, [role="button"], label')).find(b => {
+                if (!FlowMacroEngine.isElementVisible(b) || b.closest('[id*="fd-"], [class*="fd-"]')) return false;
+                const t = (b.textContent || b.innerText || '').toLowerCase();
+                const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                return t.includes('carregar multimídia') || t.includes('carregar multimidia') || t.includes('enviar mídia') || t.includes('enviar media') || t.includes('upload') || aria.includes('enviar') || aria.includes('upload');
+              });
+              if (uploadBtn) {
+                const forId = uploadBtn.getAttribute('for');
+                if (forId) fileInput = document.getElementById(forId);
+                if (!fileInput) fileInput = uploadBtn.querySelector('input[type="file"]');
+              }
+            }
+
+            if (fileInput) {
+              this.addLog(`📤 [Passo 3] Disparando envio da imagem de [${char.name}] para a biblioteca do FLOW...`, 'info');
+              const blob = await fetch(avatarData).then(r => r.blob());
+              const safeName = (char.name || `char_${cIdx + 1}`).replace(/[^\w\d-_]/g, '_');
+              const file = new File([blob], `${safeName}.jpeg`, { type: blob.type || 'image/jpeg' });
+              const dt = new DataTransfer();
+              dt.items.add(file);
+              fileInput.files = dt.files;
+              fileInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+              fileInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+
+              // Monitora ativamente o upload até 100% de conclusão
+              await this.waitForCardUploadCompletion(cIdx, char.name, 60);
+
+              if (this.uploadedAvatarsInFlow) {
+                this.uploadedAvatarsInFlow.add(char.name);
+              }
+
+              // Garante que estamos na aba Carregamentos onde o arquivo foi enviado
+              await this.selectLibraryModalTab('Carregamentos');
+              await new Promise(r => setTimeout(r, 600));
+
+              // Localiza o card recém-enviado
+              for (let cWait = 0; cWait < 15; cWait++) {
+                targetCard = await this.findCharacterCardInLibrary(char, cIdx);
+                if (targetCard) break;
+                await new Promise(r => setTimeout(r, 400));
+              }
+            } else {
+              this.addLog('⚠️ [Passo 3] Elemento de input de arquivos não encontrado no modal do FLOW.', 'warning');
+            }
+          } catch (uploadErr) {
+            console.warn('[FLOW Macro] Erro no upload de avatar:', uploadErr);
+            this.addLog(`⚠️ [Passo 3] Erro ao enviar avatar de [${char.name}]: ${uploadErr.message}`, 'warning');
           }
         }
 
         // Passo 4: Clicar no card correspondente ao personagem atual
-        let targetCard = null;
-        for (let cWait = 0; cWait < 15; cWait++) {
-          targetCard = await this.findCharacterCardInLibrary(char, cIdx);
-          if (targetCard) break;
-          await new Promise(r => setTimeout(r, 400));
-        }
-
         if (targetCard) {
           this.addLog(`🎯 [Passo 4] Clicando no card de [${char.name}] (${cIdx + 1}/${activeChars.length})...`, 'info');
 
           let elToClick = targetCard;
-          const cardClickable = targetCard.querySelector('[role="button"], div[tabindex="0"], [data-type="button-overlay"]');
+          const cardClickable = targetCard.querySelector('[role="button"], div[tabindex="0"], [data-type="button-overlay"]') || targetCard.querySelector('img') || targetCard;
           if (cardClickable) {
             elToClick = cardClickable;
           }
@@ -3854,6 +3960,7 @@ class FlowMacroEngine {
     if (currentProjectId && this.lastConfiguredProjectId && currentProjectId !== this.lastConfiguredProjectId) {
       this.settingsConfiguredForProject = false;
       this.lastConfiguredProjectId = null;
+      this.uploadedAvatarsInFlow = new Set();
       return false;
     }
     return true;
@@ -5303,6 +5410,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
     this.dismissDangerousModals();
     this.settingsConfiguredForProject = false;
     this.lastConfiguredProjectId = null;
+    this.uploadedAvatarsInFlow = new Set();
     this.addLog('📁 [Passo A] Preparando criação de novo projeto no FLOW...', 'info');
 
     const hubUrl = FlowMacroEngine.getHubUrl();
