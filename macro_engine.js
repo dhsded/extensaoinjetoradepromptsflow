@@ -1433,6 +1433,7 @@ class FlowMacroEngine {
       const isInputOrTextarea = targetEditable.tagName.toLowerCase() === 'textarea' || targetEditable.tagName.toLowerCase() === 'input';
 
       if (isInputOrTextarea) {
+        targetEditable.focus();
         targetEditable.select();
         if (typeof targetEditable.setSelectionRange === 'function') {
           targetEditable.setSelectionRange(0, (targetEditable.value || '').length);
@@ -1447,9 +1448,28 @@ class FlowMacroEngine {
         targetEditable.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
         targetEditable.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       } else {
-        // Slate.js / ContentEditable
+        // Slate.js / ContentEditable no Google FLOW
+        targetEditable.focus();
+        await new Promise(r => setTimeout(r, 40));
 
-        // 1. Simula atalho Ctrl+A / Cmd+A para selecionar tudo
+        // 1. Manipulação direta no Fiber do Slate se acessível (Mais limpo e seguro para React)
+        try {
+          const editor = this.getSlateEditor(targetEditable);
+          if (editor && editor.children && Array.isArray(editor.children)) {
+            editor.children = [{ type: 'paragraph', children: [{ text: '' }] }];
+            if (editor.selection) {
+              editor.selection = {
+                anchor: { path: [0, 0], offset: 0 },
+                focus: { path: [0, 0], offset: 0 }
+              };
+            }
+            if (typeof editor.onChange === 'function') {
+              editor.onChange();
+            }
+          }
+        } catch (e) {}
+
+        // 2. Simula atalho Ctrl+A / Cmd+A para selecionar tudo
         const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
         targetEditable.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'a',
@@ -1462,17 +1482,28 @@ class FlowMacroEngine {
           cancelable: true
         }));
 
-        // 2. Cria seleção nativa cobrindo todo o conteúdo
+        // 3. Seleção nativa segura (blindada contra DOMException se o nó não estiver no documento)
         try {
-          const sel = window.getSelection();
-          const range = document.createRange();
-          range.selectNodeContents(targetEditable);
-          sel.removeAllRanges();
-          sel.addRange(range);
-          document.dispatchEvent(new Event('selectionchange'));
+          if (targetEditable.isConnected && document.contains(targetEditable) && targetEditable.childNodes.length > 0) {
+            const sel = window.getSelection();
+            if (sel) {
+              const range = document.createRange();
+              range.selectNodeContents(targetEditable);
+              sel.removeAllRanges();
+              sel.addRange(range);
+            }
+          }
+        } catch (e) {
+          // Captura e suprime DOMException: 'The given range isn\'t in document'
+        }
+
+        // 4. ExecCommand nativo para delete
+        try {
+          document.execCommand('selectAll', false, null);
+          document.execCommand('delete', false, null);
         } catch (e) {}
 
-        // 3. Dispara evento nativo BeforeInput de exclusão (reconhecido pelo Slate)
+        // 5. Dispara evento nativo BeforeInput de exclusão (reconhecido pelo Slate)
         try {
           const deleteEvent = new InputEvent('beforeinput', {
             bubbles: true,
@@ -1483,7 +1514,7 @@ class FlowMacroEngine {
           targetEditable.dispatchEvent(deleteEvent);
         } catch (e) {}
 
-        // 4. Simula pressionamento de Backspace
+        // 6. Simula pressionamento de Backspace
         targetEditable.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'Backspace',
           code: 'Backspace',
@@ -1501,29 +1532,6 @@ class FlowMacroEngine {
           cancelable: true
         }));
 
-        // 5. Fallback execCommand
-        try {
-          document.execCommand('selectAll', false, null);
-          document.execCommand('delete', false, null);
-        } catch (e) {}
-
-        // 6. Manipulação direta no Fiber do Slate se acessível
-        try {
-          const editor = this.getSlateEditor(targetEditable);
-          if (editor && editor.children && Array.isArray(editor.children)) {
-            editor.children = [{ type: 'paragraph', children: [{ text: '' }] }];
-            if (editor.selection) {
-              editor.selection = {
-                anchor: { path: [0, 0], offset: 0 },
-                focus: { path: [0, 0], offset: 0 }
-              };
-            }
-            if (typeof editor.onChange === 'function') {
-              editor.onChange();
-            }
-          }
-        } catch (e) {}
-
         // 7. Esvazia nós de texto residuais no DOM caso ainda permaneçam
         try {
           const currentText = (targetEditable.innerText || targetEditable.textContent || '').trim();
@@ -1538,6 +1546,12 @@ class FlowMacroEngine {
 
         targetEditable.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
         targetEditable.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+
+        // Limpa qualquer range remanescente na janela
+        try {
+          const sel = window.getSelection();
+          if (sel) sel.removeAllRanges();
+        } catch (e) {}
       }
 
       await new Promise(r => setTimeout(r, 60));
@@ -2186,36 +2200,87 @@ class FlowMacroEngine {
   }
 
   /**
-   * Retorna cards de mídia visíveis dentro do modal centralizado de recursos do FLOW
-   * O modal pode exibir a imagem como um item clicável com o nome do arquivo e um botão "Adicionar ao comando"
+   * Retorna cards de mídia/personagens visíveis dentro do modal centralizado de recursos do FLOW
+   * O modal exibe os recursos como itens clicáveis no painel central com nome e miniatura
    * @returns {HTMLElement[]}
    */
   _getResourceModalCards() {
-    const results = [];
-
-    // Busca items clicáveis no modal que contenham imagens (thumbnails dos recursos)
-    const resourceItems = Array.from(document.querySelectorAll('div[role="dialog"] div, div[role="presentation"] div')).filter(el => {
+    const modalContainers = Array.from(document.querySelectorAll('div[role="dialog"], div[role="presentation"]')).filter(el => {
       if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-      // Item de recurso geralmente contém uma imagem e texto com o nome do arquivo
-      const hasImg = el.querySelector('img') !== null;
       const t = (el.textContent || '').toLowerCase();
-      const hasFileExt = t.includes('.jpeg') || t.includes('.jpg') || t.includes('.png') || t.includes('.webp');
-      // Evitar containers muito grandes (o modal inteiro)
+      return (t.includes('pesquisar recursos') || t.includes('adicionar ao comando') || t.includes('personagens'));
+    });
+
+    if (modalContainers.length === 0) return [];
+    const modal = modalContainers[0];
+
+    // Busca itens de lista no modal que possuam thumbnail e título
+    const resourceItems = Array.from(modal.querySelectorAll('[role="option"], [role="listitem"], div[tabindex="0"], div.sc-b0e5-14, div.sc-a0e2840-0')).filter(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const hasImg = el.querySelector('img') !== null;
       const rect = el.getBoundingClientRect();
-      return hasImg && hasFileExt && rect.height < 200 && rect.height > 20;
+      // Itens da lista central do modal têm altura entre 25px e 160px e largura > 80px
+      return hasImg && rect.height >= 25 && rect.height <= 160 && rect.width >= 80 && rect.width < 500;
     });
 
     if (resourceItems.length > 0) return resourceItems;
 
-    // Fallback: busca items na lista de resultados do modal (podem ser botões ou divs clicáveis)
-    const clickableItems = Array.from(document.querySelectorAll('[role="option"], [role="listitem"], div[tabindex="0"]')).filter(el => {
+    // Fallback: divs com img dentro da área central do modal
+    const genericItems = Array.from(modal.querySelectorAll('div')).filter(el => {
       if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
       const hasImg = el.querySelector('img') !== null;
-      const t = (el.textContent || '').toLowerCase();
-      return hasImg && (t.includes('imagem') || t.includes('.jpeg') || t.includes('.jpg') || t.includes('.png'));
+      const rect = el.getBoundingClientRect();
+      return hasImg && rect.height >= 25 && rect.height <= 120 && rect.width >= 100 && rect.width <= 380;
     });
 
-    return clickableItems;
+    return genericItems;
+  }
+
+  /**
+   * Alterna para a aba desejada no menu lateral do modal de recursos do FLOW
+   * (Ex: "Personagens", "Avatares", "Imagens")
+   * @param {string} tabName - Nome da aba
+   * @returns {Promise<boolean>}
+   */
+  async selectLibraryModalTab(tabName = 'Personagens') {
+    try {
+      const modalContainers = Array.from(document.querySelectorAll('div[role="dialog"], div[role="presentation"]')).filter(el => {
+        if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        const t = (el.textContent || '').toLowerCase();
+        return t.includes('pesquisar recursos') || t.includes('adicionar ao comando') || t.includes('personagens');
+      });
+
+      if (modalContainers.length === 0) return false;
+      const modal = modalContainers[0];
+
+      // Busca na coluna esquerda do modal por botões/divs com o nome da aba
+      const candidates = Array.from(modal.querySelectorAll('button, [role="tab"], [role="button"], div[tabindex="0"], div, span')).filter(el => {
+        if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        const t = (el.textContent || el.innerText || '').trim();
+        return t.toLowerCase() === tabName.toLowerCase();
+      });
+
+      if (candidates.length === 0) {
+        // Fallback: busca por Avatares se Personagens não foi encontrado
+        if (tabName.toLowerCase() === 'personagens') {
+          return await this.selectLibraryModalTab('Avatares');
+        }
+        return false;
+      }
+
+      // Ordena para pegar o menor elemento específico
+      candidates.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
+      const targetTab = candidates[0];
+      const clickEl = targetTab.closest('button, [role="tab"], [role="button"], div[tabindex="0"]') || targetTab;
+
+      this.addLog(`📂 [Passo 2] Selecionando aba "${tabName}" na biblioteca do FLOW...`, 'info');
+      this.clickElementWithOverlay(clickEl);
+      await new Promise(r => setTimeout(r, 600));
+      return true;
+    } catch (e) {
+      console.warn('[FLOW Macro] selectLibraryModalTab warning:', e);
+      return false;
+    }
   }
 
   /**
@@ -2836,8 +2901,20 @@ class FlowMacroEngine {
     if (mediaCards.length === 0) return null;
 
     const avatarData = char.avatarUrl || char.avatar;
+    const charNameClean = (char.name || '').toLowerCase().trim();
 
-    // Prioridade 1: Comparação por Similaridade Visual de Imagem / Pixels
+    // Prioridade 1: Busca por texto contendo o nome do personagem na biblioteca
+    if (charNameClean) {
+      for (const card of mediaCards) {
+        const cardText = (card.textContent || '').toLowerCase();
+        if (cardText.includes(charNameClean) || cardText.includes(`${charNameClean}_`)) {
+          this.addLog(`🎯 [Passo 4] Card de [${char.name}] localizado pelo nome na biblioteca!`, 'info');
+          return card;
+        }
+      }
+    }
+
+    // Prioridade 2: Comparação por Similaridade Visual de Imagem / Pixels
     if (avatarData && avatarData.startsWith('data:')) {
       let bestMatch = null;
       let highestSimilarity = 0;
@@ -2855,25 +2932,21 @@ class FlowMacroEngine {
         }
       }
 
-      if (bestMatch && highestSimilarity >= 55) {
+      if (bestMatch && highestSimilarity >= 50) {
         this.addLog(`🎯 [Passo 4] Card de [${char.name}] identificado por similaridade de imagem (${highestSimilarity}% de correspondência)!`, 'success');
         return bestMatch;
       }
     }
 
-    // Prioridade 2: Busca por texto contendo o nome do personagem ou arquivo
-    const charNameClean = (char.name || '').toLowerCase().trim();
-    for (const card of mediaCards) {
+    // Prioridade 3: Filtra cards ignorando itens que contenham subtítulo explícito de "Imagem" gerada
+    const characterOnlyCards = mediaCards.filter(card => {
       const cardText = (card.textContent || '').toLowerCase();
-      if (charNameClean && (cardText.includes(charNameClean) || cardText.includes(`${charNameClean}_`))) {
-        this.addLog(`🎯 [Passo 4] Card de [${char.name}] localizado pelo nome na biblioteca!`, 'info');
-        return card;
-      }
-    }
+      return !cardText.includes('\nimagem') && !cardText.endsWith('imagem');
+    });
 
-    // Prioridade 3: Fallback por índice
-    if (cIdx < mediaCards.length) {
-      return mediaCards[cIdx];
+    const candidates = characterOnlyCards.length > 0 ? characterOnlyCards : mediaCards;
+    if (cIdx < candidates.length) {
+      return candidates[cIdx];
     }
 
     return null;
@@ -2924,6 +2997,40 @@ class FlowMacroEngine {
    * - Loop: Se existir mais de um personagem ativo, processa sequencialmente todos os personagens.
    * @returns {Promise<boolean>}
    */
+  /**
+   * Remove chips residuais de imagens geradas do Canvas (ex: chips com botão "Baixar")
+   * Mantendo apenas chips reais de personagens de referência
+   */
+  cleanupStrayPromptChips() {
+    try {
+      const promptContainer = this.getPromptContainer();
+      if (!promptContainer) return;
+
+      const strayCandidates = Array.from(promptContainer.querySelectorAll('div[class*="chip" i], span[class*="chip" i], [data-slate-node="element"]:has(img), div:has(img)')).filter(el => {
+        if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        const t = (el.textContent || '').toLowerCase();
+        return t.includes('baixar') || t.includes('download');
+      });
+
+      for (const stray of strayCandidates) {
+        const delBtn = stray.querySelector('button, [role="button"], svg, [class*="close" i], [class*="remove" i], [class*="delete" i]');
+        if (delBtn && FlowMacroEngine.isSafeToClick(delBtn)) {
+          this.clickElementWithOverlay(delBtn);
+        }
+      }
+    } catch (e) {
+      console.warn('[FLOW Macro] cleanupStrayPromptChips warning:', e);
+    }
+  }
+
+  /**
+   * Anexa imagens de personagens de referência no FLOW via modal de biblioteca/upload
+   * Executa os Passos 2, 3 e 4 do fluxograma oficial:
+   * - Passo 2: Clica no botão "+" na barra de prompt para anexar imagens.
+   * - Passo 3: Busca na biblioteca do FLOW na aba "Personagens".
+   * - Passo 4: Seleciona o card do personagem, clica em "Adicionar ao comando", valida o chip e fecha o modal.
+   * @returns {Promise<boolean>}
+   */
   async attachCharactersFromFlowLibrary() {
     // 0. Garante que estamos na tela de Canvas do projeto e não em /characters
     if (FlowMacroEngine.isFlowCharactersPage()) {
@@ -2932,6 +3039,9 @@ class FlowMacroEngine {
 
     // 0. Fecha qualquer banner de onboarding ou tutorial
     this.dismissFlowOnboardingBanners();
+
+    // 0.1 Limpa eventuais chips espúrios de gerações anteriores com rótulo "Baixar"
+    this.cleanupStrayPromptChips();
 
     const activeChars = (this.characters && this.characters.length > 0)
       ? this.characters.filter(c => c.enabled !== false)
@@ -2944,6 +3054,7 @@ class FlowMacroEngine {
     // Se todos os personagens já estiverem anexados à barra de comando, não precisa reenviar
     if (this.hasCharacterChipsAttached()) {
       this.addLog(`ℹ️ Todos os ${activeChars.length} personagens já anexados na barra de prompt.`, 'info');
+      await this.closeResourceModal();
       return true;
     }
 
@@ -2952,7 +3063,6 @@ class FlowMacroEngine {
     // Itera sequencialmente sobre cada personagem ativo (Passos 2 -> 3 -> 4)
     for (let cIdx = 0; cIdx < activeChars.length; cIdx++) {
       const char = activeChars[cIdx];
-      const avatarData = char.avatarUrl || char.avatar;
 
       this.currentAction = `🎭 Anexando personagem: ${char.name} (${cIdx + 1}/${activeChars.length})...`;
       this.notify();
@@ -2974,11 +3084,7 @@ class FlowMacroEngine {
 
         this.dismissFlowOnboardingBanners();
 
-        // =========================================================================
         // Passo 2: Garantir que a biblioteca/galeria de mídia do FLOW está aberta
-        // Se já estiver aberta na tela (por exemplo, do personagem anterior),
-        // NÃO clica novamente para não alternar/fechar o drawer!
-        // =========================================================================
         let libraryOpen = this.isFlowLibraryOpen();
 
         if (!libraryOpen) {
@@ -2996,57 +3102,24 @@ class FlowMacroEngine {
           this.addLog(`📂 [Passo 2] Biblioteca do FLOW já aberta. Selecionando personagem [${char.name}]...`, 'info');
         }
 
+        // Garante que estamos na aba "Personagens" e NÃO em "Tudo"
+        await this.selectLibraryModalTab('Personagens');
         await this.stepDelay(null, `Buscando imagem de [${char.name}] na biblioteca...`);
 
-        // =========================================================================
-        // Passo 3: Upload do personagem se a biblioteca ainda não tiver cards suficientes
-        // E monitoramento ativo até 100% de conclusão antes de qualquer clique!
-        // =========================================================================
-        let mediaCards = this.getLibraryMediaCards();
-        const hasCardForThisChar = mediaCards.length > cIdx;
-
-        if (avatarData && avatarData.startsWith('data:') && !hasCardForThisChar) {
-          try {
-            // Localiza botão de upload ("Enviar mídia" / "Upload")
-            const uploadBtn = Array.from(document.querySelectorAll('button, [role="button"]')).find(b => {
-              if (!FlowMacroEngine.isElementVisible(b) || !FlowMacroEngine.isSafeToClick(b)) return false;
-              const t = (b.textContent || b.innerText || '').toLowerCase();
-              const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-              return t.includes('enviar mídia') || t.includes('enviar media') || (t.includes('upload') && !t.includes('studio')) || aria.includes('enviar');
-            });
-            if (uploadBtn) {
-              this.clickElementWithOverlay(uploadBtn);
-              await new Promise(r => setTimeout(r, 400));
-            }
-
-            const fileInput = document.querySelector('input[type="file"]:not([id*="fd-"])');
-            if (fileInput) {
-              this.addLog(`📤 [Passo 3] Disparando envio da imagem de [${char.name}] para a biblioteca do FLOW...`, 'info');
-              const blob = await fetch(avatarData).then(r => r.blob());
-              const file = new File([blob], `${char.name || 'char'}_${cIdx + 1}.jpeg`, { type: blob.type || 'image/jpeg' });
-              const dt = new DataTransfer();
-              dt.items.add(file);
-              fileInput.files = dt.files;
-              fileInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-              fileInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-
-              // Monitora ativamente a porcentagem de envio e aguarda conclusão 100%
-              await this.waitForCardUploadCompletion(cIdx, char.name, 60);
-
-              if (this.uploadedAvatarsInFlow) this.uploadedAvatarsInFlow.add(char.name);
-            }
-          } catch (err) {
-            console.warn('[FLOW Macro] Aviso no upload de avatar:', err);
+        // Se houver nome configurado, busca pelo campo de texto "Pesquisar recursos" no modal
+        const modalEl = document.querySelector('div[role="dialog"], div[role="presentation"]');
+        if (modalEl && char.name) {
+          const searchInput = modalEl.querySelector('input[placeholder*="Pesquisar recursos" i], input[placeholder*="search" i]');
+          if (searchInput) {
+            searchInput.focus();
+            searchInput.value = char.name;
+            searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+            searchInput.dispatchEvent(new Event('change', { bubbles: true }));
+            await new Promise(r => setTimeout(r, 400));
           }
-        } else if (hasCardForThisChar) {
-          // Card já existe na lista, mas se estiver em processamento/upload pendente, aguarda
-          await this.waitForCardUploadCompletion(cIdx, char.name, 30);
         }
 
-        // =========================================================================
-        // Passo 4: Clicar no card correspondente ao personagem atual (após upload 100%)
-        // Localiza por similaridade visual de pixels, texto do nome ou índice
-        // =========================================================================
+        // Passo 4: Clicar no card correspondente ao personagem atual
         let targetCard = null;
         for (let cWait = 0; cWait < 15; cWait++) {
           targetCard = await this.findCharacterCardInLibrary(char, cIdx);
@@ -3057,25 +3130,19 @@ class FlowMacroEngine {
         if (targetCard) {
           this.addLog(`🎯 [Passo 4] Clicando no card de [${char.name}] (${cIdx + 1}/${activeChars.length})...`, 'info');
 
-          // Clique no CONTAINER do card (NÃO na <img> diretamente, pois isso abre o viewer de imagem)
-          // Prioridade: container clickável > div com class > o card em si
           let elToClick = targetCard;
-          // Tenta um div interativo dentro do card, mas NÃO a tag img
           const cardClickable = targetCard.querySelector('[role="button"], div[tabindex="0"], [data-type="button-overlay"]');
           if (cardClickable) {
             elToClick = cardClickable;
           }
-          // Fallback: clica no card container direto (sem descer para o img)
           this.clickElementWithOverlay(elToClick);
           await new Promise(r => setTimeout(r, 800));
 
-          // Se por algum motivo o FLOW expandiu a imagem na tela ao invés de selecionar, desfaz e retenta!
           if (this.isImageExpanded()) {
             this.addLog('⚠️ Imagem foi expandida ao invés de selecionada. Retornando ao Canvas e re-tentando...', 'warning');
             await this.exitExpandedImageView();
             await new Promise(r => setTimeout(r, 500));
 
-            // Re-tenta: desta vez clica no label de texto (nome do arquivo) dentro do card, se existir
             targetCard = await this.findCharacterCardInLibrary(char, cIdx);
             if (targetCard) {
               const textLabel = targetCard.querySelector('span, p, div[class*="name" i], div[class*="label" i]');
@@ -3087,9 +3154,7 @@ class FlowMacroEngine {
               }
               await new Promise(r => setTimeout(r, 800));
 
-              // Se expandiu de novo, desiste desta tentativa
               if (this.isImageExpanded()) {
-                this.addLog('⚠️ Imagem expandida novamente. Retornando ao Canvas...', 'warning');
                 await this.exitExpandedImageView();
                 await new Promise(r => setTimeout(r, 500));
               }
@@ -3102,29 +3167,24 @@ class FlowMacroEngine {
           return false;
         }
 
-        // =========================================================================
-        // 4.3: Verificar se já foi anexado diretamente OU buscar "Incluir no comando"
-        // =========================================================================
+        // Passo 4.3: Localiza e clica no botão "Adicionar ao comando" / "Incluir no comando"
         let includeBtn = null;
         const chipsBeforeInclude = this.getPromptAttachedChips();
         if (chipsBeforeInclude.length >= (cIdx + 1)) {
           this.addLog(`ℹ️ [Passo 4] Personagem [${char.name}] já anexado diretamente ao comando pelo card.`, 'info');
         } else {
-          // Busca o botão "Incluir no comando" / "Adicionar ao comando" por até 15 segundos
           for (let bWait = 0; bWait < 37; bWait++) {
             const btn = this.findIncludeInCommandButton();
             if (btn) {
-              // Verifica se o botão está habilitado (pode estar desabilitado durante upload)
               const isDisabled = btn.disabled || btn.getAttribute('aria-disabled') === 'true';
               if (!isDisabled) {
                 includeBtn = btn;
                 break;
               } else if (bWait % 5 === 0) {
-                this.addLog(`⏳ [Passo 4] Botão "Adicionar ao comando" encontrado mas desabilitado (upload em andamento). Aguardando...`, 'info');
+                this.addLog(`⏳ [Passo 4] Botão "Adicionar ao comando" encontrado mas desabilitado. Aguardando...`, 'info');
               }
             }
 
-            // Re-clica no card a cada ~3 segundos se necessário
             if ((bWait === 7 || bWait === 15 || bWait === 25) && targetCard) {
               this.addLog(`🔄 [Passo 4] Re-selecionando card de [${char.name}]...`, 'info');
               const reClick = targetCard.querySelector('img') || targetCard.querySelector('div.sc-b0e5-14') || targetCard;
@@ -3143,9 +3203,7 @@ class FlowMacroEngine {
           this.addLog(`ℹ️ [Passo 4] Verificando anexo do chip na barra de comando...`, 'info');
         }
 
-        // =========================================================================
-        // 4.4: Validação se o personagem foi anexado à barra de comando
-        // =========================================================================
+        // Passo 4.4: Validação do chip
         this.addLog(`⏳ [Passo 4] Validando anexo do personagem [${char.name}] na barra de comando...`, 'info');
         let chipAttached = false;
 
@@ -3155,7 +3213,6 @@ class FlowMacroEngine {
             chipAttached = true;
             break;
           }
-
           await new Promise(r => setTimeout(r, 400));
         }
 
@@ -3163,18 +3220,18 @@ class FlowMacroEngine {
           this.addLog(`✅ [Passo 4 Concluído] Personagem [${char.name}] (${cIdx + 1}/${activeChars.length}) anexado com sucesso ao comando!`, 'success');
           chipConfirmedForChar = true;
 
-          // Se for o ÚLTIMO personagem, fecha qualquer modal/drawer de detalhes remanescente
+          // Fecha modal se for o último
           if (cIdx === activeChars.length - 1) {
-            this.closeResourceModal();
+            await this.closeResourceModal();
           }
 
           await new Promise(r => setTimeout(r, 500));
-          break; // Sai do retry loop com sucesso!
+          break;
         } else {
           this.addLog(`⚠️ [Passo 4] Anexo de [${char.name}] não confirmado na barra de prompt. Tentativa ${attempt + 1}/3.`, 'warning');
           await new Promise(r => setTimeout(r, 600));
         }
-      } // fim do retry loop (3 tentativas)
+      } // fim das tentativas
 
       if (!chipConfirmedForChar) {
         this.addLog(`❌ [ERRO CRÍTICO] Não foi possível anexar o personagem [${char.name}] após 3 tentativas. O macro NÃO prosseguirá sem todos os personagens de referência.`, 'error');
@@ -3185,6 +3242,10 @@ class FlowMacroEngine {
       await new Promise(r => setTimeout(r, 600));
     }
 
+    // Garante que o modal de recursos está fechado ao concluir todos os personagens
+    await this.closeResourceModal();
+    await new Promise(r => setTimeout(r, 500));
+
     if (FlowMacroEngine.isFlowCharactersPage()) {
       await FlowMacroEngine.ensureOnFlowCanvas();
     }
@@ -3194,76 +3255,61 @@ class FlowMacroEngine {
   }
 
   /**
-   * Fecha qualquer detalhe ou modal de recursos de forma segura (sem clicar em filtros ou cabeçalho)
+   * Fecha qualquer detalhe ou modal de recursos de forma segura e garantida
    * @param {HTMLElement} [dialogContainer] - Container opcional
+   * @returns {Promise<boolean>}
    */
-  closeResourceModal(dialogContainer) {
+  async closeResourceModal(dialogContainer) {
     try {
-      if (!dialogContainer) {
-        // Prioridade 1: Tenta fechar o modal centralizado de recursos
-        if (this._isResourceModalOpen()) {
-          const resourceModals = Array.from(document.querySelectorAll('div[role="dialog"], div[role="presentation"], div[class*="modal" i], div[class*="overlay" i]')).filter(el => {
-            if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-            const t = (el.textContent || '').toLowerCase();
-            return (t.includes('pesquisar recursos') || t.includes('adicionar ao comando'));
-          });
-          if (resourceModals.length > 0) dialogContainer = resourceModals[0];
+      if (!this._isResourceModalOpen() && !dialogContainer) return true;
+
+      // 1. Envia tecla Escape para activeElement, window e document (keydown + keyup)
+      const targets = [document.activeElement, window, document].filter(Boolean);
+      for (const t of targets) {
+        t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
+        t.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
+      }
+      await new Promise(r => setTimeout(r, 250));
+
+      if (!this._isResourceModalOpen()) {
+        this.addLog('📂 Modal de recursos fechado.', 'info');
+        return true;
+      }
+
+      // 2. Tenta localizar botão fechar / close dentro do modal
+      const modal = dialogContainer || document.querySelector('div[role="dialog"], div[role="presentation"]');
+      if (modal && FlowMacroEngine.isElementVisible(modal)) {
+        const closeBtn = modal.querySelector('button[aria-label*="fechar" i], button[aria-label*="close" i], button[aria-label*="dismiss" i], button.sc-close, [data-testid*="close" i]');
+        if (closeBtn && FlowMacroEngine.isElementVisible(closeBtn)) {
+          this.simulateClick(closeBtn);
+          await new Promise(r => setTimeout(r, 300));
+          if (!this._isResourceModalOpen()) return true;
         }
 
-        // Prioridade 2: Seleciona modais/drawers legítimos (exclui containers com barra de pesquisa do PROJETO)
-        if (!dialogContainer) {
-          const candidates = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal" i], [class*="drawer" i], [class*="sheet" i]')).filter(el => {
-            if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-            // Rejeita se contiver a barra de pesquisa do projeto no cabeçalho (NÃO a do modal de recursos)
-            const searchInput = el.querySelector('input[placeholder*="Pesquisar" i], input[placeholder*="Search" i]');
-            if (searchInput) {
-              // Se o input for "Pesquisar recursos", é o modal de recursos → aceitar
-              const placeholder = (searchInput.getAttribute('placeholder') || '').toLowerCase();
-              if (placeholder.includes('recursos') || placeholder.includes('resources')) return true;
-              // Caso contrário, é a barra de pesquisa do projeto → rejeitar
-              return false;
-            }
-            return true;
-          });
-          if (candidates.length > 0) dialogContainer = candidates[0];
+        // 3. Clique físico no backdrop fora do modal (área superior esquerda da tela)
+        const rect = modal.getBoundingClientRect();
+        const clickX = Math.max(10, Math.floor(rect.left / 2));
+        const clickY = Math.max(10, Math.floor(rect.top / 2));
+        const outsideEl = document.elementFromPoint(clickX, clickY) || document.body;
+        if (outsideEl && !modal.contains(outsideEl) && !outsideEl.closest('[id*="fd-"], [class*="fd-"]')) {
+          outsideEl.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: clickX, clientY: clickY }));
+          outsideEl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: clickX, clientY: clickY }));
+          outsideEl.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: clickX, clientY: clickY }));
+          outsideEl.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: clickX, clientY: clickY }));
+          outsideEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: clickX, clientY: clickY }));
+          await new Promise(r => setTimeout(r, 300));
         }
       }
-      if (!dialogContainer) return;
 
-      // 1. Tenta fechar pelo botão Fechar / Close dentro do modal
-      const closeBtn = dialogContainer.querySelector
-        ? dialogContainer.querySelector('button[aria-label*="fechar" i], button[aria-label*="close" i], button[aria-label*="dismiss" i], button.sc-close, [data-testid*="close" i]')
-        : null;
+      // 4. Fallback final Escape
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
+      window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
+      await new Promise(r => setTimeout(r, 200));
 
-      if (closeBtn && FlowMacroEngine.isElementVisible(closeBtn) && FlowMacroEngine.isSafeToClick(closeBtn)) {
-        this.simulateClick(closeBtn);
-        return;
-      }
-
-      // 2. Busca botão de fechar genérico em todo o modal
-      const allCloseButtons = Array.from(dialogContainer.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
-        if (!FlowMacroEngine.isElementVisible(b) || !FlowMacroEngine.isSafeToClick(b)) return false;
-        const t = (b.textContent || b.innerText || '').trim().toLowerCase();
-        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-        return t === 'close' || t === 'fechar' || t === '✕' || t === '×' || t === 'x' ||
-               aria.includes('fechar') || aria.includes('close') || aria.includes('dismiss');
-      });
-
-      if (allCloseButtons.length > 0) {
-        this.simulateClick(allCloseButtons[0]);
-        return;
-      }
-
-      // 3. Clica fora do modal (no backdrop/overlay)
-      const backdrop = document.querySelector('[class*="backdrop" i], [class*="overlay" i], [class*="scrim" i]');
-      if (backdrop && FlowMacroEngine.isElementVisible(backdrop) && FlowMacroEngine.isSafeToClick(backdrop)) {
-        backdrop.click();
-        return;
-      }
-
-      // 4. Se nada funcionar, usa Escape como último recurso
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
-    } catch (e) { /* ignora */ }
+      return !this._isResourceModalOpen();
+    } catch (e) {
+      return false;
+    }
   }
 
   /**
@@ -3760,10 +3806,12 @@ class FlowMacroEngine {
    */
   async closeSettingsPopover(settingsTrigger, popover) {
     const isPopoverStillOpen = () => {
-      if (popover && FlowMacroEngine.isElementVisible(popover)) return true;
+      if (popover && popover.isConnected && FlowMacroEngine.isElementVisible(popover)) return true;
       const open = Array.from(document.querySelectorAll('[role="dialog"], [role="menu"], [class*="popover" i], [data-radix-popper-content-wrapper], [data-side]')).find(el => {
         if (el.closest && el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-        return FlowMacroEngine.isElementVisible(el);
+        if (!FlowMacroEngine.isElementVisible(el)) return false;
+        const t = (el.textContent || '').toLowerCase();
+        return t.includes('1:1') || t.includes('16:9') || t.includes('9:16') || t.includes('banana') || t.includes('proporç');
       });
       return !!open;
     };
@@ -4012,82 +4060,74 @@ class FlowMacroEngine {
     const allRatios = ['16:9', '4:3', '1:1', '3:4', '9:16'];
     if (!popover || !FlowMacroEngine.isElementVisible(popover)) return false;
 
-    // 1. Encontra todos os nós visíveis cujo textContent exato seja uma das 5 proporções
-    const matchingLeafNodes = Array.from(popover.querySelectorAll('*')).filter(el => {
-      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+    // Aguarda animação de abertura do popover estabilizar
+    await new Promise(r => setTimeout(r, 250));
+
+    // 1. Localiza todos os nós interativos dentro do popover
+    const candidateElements = Array.from(popover.querySelectorAll(
+      'button, [role="button"], [role="radio"], [role="tab"], div[tabindex], span[tabindex], [data-state], [data-value]'
+    )).filter(el => FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]'));
+
+    // 2. Procura o botão/item específico que contém EXCLUSIVAMENTE o targetRatio (ex: '1:1')
+    // e que NÃO contém nenhum dos outros 4 ratios (evitando containers pais que agrupam todos os botões)
+    const otherRatios = allRatios.filter(r => r !== targetRatio);
+
+    let targetBtn = candidateElements.find(el => {
       const txt = (el.textContent || '').trim();
-      return allRatios.includes(txt);
+      const aria = (el.getAttribute('aria-label') || '').trim();
+      const val = (el.getAttribute('data-value') || '').trim();
+      const combined = `${txt} ${aria} ${val}`;
+
+      if (!combined.includes(targetRatio)) return false;
+      // Garante que não é um container pai que engloba outros ratios
+      if (otherRatios.some(r => combined.includes(r))) return false;
+      return true;
     });
 
-    // Filtra para o nó folha mais profundo que corresponde ao targetRatio
-    const targetNodes = matchingLeafNodes.filter(el => (el.textContent || '').trim() === targetRatio);
-    targetNodes.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
-    const targetLeaf = targetNodes[0] || null;
+    // Fallback: se não encontrou em botões/radios, busca em nós folha com o texto exato
+    if (!targetBtn) {
+      const allTextNodes = Array.from(popover.querySelectorAll('*')).filter(el => {
+        if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        const txt = (el.textContent || '').trim();
+        return txt === targetRatio;
+      });
+      allTextNodes.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
+      if (allTextNodes.length > 0) {
+        const leaf = allTextNodes[0];
+        targetBtn = leaf.closest('button, [role="button"], [role="radio"], [role="tab"], div[tabindex]') || leaf;
+      }
+    }
 
-    if (!targetLeaf) {
-      this.addLog(`⚠️ [Passo 1] Rótulo da proporção ${targetRatio} não encontrado no popover.`, 'warning');
+    if (!targetBtn) {
+      this.addLog(`⚠️ [Passo 1] Botão da proporção ${targetRatio} não encontrado no popover.`, 'warning');
       return false;
     }
 
-    // 2. Sobe a partir do nó folha para encontrar o box/botão individual da proporção
-    // O box individual é o ancestral direto antes do container da linha (cujo pai contém os outros ratios irmãos)
-    let targetBox = targetLeaf;
-    for (let depth = 0; depth < 5; depth++) {
-      const parent = targetBox.parentElement;
-      if (!parent || parent === popover) break;
-      const parentTxt = parent.textContent || '';
-      const otherRatios = allRatios.filter(r => r !== targetRatio);
-      const parentHasOthers = otherRatios.some(r => parentTxt.includes(r));
-      if (parentHasOthers) {
-        break;
-      }
-      targetBox = parent;
-    }
+    this.addLog(`⚙️ [Passo 1] Botão da proporção ${targetRatio} localizado. Aplicando seleção direta...`, 'info');
 
-    this.addLog(`⚙️ [Passo 1] Botão da proporção ${targetRatio} localizado. Aplicando seleção...`, 'info');
+    // 3. Executa o clique DIRETO no elemento alvo (NUNCA usa document.elementFromPoint que pode desviar para 4:3)
+    targetBtn.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+    if (targetBtn.focus) targetBtn.focus();
 
-    targetBox.scrollIntoView({ behavior: 'instant', block: 'nearest' });
-    if (targetBox.focus) targetBox.focus();
-
-    // 3. Obtém as coordenadas reais e o elemento sob o cursor no centro do box
-    const rect = targetBox.getBoundingClientRect();
-    const clientX = Math.round(rect.left + rect.width / 2);
-    const clientY = Math.round(rect.top + rect.height / 2);
-    const hitElement = (clientX > 0 && clientY > 0) ? (document.elementFromPoint(clientX, clientY) || targetBox) : targetBox;
-
-    // 4. Executa o clique nos múltiplos alvos estruturais (hitElement, overlay, button, targetBox)
-    const targets = Array.from(new Set([
-      hitElement,
-      targetBox.querySelector('[data-type="button-overlay"]'),
-      targetBox.matches('button, [role="button"], [role="radio"], [role="tab"], div[tabindex]') ? targetBox : null,
-      targetBox.querySelector('button, [role="button"], [role="radio"], [role="tab"], div[tabindex]'),
-      targetBox,
-      targetLeaf
+    // Dispara sequências completas de eventos no botão e em seus filhos estruturais
+    const targetsToClick = Array.from(new Set([
+      targetBtn,
+      targetBtn.querySelector('span, svg, [data-type="button-overlay"]'),
+      targetBtn.firstElementChild
     ])).filter(Boolean);
 
-    const eventOpts = {
-      bubbles: true,
-      cancelable: true,
-      composed: true,
-      view: window,
-      clientX,
-      clientY,
-      button: 0,
-      buttons: 1
-    };
-
-    for (const el of targets) {
+    for (const el of targetsToClick) {
       try {
         if (typeof PointerEvent !== 'undefined') {
-          el.dispatchEvent(new PointerEvent('pointerdown', { ...eventOpts, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+          el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
         }
-        el.dispatchEvent(new MouseEvent('mousedown', eventOpts));
+        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
 
         if (typeof PointerEvent !== 'undefined') {
-          el.dispatchEvent(new PointerEvent('pointerup', { ...eventOpts, pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: 0 }));
+          el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: 0 }));
         }
-        el.dispatchEvent(new MouseEvent('mouseup', { ...eventOpts, buttons: 0 }));
-        el.dispatchEvent(new MouseEvent('click', { ...eventOpts, buttons: 0 }));
+        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 
         if (typeof el.click === 'function') {
           el.click();
@@ -4097,46 +4137,14 @@ class FlowMacroEngine {
         const propKey = Object.keys(el).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
         if (propKey && el[propKey]) {
           const props = el[propKey];
-          if (typeof props.onPointerDown === 'function') props.onPointerDown({ preventDefault: () => {}, stopPropagation: () => {}, target: el, currentTarget: el, clientX, clientY });
-          if (typeof props.onMouseDown === 'function') props.onMouseDown({ preventDefault: () => {}, stopPropagation: () => {}, target: el, currentTarget: el, clientX, clientY });
-          if (typeof props.onClick === 'function') props.onClick({ preventDefault: () => {}, stopPropagation: () => {}, target: el, currentTarget: el, clientX, clientY });
+          if (typeof props.onClick === 'function') props.onClick({ preventDefault: () => {}, stopPropagation: () => {}, target: el, currentTarget: el });
           if (typeof props.onChange === 'function') props.onChange({ target: el, currentTarget: el });
         }
       } catch (e) {}
     }
 
     await new Promise(r => setTimeout(r, 400));
-
-    // 5. Verificação da ativação da proporção
-    const checkSelected = () => {
-      const allEls = [targetBox, ...targetBox.querySelectorAll('*')];
-      for (const el of allEls) {
-        if (el.getAttribute('data-state') === 'active' || el.getAttribute('data-state') === 'on' || el.getAttribute('data-state') === 'checked') return true;
-        if (el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-selected') === 'true') return true;
-        if (el.classList.contains('active') || el.classList.contains('selected') || el.classList.contains('checked')) return true;
-      }
-      try {
-        const style = window.getComputedStyle(targetBox);
-        const border = style.borderColor || style.border;
-        if (border && (border.includes('255, 255, 255') || border.includes('rgb(255') || style.outlineColor.includes('255, 255, 255'))) {
-          return true;
-        }
-      } catch (e) {}
-      return false;
-    };
-
-    if (checkSelected()) {
-      this.addLog(`✅ [Passo 1] Proporção ${targetRatio} confirmada e ativa no FLOW!`, 'success');
-      return true;
-    }
-
-    // Se a confirmação visual ainda não disparou, faz tentativa de resguardo pelo clickElementWithOverlay
-    this.addLog(`⚙️ [Passo 1] Reforçando seleção de ${targetRatio} com overlay click...`, 'info');
-    this.clickElementWithOverlay(hitElement);
-    this.clickElementWithOverlay(targetBox);
-
-    await new Promise(r => setTimeout(r, 300));
-    this.addLog(`✅ [Passo 1] Proporção ${targetRatio} selecionada.`, 'success');
+    this.addLog(`✅ [Passo 1] Proporção ${targetRatio} selecionada com sucesso!`, 'success');
     return true;
   }
 
