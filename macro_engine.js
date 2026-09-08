@@ -1821,10 +1821,13 @@ class FlowMacroEngine {
     });
     if (mediaActions.length > 0) return true;
 
-    // 4. Lista virtual de mídias (gaveta lateral OU modal centralizado)
+    // 4. Lista virtual de mídias na GAVETA LATERAL (rect.right < 550, NÃO inclui o Canvas central!)
     const lists = Array.from(document.querySelectorAll('[data-testid="virtuoso-item-list"]')).filter(el => {
       if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-      return true;
+      const rect = el.getBoundingClientRect();
+      // Só conta como biblioteca se estiver na gaveta lateral (esquerda da tela)
+      // O Canvas principal usa virtuoso-item-list mas fica no centro/direita
+      return rect.right < 550;
     });
     if (lists.length > 0) return true;
 
@@ -1909,22 +1912,26 @@ class FlowMacroEngine {
     if (this._isResourceModalOpen()) {
       const modalCards = this._getResourceModalCards();
       if (modalCards.length > 0) return modalCards;
-    }
 
-    // 3. Procura lista virtuoso em qualquer posição (modal centralizado)
-    const anyVirtuosoList = Array.from(document.querySelectorAll('[data-testid="virtuoso-item-list"]')).find(el => {
-      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-      return true;
-    });
-
-    if (anyVirtuosoList) {
-      const children = Array.from(anyVirtuosoList.children).filter(el => {
-        return FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]');
+      // 2.1 Procura lista virtuoso DENTRO do modal de recursos (não no Canvas!)
+      const resourceModals = Array.from(document.querySelectorAll('div[role="dialog"], div[role="presentation"]')).filter(el => {
+        if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        const t = (el.textContent || '').toLowerCase();
+        return (t.includes('pesquisar recursos') || t.includes('adicionar ao comando'));
       });
-      if (children.length > 0) return children;
+
+      for (const modal of resourceModals) {
+        const modalVirtuoso = modal.querySelector('[data-testid="virtuoso-item-list"]');
+        if (modalVirtuoso && FlowMacroEngine.isElementVisible(modalVirtuoso)) {
+          const children = Array.from(modalVirtuoso.children).filter(el => {
+            return FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]');
+          });
+          if (children.length > 0) return children;
+        }
+      }
     }
 
-    // 4. Cards styled-components na gaveta lateral (rect.right < 500)
+    // 3. Cards styled-components na gaveta lateral (rect.right < 500)
     const scCards = Array.from(document.querySelectorAll('div.sc-b0e5-14, div.sc-a0e2840-0')).filter(el => {
       if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
       const rect = el.getBoundingClientRect();
@@ -2807,15 +2814,43 @@ class FlowMacroEngine {
         if (targetCard) {
           this.addLog(`🎯 [Passo 4] Clicando no card de [${char.name}] (${cIdx + 1}/${activeChars.length})...`, 'info');
 
-          // Clique único e preciso no card (a imagem na biblioteca)
-          const elToClick = targetCard.querySelector('img') || targetCard.querySelector('div.sc-b0e5-14') || targetCard;
+          // Clique no CONTAINER do card (NÃO na <img> diretamente, pois isso abre o viewer de imagem)
+          // Prioridade: container clickável > div com class > o card em si
+          let elToClick = targetCard;
+          // Tenta um div interativo dentro do card, mas NÃO a tag img
+          const cardClickable = targetCard.querySelector('[role="button"], div[tabindex="0"], [data-type="button-overlay"]');
+          if (cardClickable) {
+            elToClick = cardClickable;
+          }
+          // Fallback: clica no card container direto (sem descer para o img)
           this.clickElementWithOverlay(elToClick);
           await new Promise(r => setTimeout(r, 800));
 
-          // Se por algum motivo o FLOW expandiu a imagem na tela ao invés de selecionar, desfaz imediatamente!
+          // Se por algum motivo o FLOW expandiu a imagem na tela ao invés de selecionar, desfaz e retenta!
           if (this.isImageExpanded()) {
-            this.addLog('⚠️ Imagem foi expandida. Fechando visualização expandida e retornando ao controle...', 'warning');
+            this.addLog('⚠️ Imagem foi expandida ao invés de selecionada. Retornando ao Canvas e re-tentando...', 'warning');
             await this.exitExpandedImageView();
+            await new Promise(r => setTimeout(r, 500));
+
+            // Re-tenta: desta vez clica no label de texto (nome do arquivo) dentro do card, se existir
+            targetCard = await this.findCharacterCardInLibrary(char, cIdx);
+            if (targetCard) {
+              const textLabel = targetCard.querySelector('span, p, div[class*="name" i], div[class*="label" i]');
+              if (textLabel && FlowMacroEngine.isElementVisible(textLabel)) {
+                this.addLog('🔄 [Passo 4] Tentando selecionar card pelo label de texto...', 'info');
+                this.clickElementWithOverlay(textLabel);
+              } else {
+                this.clickElementWithOverlay(targetCard);
+              }
+              await new Promise(r => setTimeout(r, 800));
+
+              // Se expandiu de novo, desiste desta tentativa
+              if (this.isImageExpanded()) {
+                this.addLog('⚠️ Imagem expandida novamente. Retornando ao Canvas...', 'warning');
+                await this.exitExpandedImageView();
+                await new Promise(r => setTimeout(r, 500));
+              }
+            }
           }
         } else {
           this.addLog(`⚠️ [Passo 4] Card para [${char.name}] não encontrado na biblioteca. Tentativa ${attempt + 1}/3.`, 'warning');
