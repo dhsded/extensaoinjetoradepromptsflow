@@ -3449,8 +3449,20 @@ class FlowMacroEngine {
         await new Promise(r => setTimeout(r, 600));
 
         for (let w = 0; w < 10; w++) {
-          popover = document.querySelector('[role="dialog"], [role="menu"], [class*="popover" i], [class*="menu" i], [data-radix-popper-content-wrapper]');
-          if (popover && FlowMacroEngine.isElementVisible(popover) && !popover.closest('[id*="fd-"], [class*="fd-"]')) {
+          // Busca TODOS os popovers/dialogs e filtra para o que contém configurações de mídia
+          const candidates = Array.from(document.querySelectorAll('[role="dialog"], [role="menu"], [class*="popover" i], [class*="menu" i], [data-radix-popper-content-wrapper]')).filter(el => {
+            if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+            // Rejeita se for o modal do Macro Studio ou modal de recursos
+            if (el.id === 'fd-macro-studio-modal' || el.querySelector('#fd-macro-studio-modal')) return false;
+            const t = (el.textContent || '').toLowerCase();
+            // O popover de configurações contém abas de modo (Imagem/Video) OU proporções
+            const hasModeTabs = (t.includes('imagem') || t.includes('image')) && (t.includes('vídeo') || t.includes('video'));
+            const hasRatios = t.includes('16:9') || t.includes('9:16') || t.includes('1:1');
+            const hasQuantity = t.includes('x1') || t.includes('x2') || t.includes('x3') || t.includes('x4');
+            return hasModeTabs || hasRatios || hasQuantity;
+          });
+          if (candidates.length > 0) {
+            popover = candidates[0];
             break;
           }
           await new Promise(r => setTimeout(r, 150));
@@ -3464,8 +3476,10 @@ class FlowMacroEngine {
         return false;
       }
 
-      const searchRoot = popover;
-      const allButtons = Array.from(searchRoot.querySelectorAll('button, [role="button"], div[role="radio"], div[tabindex="0"]')).filter(b => FlowMacroEngine.isElementVisible(b) && FlowMacroEngine.isSafeToClick(b));
+      this.addLog('📋 [Passo 1] Popover de configurações encontrado! Aplicando ajustes...', 'info');
+
+      let searchRoot = popover;
+      let allButtons = Array.from(searchRoot.querySelectorAll('button, [role="button"], div[role="radio"], div[tabindex="0"]')).filter(b => FlowMacroEngine.isElementVisible(b) && FlowMacroEngine.isSafeToClick(b));
 
       // 3. Seção 1: Garantir modo "Imagem" (nunca Vídeo)
       const exactImageBtn = searchRoot.querySelector('button[id*="-trigger-IMAGE"], [aria-label*="Imagem" i], [aria-label*="image" i]');
@@ -3474,10 +3488,19 @@ class FlowMacroEngine {
         return (t === 'imagem' || t === 'image' || t.includes('imagem')) && !t.includes('vídeo') && !t.includes('video') && !t.includes('elemento');
       });
 
-      if (imageBtn && !this.isButtonSelected(imageBtn)) {
-        this.addLog('⚙️ [Passo 1] Alterando para modo "Imagem"...', 'info');
-        this.clickElementWithOverlay(imageBtn);
-        await new Promise(r => setTimeout(r, 350));
+      if (imageBtn) {
+        if (!this.isButtonSelected(imageBtn)) {
+          this.addLog('⚙️ [Passo 1] Alterando para modo "Imagem"...', 'info');
+          this.clickElementWithOverlay(imageBtn);
+          // Aguarda mais tempo para o FLOW reconstruir as opções de proporção do modo Imagem
+          await new Promise(r => setTimeout(r, 800));
+          // Re-consulta os botões após mudança de modo, pois as opções de proporção mudam!
+          allButtons = Array.from(searchRoot.querySelectorAll('button, [role="button"], div[role="radio"], div[tabindex="0"]')).filter(b => FlowMacroEngine.isElementVisible(b) && FlowMacroEngine.isSafeToClick(b));
+        } else {
+          this.addLog('✅ [Passo 1] Modo "Imagem" já selecionado.', 'info');
+        }
+      } else {
+        this.addLog('⚠️ [Passo 1] Botão "Imagem" não encontrado no popover de configurações.', 'warning');
       }
 
       // 4. Seção 2: Ajustar Proporção da Imagem (16:9, 9:16, 1:1, 3:4, 4:3)
@@ -3490,16 +3513,22 @@ class FlowMacroEngine {
       };
 
       const exactRatioBtn = ratioSelectorMap[targetRatio] ? searchRoot.querySelector(ratioSelectorMap[targetRatio]) : null;
-      const targetRatioBtn = exactRatioBtn || allButtons.find(b => {
+      let targetRatioBtn = exactRatioBtn || allButtons.find(b => {
         const t = (b.textContent || b.innerText || '').trim();
         const aria = (b.getAttribute('aria-label') || '').trim();
         return t === targetRatio || t.includes(targetRatio) || aria.includes(targetRatio);
       });
 
-      if (targetRatioBtn && !this.isButtonSelected(targetRatioBtn)) {
-        this.addLog(`⚙️ [Passo 1] Ajustando proporção para ${targetRatio}...`, 'info');
-        this.clickElementWithOverlay(targetRatioBtn);
-        await new Promise(r => setTimeout(r, 400));
+      if (targetRatioBtn) {
+        if (!this.isButtonSelected(targetRatioBtn)) {
+          this.addLog(`⚙️ [Passo 1] Ajustando proporção para ${targetRatio}...`, 'info');
+          this.clickElementWithOverlay(targetRatioBtn);
+          await new Promise(r => setTimeout(r, 400));
+        } else {
+          this.addLog(`✅ [Passo 1] Proporção ${targetRatio} já selecionada.`, 'info');
+        }
+      } else {
+        this.addLog(`⚠️ [Passo 1] Botão de proporção ${targetRatio} não encontrado no popover.`, 'warning');
       }
 
       // 5. Seção 3: Ajustar Quantidade de Imagens (x1, x2, x3, x4)
@@ -3516,10 +3545,16 @@ class FlowMacroEngine {
         return t === targetQuantity.toLowerCase() || t === `${this.config.quantity}` || t === `×${this.config.quantity}`;
       });
 
-      if (targetQtyBtn && !this.isButtonSelected(targetQtyBtn)) {
-        this.addLog(`⚙️ [Passo 1] Ajustando quantidade para ${targetQuantity}...`, 'info');
-        this.clickElementWithOverlay(targetQtyBtn);
-        await new Promise(r => setTimeout(r, 400));
+      if (targetQtyBtn) {
+        if (!this.isButtonSelected(targetQtyBtn)) {
+          this.addLog(`⚙️ [Passo 1] Ajustando quantidade para ${targetQuantity}...`, 'info');
+          this.clickElementWithOverlay(targetQtyBtn);
+          await new Promise(r => setTimeout(r, 400));
+        } else {
+          this.addLog(`✅ [Passo 1] Quantidade ${targetQuantity} já selecionada.`, 'info');
+        }
+      } else {
+        this.addLog(`⚠️ [Passo 1] Botão de quantidade ${targetQuantity} não encontrado no popover.`, 'warning');
       }
 
       // 6. Fechar janela de configurações
