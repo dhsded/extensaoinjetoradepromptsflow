@@ -774,12 +774,14 @@ class FlowMacroEngine {
    * @param {string} actionName - Descrição da ação atual para atualizar a interface
    */
   async stepDelay(customMs = null, actionName = '') {
+    if (this.isStopped || this.state !== 'running') return;
     const ms = customMs !== null ? customMs : (parseInt(this.config.actionDelayMs, 10) || 500);
     if (actionName) {
       this.currentAction = actionName;
       this.notify();
     }
-    await new Promise(r => setTimeout(r, ms));
+    await new Promise(r => { this.timer = setTimeout(r, ms); });
+    if (this.isStopped || this.state !== 'running') return;
   }
 
   /**
@@ -795,7 +797,7 @@ class FlowMacroEngine {
     this.notify();
 
     for (let rem = total; rem > 0; rem--) {
-      if (this.state !== 'running') break;
+      if (this.isStopped || this.state !== 'running') break;
       this.countdown = { remaining: rem, total, label };
       this.currentAction = `⏳ ${label} em ${rem}s...`;
       this.notify();
@@ -806,6 +808,7 @@ class FlowMacroEngine {
       }
 
       await new Promise(r => { this.timer = setTimeout(r, 1000); });
+      if (this.isStopped || this.state !== 'running') break;
     }
 
     this.countdown = { remaining: 0, total: 0, label: '' };
@@ -3315,8 +3318,129 @@ class FlowMacroEngine {
   }
 
   /**
+   * Detecta se existem cards com falha explícita de geração de imagem no Canvas do FLOW
+   * Mensagem: "Falhou - Lamentamos, mas não foi possível gerar esta imagem. Não lhe foi cobrado nenhum valor por esta geração."
+   * @returns {{ failed: boolean, count: number, elements: HTMLElement[] }}
+   */
+  hasCanvasFailedGenerations() {
+    const failureKeywords = [
+      'não foi possível gerar esta imagem',
+      'não foi possível gerar',
+      'lamentamos, mas não foi possível',
+      'não lhe foi cobrado nenhum valor',
+      'falhou',
+      'failed to generate',
+      'couldn\'t generate this image'
+    ];
+
+    const failedEls = Array.from(document.querySelectorAll('div, p, span, h3, h4, section, article')).filter(el => {
+      if (el.closest && el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      if (!FlowMacroEngine.isElementVisible(el)) return false;
+      const t = (el.textContent || el.innerText || '').trim().toLowerCase();
+      if (t.length > 250) return false;
+      return failureKeywords.some(k => t.includes(k));
+    });
+
+    if (failedEls.length === 0) {
+      return { failed: false, count: 0, elements: [] };
+    }
+
+    const cards = failedEls.map(el => {
+      // Sobe pela árvore do DOM para encontrar o container pai do card que contenha o botão de exclusão
+      let curr = el;
+      for (let depth = 0; depth < 8; depth++) {
+        if (!curr.parentElement || curr.parentElement === document.body) break;
+        curr = curr.parentElement;
+        if (curr.querySelector('button, [role="button"], svg, [aria-label*="delete" i], [aria-label*="excluir" i]')) {
+          return curr;
+        }
+      }
+      return el.closest('[class*="card" i], [role="article"], [class*="item" i], div[tabindex]') || el.parentElement || el;
+    });
+
+    const uniqueCards = Array.from(new Set(cards));
+
+    return {
+      failed: uniqueCards.length > 0,
+      count: uniqueCards.length,
+      elements: uniqueCards
+    };
+  }
+
+  /**
+   * Exclui ou descarta os cards com falha no Canvas clicando no botão de lixeira [🗑] do card
+   * @returns {number} Quantidade de cards descartados
+   */
+  dismissFailedCards() {
+    const failedCheck = this.hasCanvasFailedGenerations();
+    if (!failedCheck.failed) return 0;
+
+    let dismissed = 0;
+    for (const card of failedCheck.elements) {
+      try {
+        const btns = Array.from(card.querySelectorAll('button, [role="button"], div[role="button"], svg, [tabindex="0"]')).filter(b => FlowMacroEngine.isElementVisible(b));
+        let trashBtn = btns.find(b => {
+          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+          const title = (b.getAttribute('title') || '').toLowerCase();
+          const html = (b.innerHTML || '').toLowerCase();
+          const t = (b.textContent || '').trim().toLowerCase();
+          return aria.includes('delete') || aria.includes('excluir') || aria.includes('remover') || aria.includes('descartar') || aria.includes('trash') ||
+                 title.includes('delete') || title.includes('excluir') || title.includes('remover') ||
+                 html.includes('delete') || html.includes('trash') || html.includes('excluir') ||
+                 t === 'delete' || t === 'excluir' || t === 'remover';
+        });
+
+        // Fallback geográfico: no FLOW o botão de lixeira fica localizado no canto inferior direito do card
+        if (!trashBtn && btns.length > 0) {
+          const cardRect = card.getBoundingClientRect();
+          const candidateBtns = btns.filter(b => {
+            const r = b.getBoundingClientRect();
+            return r.top >= cardRect.top + cardRect.height * 0.4 && r.left >= cardRect.left + cardRect.width * 0.4;
+          });
+          if (candidateBtns.length > 0) {
+            trashBtn = candidateBtns[candidateBtns.length - 1];
+          } else {
+            trashBtn = btns[btns.length - 1];
+          }
+        }
+
+        if (trashBtn) {
+          const clickTarget = trashBtn.closest('button, [role="button"]') || trashBtn;
+          clickTarget.focus();
+          this.simulateClick(clickTarget);
+          clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+          try { clickTarget.click(); } catch (e) {}
+
+          // Dispara handler React direto se presente
+          try {
+            const propKey = Object.keys(clickTarget).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
+            if (propKey && clickTarget[propKey] && typeof clickTarget[propKey].onClick === 'function') {
+              clickTarget[propKey].onClick({ preventDefault: () => {}, stopPropagation: () => {}, target: clickTarget, currentTarget: clickTarget });
+            }
+          } catch(e) {}
+          dismissed++;
+        }
+      } catch (e) {
+        console.warn('[FLOW Macro] Erro ao descartar card com falha:', e);
+      }
+    }
+
+    // Se abrir confirmação de exclusão (ex: modal "Excluir"), confirma imediatamente
+    const confirmBtn = Array.from(document.querySelectorAll('[role="dialog"] button, [role="alertdialog"] button')).find(b => {
+      const t = (b.textContent || '').trim().toLowerCase();
+      return t.includes('excluir') || t.includes('delete') || t.includes('confirm') || t.includes('sim') || t.includes('ok');
+    });
+    if (confirmBtn) {
+      this.simulateClick(confirmBtn);
+      try { confirmBtn.click(); } catch(e) {}
+    }
+
+    return dismissed;
+  }
+
+  /**
    * Monitora e aguarda a conclusão da geração da imagem no Canvas do FLOW
-   * Espera até que TODAS as porcentagens (ex: 87%) desapareçam e as imagens sejam renderizadas
+   * Detecta porcentagens (ex: 87%), cancelamento por STOP e falhas explícitas ("Falhou")
    * @param {number} maxWaitSeconds - Tempo máximo de espera em segundos (padrão: 90s)
    * @returns {Promise<boolean>}
    */
@@ -3326,14 +3450,22 @@ class FlowMacroEngine {
     const maxMs = maxWaitSeconds * 1000;
 
     // Período de carência inicial para o FLOW registrar o envio e criar os cards no Canvas
-    await new Promise(r => setTimeout(r, 2500));
+    await new Promise(r => { this.timer = setTimeout(r, 2500); });
 
     let sawGenerating = false;
     let consecutiveIdleChecks = 0;
 
     while (Date.now() - startTime < maxMs) {
-      if (this.state !== 'running' && this.state !== 'idle') break;
+      if (this.isStopped || this.state !== 'running') return false;
 
+      // 1. Verifica se houve falha explícita no Canvas ("Falhou - Lamentamos...")
+      const failCheck = this.hasCanvasFailedGenerations();
+      if (failCheck.failed) {
+        this.addLog(`⚠️ [FLOW] Falha na geração detectada no Canvas (${failCheck.count} card(s) com erro: "Falhou").`, 'warning');
+        return false;
+      }
+
+      // 2. Verifica se o Canvas ainda está processando
       const check = this.isCanvasGenerating();
 
       if (check.generating) {
@@ -3349,15 +3481,26 @@ class FlowMacroEngine {
           // Exige 3 verificações consecutivas vazias (3s de estabilidade confirmada)
           if (consecutiveIdleChecks >= 3) {
             const totalElapsed = Math.round((Date.now() - startTime) / 1000);
+
+            // Re-verifica se ao finalizar as porcentagens não surgiu mensagem de falha
+            const postFailCheck = this.hasCanvasFailedGenerations();
+            if (postFailCheck.failed) {
+              this.addLog(`⚠️ [FLOW] Imagem finalizou com status de falha (${postFailCheck.count} card(s) "Falhou").`, 'warning');
+              return false;
+            }
+
             this.addLog(`✨ [FLOW] Geração de imagens concluída no Canvas (${totalElapsed}s)!`, 'success');
-            await new Promise(r => setTimeout(r, 2000));
+            await new Promise(r => { this.timer = setTimeout(r, 2000); });
             return true;
           }
         }
       }
 
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => { this.timer = setTimeout(r, 1000); });
     }
+
+    const finalFail = this.hasCanvasFailedGenerations();
+    if (finalFail.failed) return false;
 
     this.addLog('⏱️ Tempo de espera da geração concluído.', 'info');
     return true;
@@ -3834,44 +3977,64 @@ class FlowMacroEngine {
         }
 
         // 4. Seleciona a Proporção desejada (ex: 1:1)
-        let targetRatioBtn = allButtons.find(b => {
-          const t = (b.textContent || b.innerText || '').trim();
-          return t === targetRatio;
+        // Mapeamento exclusivo de regex para cada ratio para impedir que botões de 4:3, 16:9, etc. sejam clicados por engano
+        const ratioExactPatterns = {
+          '1:1': [/\b1\s*[:x/]\s*1\b/i, /\b(square|quadrad)\b/i, /crop_square/i],
+          '9:16': [/\b9\s*[:x/]\s*16\b/i, /\b(portrait|retrato|vertical)\b/i, /crop_9_16/i, /crop_portrait/i],
+          '16:9': [/\b16\s*[:x/]\s*9\b/i, /\b(landscape|paisagem|horizontal|widescreen)\b/i, /crop_16_9/i, /crop_landscape/i],
+          '3:4': [/\b3\s*[:x/]\s*4\b/i, /crop_3_4/i],
+          '4:3': [/\b4\s*[:x/]\s*3\b/i, /crop_4_3/i]
+        };
+
+        const otherRatios = ['16:9', '4:3', '3:4', '9:16', '1:1'].filter(r => r !== targetRatio);
+
+        // Coleta todos os elementos interativos e nós com texto/atributos dentro do popover
+        const candidates = Array.from(popover.querySelectorAll('button, [role="button"], [role="radio"], [role="tab"], [role="option"], [data-value], div[tabindex], span, label')).filter(el => {
+          if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+          return true;
         });
 
-        if (!targetRatioBtn) {
-          targetRatioBtn = allButtons.find(b => {
-            const aria = (b.getAttribute('aria-label') || '').trim();
-            const title = (b.getAttribute('title') || '').trim();
-            const val = (b.getAttribute('data-value') || '').trim();
-            return aria === targetRatio || title === targetRatio || val === targetRatio;
-          });
-        }
+        // Helper para garantir que o elemento pertence única e exclusivamente ao ratio desejado (e não a um container com múltiplos ratios)
+        const isExclusivelyTargetRatio = (el) => {
+          const t = (el.textContent || el.innerText || '').trim();
+          const aria = (el.getAttribute('aria-label') || '').trim();
+          const title = (el.getAttribute('title') || '').trim();
+          const val = (el.getAttribute('data-value') || '').trim();
+          const html = el.innerHTML || '';
+          const fullStr = `${t} ${aria} ${title} ${val} ${html}`;
 
-        if (!targetRatioBtn) {
-          targetRatioBtn = allButtons.find(b => {
-            const t = (b.textContent || b.innerText || '').trim().toLowerCase();
-            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-            const title = (b.getAttribute('title') || '').toLowerCase();
-            const id = (b.id || '').toLowerCase();
-            const val = (b.getAttribute('data-value') || '').toLowerCase();
-            return currentRatioAliases.some(alias =>
-              t === alias || t.includes(alias) || aria.includes(alias) || title.includes(alias) || id.includes(alias) || val === alias
-            );
+          // Se contém referências a qualquer outro ratio diferente, descarta imediatamente (é um container pai ou lista)
+          const hasOther = otherRatios.some(other => {
+            const pats = ratioExactPatterns[other] || [];
+            return pats.some(p => p.test(fullStr));
           });
-        }
+          if (hasOther) return false;
 
-        // Positional fallback: os 5 botões de proporção do FLOW ['16:9', '4:3', '1:1', '3:4', '9:16']
+          const targetPats = ratioExactPatterns[targetRatio] || [new RegExp(targetRatio, 'i')];
+          return targetPats.some(p => p.test(fullStr));
+        };
+
+        // Prioridade 1: Elemento interativo exclusivo do targetRatio
+        let targetRatioBtn = candidates.find(el => {
+          const isClickable = el.matches('button, [role="button"], [role="radio"], [role="tab"], [role="option"]');
+          return isClickable && isExclusivelyTargetRatio(el);
+        });
+
+        // Prioridade 2: Qualquer nó folha exclusivo cujo elemento pai/ancestral seja clicável
         if (!targetRatioBtn) {
-          const ratioOrder = ['16:9', '4:3', '1:1', '3:4', '9:16'];
-          const targetIdx = ratioOrder.indexOf(targetRatio);
-          const ratioGroupButtons = allButtons.filter(b => {
-            const t = (b.textContent || b.innerText || '').trim();
-            return ratioOrder.includes(t) || ratioOrder.some(r => t.includes(r));
-          });
-          if (ratioGroupButtons.length === 5 && targetIdx >= 0) {
-            targetRatioBtn = ratioGroupButtons[targetIdx];
+          const leafNode = candidates.find(el => isExclusivelyTargetRatio(el));
+          if (leafNode) {
+            targetRatioBtn = leafNode.closest('button, [role="button"], [role="radio"], [role="tab"], [role="option"]') || leafNode;
           }
+        }
+
+        // Prioridade 3: Procura por nós contendo especificamente o texto '1:1' (ou targetRatio exato)
+        if (!targetRatioBtn) {
+          targetRatioBtn = candidates.find(el => {
+            const t = (el.textContent || el.innerText || '').trim();
+            const aria = (el.getAttribute('aria-label') || '').trim();
+            return (t === targetRatio || aria === targetRatio) && !otherRatios.some(o => (el.textContent || '').includes(o));
+          });
         }
 
         if (targetRatioBtn) {
@@ -4523,6 +4686,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
 
     if (this.state === 'running') return;
 
+    this.isStopped = false;
     this.state = 'running';
     if (!this.startTime) {
       this.startTime = Date.now();
@@ -4553,7 +4717,10 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
    */
   pause() {
     this.state = 'paused';
-    if (this.timer) clearTimeout(this.timer);
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
     this.stopTicker();
     this.countdown = { remaining: 0, total: 0, label: '' };
     this.currentAction = 'Pausado';
@@ -4571,18 +4738,22 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
   }
 
   /**
-   * Interrompe totalmente a execução da macro e reseta o cronômetro e os status dos slides
+   * Interrompe totalmente a execução da macro imediatamente e reseta o cronômetro e os status dos slides
    */
   stop() {
+    this.isStopped = true;
     this.state = 'idle';
-    if (this.timer) clearTimeout(this.timer);
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
     this.stopTicker();
     this.startTime = 0;
     this.elapsedSeconds = 0;
     this.countdown = { remaining: 0, total: 0, label: '' };
     this.settingsConfiguredForProject = false;
     this.lastConfiguredProjectId = null;
-    this.currentAction = '';
+    this.currentAction = 'Parado';
     this.currentIndex = -1;
 
     // Reseta o progresso em todos os prompts e slides
@@ -4605,7 +4776,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
     });
 
     this.saveState();
-    this.addLog('⏹️ Macro encerrada e cronômetro resetado.', 'info');
+    this.addLog('⏹️ Macro interrompida pelo usuário. Execução cancelada imediatamente.', 'warning');
     this.notify();
   }
 
@@ -5142,11 +5313,16 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
     const item = this.prompts.find(p => p.id === id);
     if (!item) return;
 
+    this.isStopped = false;
+    this.state = 'running';
     const prevIndex = this.currentIndex;
     this.currentIndex = this.prompts.indexOf(item);
     const needConfig = !this.isCurrentProjectConfigured();
     await this.executeSlide(item, needConfig, item.index, 1, item.carouselTitle || 'Carrossel');
     this.currentIndex = prevIndex;
+    if (this.state === 'running') {
+      this.state = 'idle';
+    }
     this.notify();
   }
 
@@ -5178,7 +5354,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
     this.addLog(`🎬 Iniciando execução em lote: ${carouselsToRun.length} carrossel(is) na fila.`, 'info');
 
     for (let cIdx = 0; cIdx < carouselsToRun.length; cIdx++) {
-      if (this.state !== 'running') break;
+      if (this.isStopped || this.state !== 'running') break;
       const carousel = carouselsToRun[cIdx];
       carousel.status = 'running';
 
@@ -5187,6 +5363,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
 
       // Se for um novo carrossel subsequente e a opção de criar novo projeto estiver ativa
       if (cIdx > 0 && this.config.autoCreateNewProjectPerCarousel) {
+        if (this.isStopped || this.state !== 'running') break;
         this.addLog('🏠 [Passo A - Novo Carrossel] Acessando o Hub do FLOW para criar um novo projeto...', 'info');
         await this.createNewFlowProject();
       }
@@ -5194,7 +5371,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       const activeSlides = carousel.slides.filter(s => s.enabled !== false);
 
       for (let sIdx = 0; sIdx < activeSlides.length; sIdx++) {
-        if (this.state !== 'running') break;
+        if (this.isStopped || this.state !== 'running') break;
         const slide = activeSlides[sIdx];
 
         // O 1º slide de cada carrossel anexa os personagens e aplica as configurações iniciais
@@ -5202,14 +5379,16 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
 
         await this.executeSlide(slide, isFirstSlideOfCarousel, sIdx + 1, activeSlides.length, carousel.title);
 
-        if (this.state !== 'running') break;
+        if (this.isStopped || this.state !== 'running') break;
 
         // Intervalo entre slides do mesmo carrossel com cronômetro regressivo (Padrão: 15s)
-        if (sIdx + 1 < activeSlides.length && this.state === 'running') {
+        if (sIdx + 1 < activeSlides.length && !this.isStopped && this.state === 'running') {
           const slideDelay = parseInt(this.config.delaySeconds, 10) || 15;
           await this.waitWithCountdown(slideDelay, `Próximo Slide (${sIdx + 2}/${activeSlides.length})`);
         }
       }
+
+      if (this.isStopped || this.state !== 'running') break;
 
       const hasFailedSlides = carousel.slides.some(s => s.status === 'error' || (s.enabled !== false && (s.completedRepeats || 0) === 0));
       if (hasFailedSlides) {
@@ -5222,14 +5401,14 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       this.saveState();
 
       // Intervalo entre o fim de um carrossel e o início do próximo (Padrão: 25s)
-      if (cIdx + 1 < carouselsToRun.length && this.state === 'running') {
+      if (cIdx + 1 < carouselsToRun.length && !this.isStopped && this.state === 'running') {
         const carouselDelay = parseInt(this.config.carouselDelaySeconds, 10) || 25;
         this.addLog(`\n⏳ [Transição de Carrossel] Aguardando ${carouselDelay}s antes de abrir o próximo carrossel...`, 'info');
         await this.waitWithCountdown(carouselDelay, `Próximo Carrossel (${cIdx + 2}/${carouselsToRun.length})`);
       }
     }
 
-    if (this.state === 'running') {
+    if (!this.isStopped && this.state === 'running') {
       this.state = 'idle';
       this.stopTicker();
       this.countdown = { remaining: 0, total: 0, label: '' };
@@ -5263,7 +5442,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
     const startRep = parseInt(item.completedRepeats, 10) || 0;
 
     for (let rep = startRep; rep < targetRepeats; rep++) {
-      if (this.state !== 'running' && this.state !== 'idle') break;
+      if (this.isStopped || this.state !== 'running') break;
 
       const isRepetition = (rep > 0);
 
@@ -5274,6 +5453,8 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       this.notify();
 
       try {
+        if (this.isStopped || this.state !== 'running') return;
+
         // 0. Garante que o Canvas do FLOW não está com geração ativa em andamento antes de iniciar
         const activeGenCheck = this.isCanvasGenerating();
         if (activeGenCheck.generating) {
@@ -5281,6 +5462,8 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           await this.waitForGenerationToComplete(90);
           await new Promise(r => setTimeout(r, 2000));
         }
+
+        if (this.isStopped || this.state !== 'running') return;
 
         // Garante que estamos na tela do Canvas
         if (FlowMacroEngine.isFlowCharactersPage()) {
@@ -5298,6 +5481,8 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           await this.exitExpandedImageView();
         }
 
+        if (this.isStopped || this.state !== 'running') return;
+
         let reused = false;
 
         // Passo 7: Reutiliza comando anterior APENAS na transição entre slides diferentes (NUNCA em repetições do mesmo prompt!)
@@ -5305,12 +5490,15 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           this.currentAction = '🔁 Reutilizando comando do slide anterior...';
           this.notify();
           for (let rTry = 0; rTry < 3; rTry++) {
+            if (this.isStopped || this.state !== 'running') return;
             reused = await this.reuseLatestCommand();
             if (reused) break;
             if (rTry < 2) await new Promise(r => setTimeout(r, 1000));
           }
           await this.stepDelay(null, 'Aguardando FLOW carregar comando...');
         }
+
+        if (this.isStopped || this.state !== 'running') return;
 
         // Se for o 1º slide, ou se for repetição do mesmo prompt, ou se a reutilização não foi possível:
         if (!reused) {
@@ -5320,6 +5508,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           // Aguarda até 15s para o campo de prompt aparecer (o Canvas pode demorar a carregar após "Novo projeto")
           let inputEl = null;
           for (let waitInput = 0; waitInput < 30; waitInput++) {
+            if (this.isStopped || this.state !== 'running') return;
             inputEl = this.findPromptInput();
             if (inputEl) break;
             if (waitInput === 0) {
@@ -5330,6 +5519,8 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           if (!inputEl) {
             throw new Error('Campo de prompt do Flow não encontrado na página após 15s de espera.');
           }
+
+          if (this.isStopped || this.state !== 'running') return;
 
           // Se for repetição do mesmo prompt, limpa resíduos antes de reinserir o texto
           if (isRepetition) {
@@ -5346,6 +5537,8 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           this.addLog(`📝 [${isRepetition ? `Repetição ${rep + 1}/${targetRepeats}` : 'Passo 1'}] ${isRepetition ? 'Mesmo prompt reinserido no campo de texto.' : 'Prompt inserido no campo de texto.'}`, 'info');
           await this.stepDelay(null, isRepetition ? 'Reanexando personagens...' : 'Verificando configurações...');
 
+          if (this.isStopped || this.state !== 'running') return;
+
           // Passo 1 (Continuação): Configuração de formato e proporção de imagem
           // Executa se o projeto ainda não foi configurado OU no 1º slide do carrossel, NUNCA em repetições
           const needSettingsConfig = (!this.isCurrentProjectConfigured() || isFirstSlideOfCarousel) && !isRepetition;
@@ -5355,6 +5548,8 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
             await this.applyFlowSettings();
             await this.stepDelay(null, 'Verificando personagens...');
           }
+
+          if (this.isStopped || this.state !== 'running') return;
 
           // Passos 2, 3 e 4: Anexar personagens de referência (botão +, buscar na biblioteca, incluir no comando)
           if (this.config.applyGlobalCharacters !== false && this.characters && this.characters.length > 0) {
@@ -5367,7 +5562,9 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
             }
             const charsAttached = await this.attachCharactersFromFlowLibrary();
 
-            // CORREÇÃO: Se os personagens NÃO foram anexados, interrompe a execução do slide
+            if (this.isStopped || this.state !== 'running') return;
+
+            // Se os personagens NÃO foram anexados, interrompe a execução do slide
             if (!charsAttached) {
               throw new Error(`Falha ao anexar personagens de referência. Os chips não foram confirmados na barra de prompt.`);
             }
@@ -5376,8 +5573,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
             await new Promise(r => setTimeout(r, 1500));
             this.addLog(`✅ Personagens confirmados na barra de prompt${isRepetition ? ` para repetição ${rep + 1}` : ''}. Preparando envio...`, 'success');
 
-            // CORREÇÃO CRÍTICA: Verifica se o prompt de texto ainda está presente após anexar personagens
-            // O processo de anexar pode ter limpado/sobrescrito o texto do prompt
+            // Verifica se o prompt de texto ainda está presente após anexar personagens
             const postCharInputEl = this.findPromptInput();
             const postCharText = postCharInputEl ? (postCharInputEl.value || postCharInputEl.innerText || postCharInputEl.textContent || '').trim() : '';
             if (!postCharText || postCharText.length < 10) {
@@ -5400,7 +5596,6 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           this.currentAction = `📝 Atualizando prompt para slide ${slideNum}...`;
           this.notify();
 
-          // CORREÇÃO CRÍTICA: Apaga explicitamente o prompt anterior do comando reutilizado antes de inserir o novo!
           this.addLog(`🧹 [Passo 7] Apagando prompt anterior do comando reutilizado...`, 'info');
           await this.clearPromptInput(inputEl);
           await new Promise(r => setTimeout(r, 200));
@@ -5411,9 +5606,11 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           await this.stepDelay(null, 'Preparando envio...');
         }
 
+        if (this.isStopped || this.state !== 'running') return;
+
         this.dismissFlowOnboardingBanners();
 
-        // CORREÇÃO: Garante que nenhum dialog/menu externo ficou aberto antes de enviar (sem fechar o promptContainer)
+        // Garante que nenhum dialog/menu externo ficou aberto antes de enviar (sem fechar o promptContainer)
         for (let closeWait = 0; closeWait < 3; closeWait++) {
           const promptContainer = this.getPromptContainer();
           const unwanted = Array.from(document.querySelectorAll('[role="dialog"], [role="menu"], [class*="popover" i], [class*="modal" i], [data-radix-popper-content-wrapper]')).filter(el => {
@@ -5427,7 +5624,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           await new Promise(r => setTimeout(r, 400));
         }
 
-        // CORREÇÃO: Verifica que o campo de prompt contém texto antes de enviar
+        // Verifica que o campo de prompt contém texto antes de enviar
         const inputEl = this.findPromptInput();
         const promptText = inputEl ? (inputEl.value || inputEl.innerText || inputEl.textContent || '').trim() : '';
         if (!promptText) {
@@ -5439,6 +5636,8 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           }
         }
 
+        if (this.isStopped || this.state !== 'running') return;
+
         // Garante que o Canvas está 100% desocupado antes de clicar no botão de envio
         const preSubmitGen = this.isCanvasGenerating();
         if (preSubmitGen.generating) {
@@ -5446,6 +5645,8 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           await this.waitForGenerationToComplete(90);
           await new Promise(r => setTimeout(r, 1500));
         }
+
+        if (this.isStopped || this.state !== 'running') return;
 
         // Passo 5: Clicar na seta no campo direito para enviar o prompt e gerar imagens no FLOW
         this.currentAction = isRepetition
@@ -5458,24 +5659,114 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         const submitBtn = this.findSubmitButton();
         const submitted = await this.simulateSubmit(submitBtn, inputEl);
 
-        if (submitted) {
-          this.addLog(`✅ [Passo 5] ${isRepetition ? `Mesmo prompt enviado novamente com sucesso (${rep + 1}/${targetRepeats})` : `Inserção 1/${targetRepeats} disparada`} no FLOW: ${item.slideTitle || item.title}`, 'success');
-          // Aguarda a geração da imagem ser concluída no Canvas do FLOW antes do intervalo/próximo slide
-          await this.waitForGenerationToComplete(90);
-        } else {
+        if (!submitted) {
           throw new Error('Não foi possível acionar o botão de envio nem a tecla Enter no FLOW.');
+        }
+
+        this.addLog(`✅ [Passo 5] ${isRepetition ? `Mesmo prompt enviado novamente com sucesso (${rep + 1}/${targetRepeats})` : `Inserção 1/${targetRepeats} disparada`} no FLOW: ${item.slideTitle || item.title}`, 'success');
+
+        // Aguarda a geração da imagem ser concluída no Canvas do FLOW
+        let genSuccess = await this.waitForGenerationToComplete(90);
+
+        if (this.isStopped || this.state !== 'running') {
+          this.addLog('⏹️ Execução interrompida durante a geração.', 'warning');
+          return;
+        }
+
+        // =========================================================================
+        // Auto-Recuperação: Detecta se a imagem falhou ("Falhou" no card do Canvas) e reenvia
+        // =========================================================================
+        const maxFailRetries = 3;
+        let failRetry = 0;
+
+        while (!genSuccess && failRetry < maxFailRetries && !this.isStopped && this.state === 'running') {
+          failRetry++;
+          const failCheck = this.hasCanvasFailedGenerations();
+          this.addLog(`⚠️ [Auto-Recuperação ${failRetry}/${maxFailRetries}] Detectada falha na geração no Canvas (${failCheck.failed ? 'Card com status "Falhou"' : 'Geração incompleta'}).`, 'warning');
+          this.addLog(`🗑️ [Auto-Recuperação] Removendo card(s) com erro do Canvas...`, 'info');
+
+          const dismissedCount = this.dismissFailedCards();
+          if (dismissedCount > 0) {
+            this.addLog(`✅ [Auto-Recuperação] ${dismissedCount} card(s) com erro removido(s) do Canvas.`, 'info');
+          }
+          await new Promise(r => setTimeout(r, 2000));
+          this.dismissDangerousModals();
+
+          if (this.isStopped || this.state !== 'running') return;
+
+          // Aguarda Canvas estabilizar
+          const activeCheck = this.isCanvasGenerating();
+          if (activeCheck.generating) {
+            this.addLog(`⏳ [Auto-Recuperação] Aguardando Canvas desocupar...`, 'info');
+            await this.waitForGenerationToComplete(30);
+          }
+
+          if (this.isStopped || this.state !== 'running') return;
+
+          // Re-insere texto do prompt
+          this.addLog(`📝 [Auto-Recuperação ${failRetry}/${maxFailRetries}] Re-inserindo o texto do prompt para nova tentativa...`, 'info');
+          let retryInput = this.findPromptInput();
+          if (retryInput) {
+            await this.clearPromptInput(retryInput);
+            await new Promise(r => setTimeout(r, 300));
+            const composedText = this.composePromptText(item);
+            await this.setPromptInputValue(retryInput, composedText);
+            await new Promise(r => setTimeout(r, 500));
+          }
+
+          // Re-anexa personagens da biblioteca se necessário
+          if (this.config.applyGlobalCharacters !== false && this.characters && this.characters.length > 0) {
+            if (!this.hasCharacterChipsAttached()) {
+              this.addLog(`🎭 [Auto-Recuperação ${failRetry}/${maxFailRetries}] Reanexando personagens da biblioteca...`, 'info');
+              await this.attachCharactersFromFlowLibrary();
+              await new Promise(r => setTimeout(r, 1000));
+
+              retryInput = this.findPromptInput();
+              const txt = retryInput ? (retryInput.value || retryInput.innerText || retryInput.textContent || '').trim() : '';
+              if (!txt || txt.length < 10) {
+                const composedText = this.composePromptText(item);
+                await this.setPromptInputValue(retryInput, composedText);
+                await new Promise(r => setTimeout(r, 500));
+              }
+            }
+          }
+
+          if (this.isStopped || this.state !== 'running') return;
+
+          this.currentAction = `🚀 [Auto-Recuperação ${failRetry}/${maxFailRetries}] Reenviando prompt...`;
+          this.notify();
+          this.addLog(`🚀 [Auto-Recuperação ${failRetry}/${maxFailRetries}] Reenviando prompt no FLOW após falha...`, 'info');
+          const retrySubmitBtn = this.findSubmitButton();
+          const retrySubmitted = await this.simulateSubmit(retrySubmitBtn, retryInput);
+
+          if (retrySubmitted) {
+            this.addLog(`✅ [Auto-Recuperação ${failRetry}/${maxFailRetries}] Prompt reenviado. Aguardando geração...`, 'success');
+            genSuccess = await this.waitForGenerationToComplete(90);
+          } else {
+            this.addLog(`⚠️ [Auto-Recuperação] Não foi possível acionar o botão de envio na tentativa ${failRetry}.`, 'warning');
+            await new Promise(r => setTimeout(r, 2000));
+          }
+        }
+
+        if (this.isStopped || this.state !== 'running') return;
+
+        if (!genSuccess) {
+          throw new Error(`A imagem não pôde ser gerada no FLOW após ${maxFailRetries} tentativas de auto-recuperação.`);
         }
 
         item.completedRepeats = rep + 1;
         this.saveState();
 
         // Se houver repetições configuradas para o mesmo slide, aguarda delay pré-configurado
-        if (rep + 1 < targetRepeats && (this.state === 'running' || this.state === 'idle')) {
+        if (rep + 1 < targetRepeats && !this.isStopped && this.state === 'running') {
           const repDelay = Math.max(10, parseInt(this.config.repeatDelaySeconds, 10) || 15);
-          this.addLog(`⏳ [Aguardando Repetição] Geração concluída no Canvas! Aguardando ${repDelay}s para repetir e enviar novamente o mesmo prompt (${rep + 2}/${targetRepeats})...`, 'info');
+          this.addLog(`⏳ [Aguardando Repetição] Geração concluída com sucesso no Canvas! Aguardando ${repDelay}s para repetir e enviar novamente o mesmo prompt (${rep + 2}/${targetRepeats})...`, 'info');
           await this.waitWithCountdown(repDelay, `Aguardando para repetir e enviar novamente o mesmo prompt (${rep + 2}/${targetRepeats})`);
         }
       } catch (err) {
+        if (this.isStopped || this.state !== 'running') {
+          return;
+        }
         item.status = 'error';
         item.errorMsg = err.message || 'Erro ao executar prompt';
         this.addLog(`❌ Falha no ${item.title} (rep ${rep + 1}): ${item.errorMsg}`, 'error');
