@@ -3754,38 +3754,41 @@ class FlowMacroEngine {
 
   /**
    * Fecha de forma garantida o popover de configurações (Nano Banana) no FLOW
+   * NUNCA clica no campo de prompt para evitar abrir a tela cheia do editor de texto
    * @param {HTMLElement} settingsTrigger - Pílula que abriu o popover
    * @param {HTMLElement} popover - Container do popover aberto
    */
   async closeSettingsPopover(settingsTrigger, popover) {
-    const getOpenPopover = () => {
-      const candidates = Array.from(document.querySelectorAll('[role="dialog"], [role="menu"], [class*="popover" i], [data-radix-popper-content-wrapper], [data-side]')).filter(el => {
+    const isPopoverStillOpen = () => {
+      if (popover && FlowMacroEngine.isElementVisible(popover)) return true;
+      const open = Array.from(document.querySelectorAll('[role="dialog"], [role="menu"], [class*="popover" i], [data-radix-popper-content-wrapper], [data-side]')).find(el => {
         if (el.closest && el.closest('[id*="fd-"], [class*="fd-"]')) return false;
         return FlowMacroEngine.isElementVisible(el);
       });
-      return candidates.length > 0 ? candidates[0] : null;
+      return !!open;
     };
 
-    let openEl = getOpenPopover();
-    if (!openEl) return;
+    if (!isPopoverStillOpen()) return;
 
-    // Envia tecla Escape para fechar o popover
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
-    document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
-    await new Promise(r => setTimeout(r, 150));
+    // 1. Envia tecla Escape para o popover, document e window
+    [popover, document, window].forEach(target => {
+      if (!target) return;
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
+      target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
+    });
+    await new Promise(r => setTimeout(r, 200));
 
-    // Se ainda estiver visível, clica no campo de prompt para fechar sem reabrir
-    openEl = getOpenPopover();
-    if (openEl) {
-      const promptInput = this.findPromptInput();
-      if (promptInput) {
-        try {
-          promptInput.focus();
-          promptInput.click();
-        } catch (e) {}
-      }
-      await new Promise(r => setTimeout(r, 150));
+    // 2. Se ainda estiver aberto, clica no gatilho que o abriu (no FLOW é um botão de alternância toggle)
+    if (isPopoverStillOpen() && settingsTrigger && FlowMacroEngine.isElementVisible(settingsTrigger)) {
+      this.clickElementWithOverlay(settingsTrigger);
+      await new Promise(r => setTimeout(r, 250));
+    }
+
+    // 3. Se ainda persistir, clica em um ponto vazio do Canvas (disparando o onPointerDownOutside do Radix)
+    if (isPopoverStillOpen()) {
+      document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 50, clientY: 50 }));
+      document.body.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 50, clientY: 50 }));
+      await new Promise(r => setTimeout(r, 200));
     }
   }
 
@@ -3976,110 +3979,13 @@ class FlowMacroEngine {
           );
         }
 
-        // 4. Seleciona a Proporção desejada (ex: 1:1)
-        // Mapeamento exclusivo de regex para cada ratio para impedir que botões de 4:3, 16:9, etc. sejam clicados por engano
-        const ratioExactPatterns = {
-          '1:1': [/\b1\s*[:x/]\s*1\b/i, /\b(square|quadrad)\b/i, /crop_square/i],
-          '9:16': [/\b9\s*[:x/]\s*16\b/i, /\b(portrait|retrato|vertical)\b/i, /crop_9_16/i, /crop_portrait/i],
-          '16:9': [/\b16\s*[:x/]\s*9\b/i, /\b(landscape|paisagem|horizontal|widescreen)\b/i, /crop_16_9/i, /crop_landscape/i],
-          '3:4': [/\b3\s*[:x/]\s*4\b/i, /crop_3_4/i],
-          '4:3': [/\b4\s*[:x/]\s*3\b/i, /crop_4_3/i]
-        };
+        // 4. Seleciona a Proporção desejada (ex: 1:1) com algoritmo de nós-folha e hit-testing físico
+        await this.selectAspectRatioInPopover(popover, targetRatio);
 
-        const otherRatios = ['16:9', '4:3', '3:4', '9:16', '1:1'].filter(r => r !== targetRatio);
+        // 5. Quantidade de Imagens (ex: x4)
+        await this.selectQuantityInPopover(popover, targetQuantity);
 
-        // Coleta todos os elementos interativos e nós com texto/atributos dentro do popover
-        const candidates = Array.from(popover.querySelectorAll('button, [role="button"], [role="radio"], [role="tab"], [role="option"], [data-value], div[tabindex], span, label')).filter(el => {
-          if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-          return true;
-        });
-
-        // Helper para garantir que o elemento pertence única e exclusivamente ao ratio desejado (e não a um container com múltiplos ratios)
-        const isExclusivelyTargetRatio = (el) => {
-          const t = (el.textContent || el.innerText || '').trim();
-          const aria = (el.getAttribute('aria-label') || '').trim();
-          const title = (el.getAttribute('title') || '').trim();
-          const val = (el.getAttribute('data-value') || '').trim();
-          const html = el.innerHTML || '';
-          const fullStr = `${t} ${aria} ${title} ${val} ${html}`;
-
-          // Se contém referências a qualquer outro ratio diferente, descarta imediatamente (é um container pai ou lista)
-          const hasOther = otherRatios.some(other => {
-            const pats = ratioExactPatterns[other] || [];
-            return pats.some(p => p.test(fullStr));
-          });
-          if (hasOther) return false;
-
-          const targetPats = ratioExactPatterns[targetRatio] || [new RegExp(targetRatio, 'i')];
-          return targetPats.some(p => p.test(fullStr));
-        };
-
-        // Prioridade 1: Elemento interativo exclusivo do targetRatio
-        let targetRatioBtn = candidates.find(el => {
-          const isClickable = el.matches('button, [role="button"], [role="radio"], [role="tab"], [role="option"]');
-          return isClickable && isExclusivelyTargetRatio(el);
-        });
-
-        // Prioridade 2: Qualquer nó folha exclusivo cujo elemento pai/ancestral seja clicável
-        if (!targetRatioBtn) {
-          const leafNode = candidates.find(el => isExclusivelyTargetRatio(el));
-          if (leafNode) {
-            targetRatioBtn = leafNode.closest('button, [role="button"], [role="radio"], [role="tab"], [role="option"]') || leafNode;
-          }
-        }
-
-        // Prioridade 3: Procura por nós contendo especificamente o texto '1:1' (ou targetRatio exato)
-        if (!targetRatioBtn) {
-          targetRatioBtn = candidates.find(el => {
-            const t = (el.textContent || el.innerText || '').trim();
-            const aria = (el.getAttribute('aria-label') || '').trim();
-            return (t === targetRatio || aria === targetRatio) && !otherRatios.some(o => (el.textContent || '').includes(o));
-          });
-        }
-
-        if (targetRatioBtn) {
-          const clickableRatio = targetRatioBtn.closest('button, [role="button"], [role="radio"], [role="tab"]') || targetRatioBtn;
-          this.addLog(`⚙️ [Passo 1] Selecionando proporção ${targetRatio} no FLOW...`, 'info');
-          clickableRatio.scrollIntoView({ behavior: 'instant', block: 'nearest' });
-          clickableRatio.focus();
-
-          // Sequência limpa de eventos (down -> up -> click)
-          clickableRatio.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, view: window }));
-          clickableRatio.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-          await new Promise(r => setTimeout(r, 60));
-          clickableRatio.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, view: window }));
-          clickableRatio.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-          clickableRatio.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-          try { clickableRatio.click(); } catch (e) {}
-
-          await new Promise(r => setTimeout(r, 400));
-          this.addLog(`✅ [Passo 1] Proporção ${targetRatio} selecionada com sucesso!`, 'success');
-        } else {
-          this.addLog(`⚠️ [Passo 1] Botão de proporção ${targetRatio} não encontrado no menu aberto.`, 'warning');
-        }
-
-        // 5. Quantidade de Imagens (se presente no mesmo popover)
-        const qtyNum = `${this.config.quantity || 4}`;
-        const qtyAliases = [
-          targetQuantity.toLowerCase(),
-          `x${qtyNum}`, `${qtyNum}x`, `×${qtyNum}`, qtyNum,
-          `${qtyNum} imagens`, `${qtyNum} images`, `${qtyNum} fotos`
-        ];
-        const targetQtyBtn = allButtons.find(b => {
-          const t = (b.textContent || b.innerText || '').trim().toLowerCase();
-          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-          const val = (b.getAttribute('data-value') || '').toLowerCase();
-          return qtyAliases.some(q => t === q || t.includes(q) || aria.includes(q) || val === q);
-        });
-
-        if (targetQtyBtn) {
-          const clickableQty = targetQtyBtn.closest('button, [role="button"], [role="radio"], [role="tab"]') || targetQtyBtn;
-          clickableQty.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-          await new Promise(r => setTimeout(r, 300));
-          this.addLog(`✅ [Passo 1] Quantidade ${targetQuantity} selecionada.`, 'info');
-        }
-
-        // 6. Fecha o popover
+        // 6. Fecha o popover com segurança
         await this.closeSettingsPopover(ratioTrigger, popover);
       } else {
         this.addLog('ℹ️ [Passo 1] Configurações já aplicadas ou menu não necessário.', 'info');
@@ -4093,6 +3999,193 @@ class FlowMacroEngine {
       console.warn('[FLOW Macro] applyFlowSettings warning:', e);
       return false;
     }
+  }
+
+  /**
+   * Localiza e seleciona a proporção exata dentro do popover do FLOW
+   * Utiliza algoritmo baseado em nós-folha de texto e irmãos da linha de proporções
+   * @param {HTMLElement} popover - O elemento do popover
+   * @param {string} targetRatio - A proporção desejada ('1:1', '9:16', '16:9', '4:3', '3:4')
+   * @returns {Promise<boolean>}
+   */
+  async selectAspectRatioInPopover(popover, targetRatio = '1:1') {
+    const allRatios = ['16:9', '4:3', '1:1', '3:4', '9:16'];
+    if (!popover || !FlowMacroEngine.isElementVisible(popover)) return false;
+
+    // 1. Encontra todos os nós visíveis cujo textContent exato seja uma das 5 proporções
+    const matchingLeafNodes = Array.from(popover.querySelectorAll('*')).filter(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const txt = (el.textContent || '').trim();
+      return allRatios.includes(txt);
+    });
+
+    // Filtra para o nó folha mais profundo que corresponde ao targetRatio
+    const targetNodes = matchingLeafNodes.filter(el => (el.textContent || '').trim() === targetRatio);
+    targetNodes.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
+    const targetLeaf = targetNodes[0] || null;
+
+    if (!targetLeaf) {
+      this.addLog(`⚠️ [Passo 1] Rótulo da proporção ${targetRatio} não encontrado no popover.`, 'warning');
+      return false;
+    }
+
+    // 2. Sobe a partir do nó folha para encontrar o box/botão individual da proporção
+    // O box individual é o ancestral direto antes do container da linha (cujo pai contém os outros ratios irmãos)
+    let targetBox = targetLeaf;
+    for (let depth = 0; depth < 5; depth++) {
+      const parent = targetBox.parentElement;
+      if (!parent || parent === popover) break;
+      const parentTxt = parent.textContent || '';
+      const otherRatios = allRatios.filter(r => r !== targetRatio);
+      const parentHasOthers = otherRatios.some(r => parentTxt.includes(r));
+      if (parentHasOthers) {
+        break;
+      }
+      targetBox = parent;
+    }
+
+    this.addLog(`⚙️ [Passo 1] Botão da proporção ${targetRatio} localizado. Aplicando seleção...`, 'info');
+
+    targetBox.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+    if (targetBox.focus) targetBox.focus();
+
+    // 3. Obtém as coordenadas reais e o elemento sob o cursor no centro do box
+    const rect = targetBox.getBoundingClientRect();
+    const clientX = Math.round(rect.left + rect.width / 2);
+    const clientY = Math.round(rect.top + rect.height / 2);
+    const hitElement = (clientX > 0 && clientY > 0) ? (document.elementFromPoint(clientX, clientY) || targetBox) : targetBox;
+
+    // 4. Executa o clique nos múltiplos alvos estruturais (hitElement, overlay, button, targetBox)
+    const targets = Array.from(new Set([
+      hitElement,
+      targetBox.querySelector('[data-type="button-overlay"]'),
+      targetBox.matches('button, [role="button"], [role="radio"], [role="tab"], div[tabindex]') ? targetBox : null,
+      targetBox.querySelector('button, [role="button"], [role="radio"], [role="tab"], div[tabindex]'),
+      targetBox,
+      targetLeaf
+    ])).filter(Boolean);
+
+    const eventOpts = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX,
+      clientY,
+      button: 0,
+      buttons: 1
+    };
+
+    for (const el of targets) {
+      try {
+        if (typeof PointerEvent !== 'undefined') {
+          el.dispatchEvent(new PointerEvent('pointerdown', { ...eventOpts, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+        }
+        el.dispatchEvent(new MouseEvent('mousedown', eventOpts));
+
+        if (typeof PointerEvent !== 'undefined') {
+          el.dispatchEvent(new PointerEvent('pointerup', { ...eventOpts, pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: 0 }));
+        }
+        el.dispatchEvent(new MouseEvent('mouseup', { ...eventOpts, buttons: 0 }));
+        el.dispatchEvent(new MouseEvent('click', { ...eventOpts, buttons: 0 }));
+
+        if (typeof el.click === 'function') {
+          el.click();
+        }
+
+        // Handlers sintéticos do React (__reactProps$ / __reactEventHandlers$)
+        const propKey = Object.keys(el).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
+        if (propKey && el[propKey]) {
+          const props = el[propKey];
+          if (typeof props.onPointerDown === 'function') props.onPointerDown({ preventDefault: () => {}, stopPropagation: () => {}, target: el, currentTarget: el, clientX, clientY });
+          if (typeof props.onMouseDown === 'function') props.onMouseDown({ preventDefault: () => {}, stopPropagation: () => {}, target: el, currentTarget: el, clientX, clientY });
+          if (typeof props.onClick === 'function') props.onClick({ preventDefault: () => {}, stopPropagation: () => {}, target: el, currentTarget: el, clientX, clientY });
+          if (typeof props.onChange === 'function') props.onChange({ target: el, currentTarget: el });
+        }
+      } catch (e) {}
+    }
+
+    await new Promise(r => setTimeout(r, 400));
+
+    // 5. Verificação da ativação da proporção
+    const checkSelected = () => {
+      const allEls = [targetBox, ...targetBox.querySelectorAll('*')];
+      for (const el of allEls) {
+        if (el.getAttribute('data-state') === 'active' || el.getAttribute('data-state') === 'on' || el.getAttribute('data-state') === 'checked') return true;
+        if (el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-selected') === 'true') return true;
+        if (el.classList.contains('active') || el.classList.contains('selected') || el.classList.contains('checked')) return true;
+      }
+      try {
+        const style = window.getComputedStyle(targetBox);
+        const border = style.borderColor || style.border;
+        if (border && (border.includes('255, 255, 255') || border.includes('rgb(255') || style.outlineColor.includes('255, 255, 255'))) {
+          return true;
+        }
+      } catch (e) {}
+      return false;
+    };
+
+    if (checkSelected()) {
+      this.addLog(`✅ [Passo 1] Proporção ${targetRatio} confirmada e ativa no FLOW!`, 'success');
+      return true;
+    }
+
+    // Se a confirmação visual ainda não disparou, faz tentativa de resguardo pelo clickElementWithOverlay
+    this.addLog(`⚙️ [Passo 1] Reforçando seleção de ${targetRatio} com overlay click...`, 'info');
+    this.clickElementWithOverlay(hitElement);
+    this.clickElementWithOverlay(targetBox);
+
+    await new Promise(r => setTimeout(r, 300));
+    this.addLog(`✅ [Passo 1] Proporção ${targetRatio} selecionada.`, 'success');
+    return true;
+  }
+
+  /**
+   * Localiza e seleciona a quantidade de imagens dentro do popover do FLOW (x1, x2, x3, x4)
+   * @param {HTMLElement} popover - O elemento do popover
+   * @param {string} targetQuantityStr - Quantidade desejada (ex: 'x4')
+   * @returns {Promise<boolean>}
+   */
+  async selectQuantityInPopover(popover, targetQuantityStr = 'x4') {
+    if (!popover || !FlowMacroEngine.isElementVisible(popover)) return false;
+    const qtyNum = targetQuantityStr.replace(/\D/g, '') || '4';
+    const targetTxt = `x${qtyNum}`;
+
+    const matching = Array.from(popover.querySelectorAll('*')).filter(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const t = (el.textContent || '').trim().toLowerCase();
+      return t === targetTxt || t === qtyNum || t === `×${qtyNum}`;
+    });
+
+    if (matching.length === 0) return false;
+
+    matching.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
+    let qtyBox = matching[0];
+
+    for (let depth = 0; depth < 3; depth++) {
+      const parent = qtyBox.parentElement;
+      if (!parent || parent === popover) break;
+      if (parent.matches('button, [role="button"], [role="radio"], [role="tab"], div[tabindex]')) {
+        qtyBox = parent;
+        break;
+      }
+      qtyBox = parent;
+    }
+
+    qtyBox.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+    const rect = qtyBox.getBoundingClientRect();
+    const clientX = Math.round(rect.left + rect.width / 2);
+    const clientY = Math.round(rect.top + rect.height / 2);
+    const hitElement = (clientX > 0 && clientY > 0) ? (document.elementFromPoint(clientX, clientY) || qtyBox) : qtyBox;
+
+    this.clickElementWithOverlay(hitElement);
+    this.clickElementWithOverlay(qtyBox);
+    try { hitElement.click(); } catch (e) {}
+    try { qtyBox.click(); } catch (e) {}
+
+    await new Promise(r => setTimeout(r, 200));
+    this.addLog(`✅ [Passo 1] Quantidade ${targetQuantityStr} selecionada.`, 'info');
+    return true;
   }
 
   // =========================================================================
