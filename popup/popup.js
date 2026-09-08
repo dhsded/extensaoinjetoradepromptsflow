@@ -88,7 +88,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // ==========================================================================
-  // 4. Identificação da Aba Ativa no Navegador
+  // 4. Identificação da Aba Ativa e Detecção do Google FLOW
   // ==========================================================================
   let activeTab = null;
   try {
@@ -100,6 +100,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.warn('[FLOW Downloader] Erro ao consultar abas:', e);
   }
 
+  /**
+   * Verifica se uma URL pertence ao ambiente oficial do Google FLOW
+   * @param {string} url - URL da aba
+   * @returns {boolean}
+   */
+  function isFlowUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    const u = url.toLowerCase();
+    if (u.startsWith('chrome://') || u.startsWith('edge://') || u.startsWith('brave://') || u.startsWith('about:')) {
+      return false;
+    }
+    return (
+      (u.includes('labs.google') && (u.includes('flow') || u.includes('/fx/'))) ||
+      u.includes('aitestkitchen.withgoogle.com')
+    );
+  }
+
   // Verifica a URL da aba ativa e atualiza o indicador de conexão
   if (activeTab && activeTab.url) {
     const url = activeTab.url.toLowerCase();
@@ -107,14 +124,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       statusLabel.innerText = 'Página do Sistema';
       statusDot.style.backgroundColor = '#94a3b8';
       statusDot.style.boxShadow = 'none';
-    } else if (url.includes('google') || url.includes('flow') || url.includes('labs')) {
+    } else if (isFlowUrl(url)) {
       statusLabel.innerText = 'FLOW Conectado';
       statusDot.style.backgroundColor = '#10b981';
       statusDot.style.boxShadow = '0 0 8px #10b981';
     } else {
-      statusLabel.innerText = 'Pronto';
-      statusDot.style.backgroundColor = '#6366f1';
-      statusDot.style.boxShadow = '0 0 8px #6366f1';
+      statusLabel.innerText = 'Fora do FLOW';
+      statusDot.style.backgroundColor = '#f59e0b';
+      statusDot.style.boxShadow = '0 0 8px #f59e0b';
     }
   }
 
@@ -163,70 +180,161 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnOpenMacroStudio = document.getElementById('btn-open-macro-studio');
   if (btnOpenMacroStudio) {
     btnOpenMacroStudio.addEventListener('click', async () => {
-      if (!activeTab || !activeTab.id) {
-        alert('Abra a página do Google FLOW para usar o Macro Studio.');
-        return;
-      }
-      // Garante que o content script está injetado na aba do FLOW
-      await ensureContentScriptInjected(activeTab.id);
-      // Envia comando para abrir a janela do Macro Studio
-      chrome.tabs.sendMessage(activeTab.id, { action: 'OPEN_MACRO_STUDIO' }, () => {
-        if (chrome.runtime.lastError) {
-          console.warn('[FLOW Popup] Não foi possível enviar mensagem para a aba:', chrome.runtime.lastError.message);
+      const originalHtml = btnOpenMacroStudio.innerHTML;
+      btnOpenMacroStudio.disabled = true;
+      btnOpenMacroStudio.innerHTML = '<span>⏳ Conectando...</span>';
+
+      try {
+        let targetTab = null;
+
+        // 1. Se a aba ativa atual já for do Google FLOW, usa ela diretamente
+        if (activeTab && isFlowUrl(activeTab.url)) {
+          targetTab = activeTab;
+        } else {
+          // 2. Procura se já existe alguma aba do FLOW aberta em qualquer janela
+          const allTabs = await chrome.tabs.query({});
+          const flowTab = allTabs.find((t) => isFlowUrl(t.url));
+          if (flowTab) {
+            targetTab = flowTab;
+            // Traz a aba do FLOW para primeiro plano e foca a janela
+            await chrome.tabs.update(flowTab.id, { active: true });
+            if (flowTab.windowId) {
+              await chrome.windows.update(flowTab.windowId, { focused: true });
+            }
+          }
         }
-      });
-      window.close(); // Fecha a janelinha do popup
+
+        // 3. Se nenhuma aba do FLOW estiver aberta, cria uma nova aba com o FLOW
+        if (!targetTab) {
+          btnOpenMacroStudio.innerHTML = '<span>🚀 Abrindo FLOW...</span>';
+          await chrome.tabs.create({
+            url: 'https://labs.google/fx/pt/tools/flow',
+            active: true
+          });
+          setTimeout(() => {
+            window.close();
+          }, 800);
+          return;
+        }
+
+        // 4. Garante que os scripts de automação estão ativos e respondendo na aba
+        const isReady = await ensureContentScriptInjected(targetTab.id);
+        if (!isReady) {
+          btnOpenMacroStudio.disabled = false;
+          btnOpenMacroStudio.innerHTML = originalHtml;
+          alert('Não foi possível conectar à aba do Google FLOW.\n\nPor favor:\n1. Acesse a aba do Google FLOW\n2. Atualize a página pressionando F5\n3. Abra a extensão e clique novamente em "Abrir Studio".');
+          return;
+        }
+
+        // 5. Envia comando para abrir a janela do Macro Studio e aguarda confirmação
+        btnOpenMacroStudio.innerHTML = '<span>✨ Abrindo Studio...</span>';
+        await new Promise((resolve) => {
+          chrome.tabs.sendMessage(targetTab.id, { action: 'OPEN_MACRO_STUDIO' }, (res) => {
+            if (chrome.runtime.lastError) {
+              console.warn('[FLOW Popup] Aviso ao enviar OPEN_MACRO_STUDIO:', chrome.runtime.lastError.message);
+            }
+            resolve(res);
+          });
+        });
+
+        // 6. Fecha a janelinha do popup suavemente após confirmar a entrega
+        setTimeout(() => {
+          window.close();
+        }, 150);
+
+      } catch (err) {
+        console.error('[FLOW Popup] Erro ao abrir Macro Studio:', err);
+        btnOpenMacroStudio.disabled = false;
+        btnOpenMacroStudio.innerHTML = originalHtml;
+        alert('Erro ao abrir Macro Studio: ' + (err.message || err));
+      }
+    });
+  }
+
+  /**
+   * Envia uma mensagem PING com timeout para testar se o Content Script está ativo
+   * @param {number} tabId - ID da aba
+   * @param {number} timeoutMs - Timeout em milissegundos
+   * @returns {Promise<boolean>}
+   */
+  function pingTab(tabId, timeoutMs = 350) {
+    return new Promise((resolve) => {
+      let done = false;
+      const timer = setTimeout(() => {
+        if (!done) {
+          done = true;
+          resolve(false);
+        }
+      }, timeoutMs);
+
+      try {
+        chrome.tabs.sendMessage(tabId, { action: 'PING' }, (res) => {
+          if (done) return;
+          clearTimeout(timer);
+          done = true;
+          if (chrome.runtime.lastError || !res || !res.alive) {
+            resolve(false);
+          } else {
+            resolve(true);
+          }
+        });
+      } catch (e) {
+        if (!done) {
+          clearTimeout(timer);
+          done = true;
+          resolve(false);
+        }
+      }
     });
   }
 
   /**
    * Garante que os scripts de conteúdo (content.js, macro_engine.js, pdf_extractor.js, content.css)
-   * estejam injetados e ativos na aba informada
+   * estejam injetados e ativos na aba informada, com handshake de validação e retentativas
    * @param {number} tabId - ID da aba do navegador
    * @returns {Promise<boolean>}
    */
   async function ensureContentScriptInjected(tabId) {
     if (!tabId) return false;
-    return new Promise((resolve) => {
-      chrome.tabs.sendMessage(tabId, { action: 'PING' }, async (response) => {
-        if (chrome.runtime.lastError || !response) {
-          try {
-            if (chrome.scripting) {
-              await chrome.scripting.insertCSS({
-                target: { tabId },
-                files: ['content.css']
-              }).catch(() => {});
-              
-              await chrome.scripting.executeScript({
-                target: { tabId },
-                files: ['pdf_extractor.js', 'macro_engine.js', 'content.js']
-              });
-              resolve(true);
-            } else {
-              resolve(false);
-            }
-          } catch (err) {
-            console.warn('[FLOW Downloader] Erro de injeção:', err);
-            resolve(false);
-          }
-        } else {
-          resolve(true);
-        }
+
+    // 1. Testa se o script já está ativo e respondendo na aba
+    const alreadyAlive = await pingTab(tabId, 300);
+    if (alreadyAlive) return true;
+
+    // 2. Não está respondendo: injeta os arquivos na aba
+    try {
+      if (!chrome.scripting) return false;
+
+      await chrome.scripting.insertCSS({
+        target: { tabId },
+        files: ['content.css']
+      }).catch(() => {});
+
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['pdf_extractor.js', 'macro_engine.js', 'content.js']
       });
-    });
+
+      // 3. Handshake com retentativas: aguarda o script carregar e responder ao PING
+      for (let attempt = 1; attempt <= 8; attempt++) {
+        await new Promise((r) => setTimeout(r, 150));
+        const ready = await pingTab(tabId, 300);
+        if (ready) {
+          return true;
+        }
+      }
+      return false;
+    } catch (err) {
+      console.warn('[FLOW Downloader] Erro ao injetar scripts de conteúdo:', err);
+      return false;
+    }
   }
 
   // ==========================================================================
   // 7. Botão "Baixar Todas da Aba Ativa"
   // ==========================================================================
   btnDownloadTab.addEventListener('click', async () => {
-    if (!activeTab || !activeTab.id) {
-      alert('Nenhuma aba ativa encontrada.');
-      return;
-    }
-
-    const url = (activeTab.url || '').toLowerCase();
-    if (url.startsWith('chrome://') || url.startsWith('edge://') || url.startsWith('brave://') || url.startsWith('about:')) {
+    if (!activeTab || !activeTab.id || !isFlowUrl(activeTab.url)) {
       alert('Abra a página do FLOW (Google Labs) para realizar downloads.');
       return;
     }
@@ -236,8 +344,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnDownloadTab.innerHTML = `<span>Iniciando...</span>`;
     btnCancelDownloads.style.display = 'flex';
 
-    // Garante presença dos scripts
-    await ensureContentScriptInjected(activeTab.id);
+    // Garante presença dos scripts com validação
+    const ready = await ensureContentScriptInjected(activeTab.id);
+    if (!ready) {
+      alert('Por favor, atualize a página do FLOW (pressione F5) e tente novamente.');
+      btnCancelDownloads.style.display = 'none';
+      btnDownloadTab.disabled = false;
+      btnDownloadTab.style.opacity = '1';
+      return;
+    }
 
     // Envia o comando de download em lote para o content script da aba
     const folderName = inputFolder.value.trim() || 'FLOW_Downloads';

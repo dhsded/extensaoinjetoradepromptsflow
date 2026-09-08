@@ -49,12 +49,24 @@
   } catch (e) { /* ignora */ }
 
   // content.js é dedicado exclusivamente ao ambiente Google FLOW
-  if (!window.location.hostname.includes('labs.google') && !window.location.pathname.includes('/flow')) {
+  const isFlowPage = 
+    window.location.hostname.includes('labs.google') || 
+    window.location.pathname.includes('/flow') ||
+    window.location.href.includes('/tools/flow');
+
+  if (!isFlowPage) {
     return;
   }
 
-  // Evita injeções múltiplas no mesmo frame da página
-  if (window.__FLOW_DOWNLOADER_INITIALIZED__) return;
+  // Limpeza de instâncias anteriores na página caso a extensão tenha sido recarregada
+  try {
+    const oldHud = document.getElementById('flow-downloader-hud-container');
+    if (oldHud) oldHud.remove();
+    if (window.__FLOW_DOWNLOADER_SCAN_INTERVAL__) {
+      clearInterval(window.__FLOW_DOWNLOADER_SCAN_INTERVAL__);
+    }
+  } catch (e) { /* ignora */ }
+
   window.__FLOW_DOWNLOADER_INITIALIZED__ = true;
 
   console.log('[FLOW Downloader Pro] Content Script do Google FLOW inicializado com sucesso.');
@@ -143,8 +155,13 @@
       handleCancelTrigger();
       sendResponse({ success: true, cancelled: true });
     } else if (message.action === 'OPEN_MACRO_STUDIO') {
-      openMacroStudioModal();
-      sendResponse({ success: true });
+      try {
+        openMacroStudioModal();
+        sendResponse({ success: true });
+      } catch (err) {
+        console.error('[FLOW Content] Erro ao abrir modal Macro Studio:', err);
+        sendResponse({ success: false, error: err.message });
+      }
     }
     return true;
   });
@@ -168,7 +185,10 @@
     setupMutationObserver();
 
     // Intervalo de segurança (a cada 4s) para detectar carregamentos preguiçosos (lazy-load)
-    setInterval(scanAndInjectOverlayButtons, 4000);
+    if (window.__FLOW_DOWNLOADER_SCAN_INTERVAL__) {
+      clearInterval(window.__FLOW_DOWNLOADER_SCAN_INTERVAL__);
+    }
+    window.__FLOW_DOWNLOADER_SCAN_INTERVAL__ = setInterval(scanAndInjectOverlayButtons, 4000);
   }
 
   // ==========================================================================
