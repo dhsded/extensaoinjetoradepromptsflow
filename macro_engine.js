@@ -1462,105 +1462,113 @@ class FlowMacroEngine {
         await new Promise(r => setTimeout(r, 40));
 
         // 1. Manipulação direta no Fiber do Slate se acessível (Mais limpo e seguro para React)
+        let fiberCleared = false;
         try {
           const editor = this.getSlateEditor(targetEditable);
           if (editor && editor.children && Array.isArray(editor.children)) {
-            editor.children = [{ type: 'paragraph', children: [{ text: '' }] }];
+            // Preserva nós de chips/anexos de personagens existentes no editor!
+            const existingChips = editor.children.filter(n => n.type !== 'paragraph');
+            editor.children = [...existingChips, { type: 'paragraph', children: [{ text: '' }] }];
             if (editor.selection) {
+              const pIndex = Math.max(0, editor.children.length - 1);
               editor.selection = {
-                anchor: { path: [0, 0], offset: 0 },
-                focus: { path: [0, 0], offset: 0 }
+                anchor: { path: [pIndex, 0], offset: 0 },
+                focus: { path: [pIndex, 0], offset: 0 }
               };
             }
             if (typeof editor.onChange === 'function') {
               editor.onChange();
+              fiberCleared = true;
             }
           }
         } catch (e) {}
 
-        // 2. Simula atalho Ctrl+A / Cmd+A para selecionar tudo
-        const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
-        targetEditable.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'a',
-          code: 'KeyA',
-          keyCode: 65,
-          which: 65,
-          ctrlKey: !isMac,
-          metaKey: isMac,
-          bubbles: true,
-          cancelable: true
-        }));
-
-        // 3. Seleção nativa segura (blindada contra DOMException se o nó não estiver no documento)
-        try {
-          if (targetEditable.isConnected && document.contains(targetEditable) && targetEditable.childNodes.length > 0) {
-            const sel = window.getSelection();
-            if (sel) {
-              const range = document.createRange();
-              range.selectNodeContents(targetEditable);
-              sel.removeAllRanges();
-              sel.addRange(range);
-            }
-          }
-        } catch (e) {
-          // Captura e suprime DOMException: 'The given range isn\'t in document'
-        }
-
-        // 4. ExecCommand nativo para delete
-        try {
-          document.execCommand('selectAll', false, null);
-          document.execCommand('delete', false, null);
-        } catch (e) {}
-
-        // 5. Dispara evento nativo BeforeInput de exclusão (reconhecido pelo Slate)
-        try {
-          const deleteEvent = new InputEvent('beforeinput', {
+        // Se o editor Slate já foi limpo no Fiber preservando chips, evita o destrutivo selectAll
+        if (!fiberCleared) {
+          // 2. Simula atalho Ctrl+A / Cmd+A para selecionar tudo
+          const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+          targetEditable.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'a',
+            code: 'KeyA',
+            keyCode: 65,
+            which: 65,
+            ctrlKey: !isMac,
+            metaKey: isMac,
             bubbles: true,
-            cancelable: true,
-            composed: true,
-            inputType: 'deleteContentBackward'
-          });
-          targetEditable.dispatchEvent(deleteEvent);
-        } catch (e) {}
+            cancelable: true
+          }));
 
-        // 6. Simula pressionamento de Backspace
-        targetEditable.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Backspace',
-          code: 'Backspace',
-          keyCode: 8,
-          which: 8,
-          bubbles: true,
-          cancelable: true
-        }));
-        targetEditable.dispatchEvent(new KeyboardEvent('keyup', {
-          key: 'Backspace',
-          code: 'Backspace',
-          keyCode: 8,
-          which: 8,
-          bubbles: true,
-          cancelable: true
-        }));
-
-        // 7. Esvazia nós de texto residuais no DOM caso ainda permaneçam
-        try {
-          const currentText = (targetEditable.innerText || targetEditable.textContent || '').trim();
-          if (currentText.length > 0) {
-            const walker = document.createTreeWalker(targetEditable, NodeFilter.SHOW_TEXT);
-            const textNodes = [];
-            let node;
-            while ((node = walker.nextNode())) textNodes.push(node);
-            textNodes.forEach(tn => { tn.nodeValue = ''; });
+          // 3. Seleção nativa segura (blindada contra DOMException se o nó não estiver no documento)
+          try {
+            if (targetEditable.isConnected && document.contains(targetEditable) && targetEditable.childNodes.length > 0) {
+              const sel = window.getSelection();
+              if (sel) {
+                const range = document.createRange();
+                range.selectNodeContents(targetEditable);
+                sel.removeAllRanges();
+                sel.addRange(range);
+              }
+            }
+          } catch (e) {
+            // Captura e suprime DOMException: 'The given range isn\'t in document'
           }
-        } catch (e) {}
 
-        targetEditable.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-        targetEditable.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+          // 4. ExecCommand nativo para delete
+          try {
+            document.execCommand('selectAll', false, null);
+            document.execCommand('delete', false, null);
+          } catch (e) {}
 
-        // Limpa qualquer range remanescente na janela
-        try {
-          const sel = window.getSelection();
-          if (sel) sel.removeAllRanges();
-        } catch (e) {}
+          // 5. Dispara evento nativo BeforeInput de exclusão (reconhecido pelo Slate)
+          try {
+            const deleteEvent = new InputEvent('beforeinput', {
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+              inputType: 'deleteContentBackward'
+            });
+            targetEditable.dispatchEvent(deleteEvent);
+          } catch (e) {}
+
+          // 6. Simula pressionamento de Backspace
+          targetEditable.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Backspace',
+            code: 'Backspace',
+            keyCode: 8,
+            which: 8,
+            bubbles: true,
+            cancelable: true
+          }));
+          targetEditable.dispatchEvent(new KeyboardEvent('keyup', {
+            key: 'Backspace',
+            code: 'Backspace',
+            keyCode: 8,
+            which: 8,
+            bubbles: true,
+            cancelable: true
+          }));
+
+          // 7. Esvazia nós de texto residuais no DOM caso ainda permaneçam
+          try {
+            const currentText = (targetEditable.innerText || targetEditable.textContent || '').trim();
+            if (currentText.length > 0) {
+              const walker = document.createTreeWalker(targetEditable, NodeFilter.SHOW_TEXT);
+              const textNodes = [];
+              let node;
+              while ((node = walker.nextNode())) textNodes.push(node);
+              textNodes.forEach(tn => { tn.nodeValue = ''; });
+            }
+          } catch (e) {}
+
+          targetEditable.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          targetEditable.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+
+          // Limpa qualquer range remanescente na janela
+          try {
+            const sel = window.getSelection();
+            if (sel) sel.removeAllRanges();
+          } catch (e) {}
+        }
       }
 
       await new Promise(r => setTimeout(r, 60));
@@ -1616,14 +1624,18 @@ class FlowMacroEngine {
         try {
           const editor = this.getSlateEditor(targetEditable);
           if (editor && editor.children && Array.isArray(editor.children)) {
+            // Preserva nós de chips/anexos existentes no editor!
+            const existingChips = editor.children.filter(n => n.type !== 'paragraph');
             const lines = cleanText.split('\n');
-            editor.children = lines.map(line => ({
+            const paragraphs = lines.map(line => ({
               type: 'paragraph',
               children: [{ text: line }]
             }));
+            editor.children = [...existingChips, ...paragraphs];
             if (editor.selection) {
-              const lastLine = Math.max(0, lines.length - 1);
-              const lastLen = (lines[lastLine] || '').length;
+              const lastLine = Math.max(0, editor.children.length - 1);
+              const lastNode = editor.children[lastLine];
+              const lastLen = (lastNode?.children?.[0]?.text || '').length;
               editor.selection = {
                 anchor: { path: [lastLine, 0], offset: lastLen },
                 focus: { path: [lastLine, 0], offset: lastLen }
@@ -1825,12 +1837,11 @@ class FlowMacroEngine {
       inputEl = this.findPromptInput();
     }
 
-    // Aguarda até 3.0s caso o botão esteja temporariamente desabilitado pelo React enquanto processa o texto/chips
+    // Aguarda até 5.0s para o botão de envio ficar habilitado pelo FLOW (evita submeter enquanto anexos estão sendo processados)
     if (submitBtn) {
-      for (let wait = 0; wait < 30; wait++) {
-        if (submitBtn.getAttribute('aria-disabled') !== 'true' && !submitBtn.disabled) {
-          break;
-        }
+      for (let wait = 0; wait < 50; wait++) {
+        const isDisabled = submitBtn.disabled || submitBtn.getAttribute('aria-disabled') === 'true';
+        if (!isDisabled) break;
         await new Promise(r => setTimeout(r, 100));
       }
     }
@@ -1840,11 +1851,6 @@ class FlowMacroEngine {
     if (submitBtn) {
       submitBtn.scrollIntoView({ behavior: 'instant', block: 'nearest' });
       submitBtn.focus();
-
-      try {
-        submitBtn.removeAttribute('disabled');
-        submitBtn.setAttribute('aria-disabled', 'false');
-      } catch (e) { /* ignora */ }
 
       const rect = submitBtn.getBoundingClientRect();
       const clientX = rect.left + (rect.width > 0 ? rect.width / 2 : 10);
@@ -1892,8 +1898,8 @@ class FlowMacroEngine {
       triggered = true;
     }
 
-    // Disparo redundante da tecla Enter no editor Slate para garantir a submissão
-    if (inputEl) {
+    // Fallback: aciona Enter no inputEl APENAS se o botão de envio NÃO foi acionado (evita envio duplo simultâneo)
+    if (!triggered && inputEl) {
       try {
         inputEl.focus();
         inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
@@ -1943,40 +1949,69 @@ class FlowMacroEngine {
    * @returns {HTMLElement[]}
    */
   getPromptAttachedChips() {
+    const promptInput = this.findPromptInput();
+    if (!promptInput) return [];
+
+    // Exclusão estrita de modais/diálogos, overlay do CDK, canvas e extensão
+    const isExcluded = (el) => {
+      if (!el) return true;
+      if (el.closest && el.closest('[id*="fd-"], [class*="fd-"]')) return true;
+      if (el.closest && el.closest('[role="dialog"], [role="presentation"], .cdk-overlay-pane, [class*="modal" i]')) return true;
+      if (el.closest && el.closest('[class*="canvas" i], [data-testid="virtuoso-item-list"], [data-testid="virtuoso-scroller"]')) return true;
+      return false;
+    };
+
+    const targetEditable = (promptInput.getAttribute && promptInput.getAttribute('contenteditable') === 'true')
+      ? promptInput
+      : (promptInput.querySelector('[contenteditable="true"]') || promptInput);
+
+    // 1. Verifica chips reais no Fiber do Slate editor
+    try {
+      const editor = this.getSlateEditor(targetEditable);
+      if (editor && editor.children && Array.isArray(editor.children)) {
+        const slateChips = editor.children.filter(n => n.type !== 'paragraph');
+        if (slateChips.length > 0) {
+          return slateChips;
+        }
+      }
+    } catch (e) {}
+
     const promptContainer = this.getPromptContainer();
-    if (!promptContainer || promptContainer === document.body) return [];
+    if (!promptContainer || isExcluded(promptContainer)) return [];
 
-    // 1. Busca qualquer <img> visível dentro do promptContainer que seja um chip/miniatura
-    const imgs = Array.from(promptContainer.querySelectorAll('img')).filter(img => {
-      if (!FlowMacroEngine.isElementVisible(img)) return false;
-      if (img.closest('[id*="fd-"], [class*="fd-"]')) return false;
+    // 2. Busca elementos no DOM do editor com data-slate-node que contenham imagem
+    const slateElements = Array.from(promptContainer.querySelectorAll('[data-slate-node="element"]:has(img), [data-slate-void="true"]')).filter(el => {
+      return FlowMacroEngine.isElementVisible(el) && !isExcluded(el);
+    });
+    if (slateElements.length > 0) return slateElements;
+
+    // 3. Busca chips/miniaturas reais no container do prompt (devem ter botão de fechar/remover ou classe de chip e NÃO serem botões de modelo)
+    const chipCandidates = Array.from(promptContainer.querySelectorAll('div, span')).filter(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || isExcluded(el)) return false;
+      if (el === promptContainer || el === promptInput || el.contains(promptInput)) return false;
+
+      const img = el.querySelector('img');
+      if (!img || !FlowMacroEngine.isElementVisible(img)) return false;
+
       const rect = img.getBoundingClientRect();
-      if (rect.width < 12 || rect.width > 250 || rect.height < 12 || rect.height > 250) return false;
-      const src = img.getAttribute('src') || img.src || '';
-      if (!src || src.length < 5) return false;
-      return true;
+      if (rect.width < 14 || rect.width > 120 || rect.height < 14 || rect.height > 120) return false;
+
+      // Ignora botões de modelo ou proporção
+      const parentBtn = el.closest('button, [role="button"]');
+      if (parentBtn) {
+        const btnText = (parentBtn.textContent || '').toLowerCase();
+        if (btnText.includes('banana') || btnText.includes('imagen') || btnText.includes('pro') || btnText.includes('fast') || btnText.includes('ultra')) {
+          return false;
+        }
+      }
+
+      const hasRemoveBtn = el.querySelector('button, [role="button"], svg, [class*="remove" i], [class*="close" i], [aria-label*="remover" i], [aria-label*="remove" i]');
+      const isChipClass = (el.className || '').toString().match(/chip|pill|asset|ingredient|thumb/i);
+      return hasRemoveBtn || isChipClass;
     });
 
-    if (imgs.length > 0) return imgs;
-
-    // 2. Seletores semânticos clássicos
-    const semanticChips = Array.from(promptContainer.querySelectorAll([
-      '[data-slate-node="element"]:has(img)',
-      '[data-type*="ingredient" i]',
-      '[data-type*="mention" i]',
-      'div[class*="chip" i]:has(img)',
-      'div[class*="pill" i]:has(img)',
-      'div[class*="ingredient" i]',
-      'div[class*="asset" i]:has(img)',
-      'span[class*="chip" i]:has(img)',
-      'span[class*="ingredient" i]'
-    ].join(', '))).filter(el => {
-      if (!FlowMacroEngine.isElementVisible(el)) return false;
-      if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-      return true;
-    });
-
-    return semanticChips;
+    const uniqueChips = chipCandidates.filter((c, i) => !chipCandidates.some((other, oi) => oi !== i && other.contains(c)));
+    return uniqueChips;
   }
 
   /**
@@ -3106,6 +3141,33 @@ class FlowMacroEngine {
    * @returns {Promise<boolean>}
    */
   /**
+   * Remove todos os chips residuais da barra de comandos para iniciar a anexação limpa
+   */
+  clearAllPromptChips() {
+    try {
+      const promptContainer = this.getPromptContainer();
+      if (!promptContainer) return;
+
+      const submitBtn = this.findSubmitButton();
+      const plusBtn = this.findPlusButton();
+
+      const removeBtns = Array.from(promptContainer.querySelectorAll('button, [role="button"], svg, div[tabindex="0"]')).filter(b => {
+        if (!FlowMacroEngine.isElementVisible(b) || b.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        if (b === submitBtn || b === plusBtn || (submitBtn && submitBtn.contains(b)) || (plusBtn && plusBtn.contains(b))) return false;
+        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        const t = (b.textContent || '').trim().toLowerCase();
+        return aria.includes('remover') || aria.includes('remove') || aria.includes('fechar') || aria.includes('close') || aria.includes('delete') || t === '✕' || t === '×';
+      });
+
+      for (const btn of removeBtns) {
+        this.simulateClick(btn);
+      }
+    } catch (e) {
+      console.warn('[FLOW Macro] clearAllPromptChips warning:', e);
+    }
+  }
+
+  /**
    * Remove chips residuais de imagens geradas do Canvas (ex: chips com botão "Baixar")
    * Mantendo apenas chips reais de personagens de referência
    */
@@ -3405,30 +3467,25 @@ class FlowMacroEngine {
 
         // Passo 4.3: Localiza e clica no botão "Adicionar ao comando" / "Incluir no comando"
         let includeBtn = null;
-        const chipsBeforeInclude = this.getPromptAttachedChips();
-        if (chipsBeforeInclude.length >= (cIdx + 1)) {
-          this.addLog(`ℹ️ [Passo 4] Personagem [${char.name}] já anexado diretamente ao comando pelo card.`, 'info');
-        } else {
-          for (let bWait = 0; bWait < 37; bWait++) {
-            const btn = this.findIncludeInCommandButton();
-            if (btn) {
-              const isDisabled = btn.disabled || btn.getAttribute('aria-disabled') === 'true';
-              if (!isDisabled) {
-                includeBtn = btn;
-                break;
-              } else if (bWait % 5 === 0) {
-                this.addLog(`⏳ [Passo 4] Botão "Adicionar ao comando" encontrado mas desabilitado. Aguardando...`, 'info');
-              }
+        for (let bWait = 0; bWait < 37; bWait++) {
+          const btn = this.findIncludeInCommandButton();
+          if (btn) {
+            const isDisabled = btn.disabled || btn.getAttribute('aria-disabled') === 'true';
+            if (!isDisabled) {
+              includeBtn = btn;
+              break;
+            } else if (bWait % 5 === 0) {
+              this.addLog(`⏳ [Passo 4] Botão "Adicionar ao comando" encontrado mas desabilitado. Aguardando...`, 'info');
             }
-
-            if ((bWait === 7 || bWait === 15 || bWait === 25) && targetCard) {
-              this.addLog(`🔄 [Passo 4] Re-selecionando card de [${char.name}]...`, 'info');
-              const reClick = targetCard.querySelector('img') || targetCard.querySelector('div.sc-b0e5-14') || targetCard;
-              this.clickElementWithOverlay(reClick);
-            }
-
-            await new Promise(r => setTimeout(r, 400));
           }
+
+          if ((bWait === 7 || bWait === 15 || bWait === 25) && targetCard) {
+            this.addLog(`🔄 [Passo 4] Re-selecionando card de [${char.name}]...`, 'info');
+            const reClick = targetCard.querySelector('img') || targetCard.querySelector('div.sc-b0e5-14') || targetCard;
+            this.clickElementWithOverlay(reClick);
+          }
+
+          await new Promise(r => setTimeout(r, 400));
         }
 
         if (includeBtn) {
@@ -3436,7 +3493,7 @@ class FlowMacroEngine {
           this.clickElementWithOverlay(includeBtn);
           await new Promise(r => setTimeout(r, 1000));
         } else {
-          this.addLog(`ℹ️ [Passo 4] Verificando anexo do chip na barra de comando...`, 'info');
+          this.addLog(`⚠️ [Passo 4] Botão "Adicionar ao comando" não encontrado para [${char.name}].`, 'warning');
         }
 
         // Passo 4.4: Validação do chip
@@ -3450,6 +3507,12 @@ class FlowMacroEngine {
             break;
           }
           await new Promise(r => setTimeout(r, 400));
+        }
+
+        if (!chipAttached && includeBtn) {
+          // Se o botão "Adicionar ao comando" foi clicado com sucesso na modal, consideramos o anexo válido
+          chipAttached = true;
+          this.addLog(`ℹ️ [Passo 4] Anexo de [${char.name}] registrado após acionar o botão de inclusão.`, 'info');
         }
 
         if (chipAttached) {
@@ -3625,17 +3688,17 @@ class FlowMacroEngine {
       'não foi possível gerar',
       'lamentamos, mas não foi possível',
       'não lhe foi cobrado nenhum valor',
-      'falhou',
       'failed to generate',
       'couldn\'t generate this image'
     ];
 
     const failedEls = Array.from(document.querySelectorAll('div, p, span, h3, h4, section, article')).filter(el => {
       if (el.closest && el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      if (el.closest && el.closest('[role="dialog"], [role="presentation"], .cdk-overlay-pane')) return false;
       if (!FlowMacroEngine.isElementVisible(el)) return false;
       const t = (el.textContent || el.innerText || '').trim().toLowerCase();
       if (t.length > 250) return false;
-      return failureKeywords.some(k => t.includes(k));
+      return failureKeywords.some(k => t.includes(k)) || t === 'falhou' || t.startsWith('falhou -') || t.startsWith('falhou:');
     });
 
     if (failedEls.length === 0) {
@@ -3746,6 +3809,9 @@ class FlowMacroEngine {
     const startTime = Date.now();
     const maxMs = maxWaitSeconds * 1000;
 
+    // Registra a contagem de cards com erro já existentes no Canvas antes do novo envio
+    const initialFailCount = this.hasCanvasFailedGenerations().count;
+
     // Período de carência inicial para o FLOW registrar o envio e criar os cards no Canvas
     await new Promise(r => { this.timer = setTimeout(r, 2500); });
 
@@ -3755,10 +3821,10 @@ class FlowMacroEngine {
     while (Date.now() - startTime < maxMs) {
       if (this.isStopped || this.state !== 'running') return false;
 
-      // 1. Verifica se houve falha explícita no Canvas ("Falhou - Lamentamos...")
+      // 1. Verifica se surgiram NOVOS cards com falha explícita no Canvas gerados por este envio
       const failCheck = this.hasCanvasFailedGenerations();
-      if (failCheck.failed) {
-        this.addLog(`⚠️ [FLOW] Falha na geração detectada no Canvas (${failCheck.count} card(s) com erro: "Falhou").`, 'warning');
+      if (failCheck.failed && failCheck.count > initialFailCount) {
+        this.addLog(`⚠️ [FLOW] Falha na geração detectada no Canvas (${failCheck.count - initialFailCount} novo(s) card(s) com erro: "Falhou").`, 'warning');
         return false;
       }
 
@@ -3779,10 +3845,10 @@ class FlowMacroEngine {
           if (consecutiveIdleChecks >= 3) {
             const totalElapsed = Math.round((Date.now() - startTime) / 1000);
 
-            // Re-verifica se ao finalizar as porcentagens não surgiu mensagem de falha
+            // Re-verifica se ao finalizar as porcentagens não surgiu novo card de falha
             const postFailCheck = this.hasCanvasFailedGenerations();
-            if (postFailCheck.failed) {
-              this.addLog(`⚠️ [FLOW] Imagem finalizou com status de falha (${postFailCheck.count} card(s) "Falhou").`, 'warning');
+            if (postFailCheck.failed && postFailCheck.count > initialFailCount) {
+              this.addLog(`⚠️ [FLOW] Imagem finalizou com status de falha (${postFailCheck.count - initialFailCount} novo(s) card(s) "Falhou").`, 'warning');
               return false;
             }
 
@@ -3797,7 +3863,7 @@ class FlowMacroEngine {
     }
 
     const finalFail = this.hasCanvasFailedGenerations();
-    if (finalFail.failed) return false;
+    if (finalFail.failed && finalFail.count > initialFailCount) return false;
 
     this.addLog('⏱️ Tempo de espera da geração concluído.', 'info');
     return true;
@@ -6001,6 +6067,9 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         }
 
         if (this.isStopped || this.state !== 'running') return;
+
+        // Limpa cards com falha residuais antes do novo envio
+        this.dismissFailedCards();
 
         // Passo 5: Clicar na seta no campo direito para enviar o prompt e gerar imagens no FLOW
         this.currentAction = isRepetition
