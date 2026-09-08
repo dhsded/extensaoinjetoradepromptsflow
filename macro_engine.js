@@ -5268,6 +5268,9 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       const isRepetition = (rep > 0);
 
       this.addLog(`🚀 [Slide ${slideNum}/${totalSlides}] ${carouselTitle} • ${item.slideTitle || item.title} (${isRepetition ? `Repetição ${rep + 1}/${targetRepeats}` : `Inserção 1/${targetRepeats}`})`, 'info');
+      if (isRepetition) {
+        this.addLog(`🔁 [Repetição ${rep + 1}/${targetRepeats}] Iniciando repetição: preparando para reenviar o mesmo prompt com as mesmas imagens no FLOW...`, 'info');
+      }
       this.notify();
 
       try {
@@ -5335,12 +5338,12 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           }
 
           this.currentAction = isRepetition
-            ? `📝 [Repetição ${rep + 1}/${targetRepeats}] Inserindo texto do prompt...`
+            ? `📝 [Repetição ${rep + 1}/${targetRepeats}] Reinserindo o mesmo prompt...`
             : '📝 Inserindo texto do prompt inicial...';
           this.notify();
           const composedText = this.composePromptText(item);
           await this.setPromptInputValue(inputEl, composedText);
-          this.addLog(`📝 [${isRepetition ? `Repetição ${rep + 1}/${targetRepeats}` : 'Passo 1'}] Prompt inserido no campo de texto.`, 'info');
+          this.addLog(`📝 [${isRepetition ? `Repetição ${rep + 1}/${targetRepeats}` : 'Passo 1'}] ${isRepetition ? 'Mesmo prompt reinserido no campo de texto.' : 'Prompt inserido no campo de texto.'}`, 'info');
           await this.stepDelay(null, isRepetition ? 'Reanexando personagens...' : 'Verificando configurações...');
 
           // Passo 1 (Continuação): Configuração de formato e proporção de imagem
@@ -5356,9 +5359,12 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           // Passos 2, 3 e 4: Anexar personagens de referência (botão +, buscar na biblioteca, incluir no comando)
           if (this.config.applyGlobalCharacters !== false && this.characters && this.characters.length > 0) {
             this.currentAction = isRepetition
-              ? `🎭 [Repetição ${rep + 1}/${targetRepeats}] Reanexando personagens da biblioteca...`
+              ? `🎭 [Repetição ${rep + 1}/${targetRepeats}] Reanexando imagens de referência para enviar novamente...`
               : '🎭 Anexando personagens de referência...';
             this.notify();
+            if (isRepetition) {
+              this.addLog(`🎭 [Repetição ${rep + 1}/${targetRepeats}] Reanexando imagens de referência da biblioteca para enviar novamente o mesmo prompt...`, 'info');
+            }
             const charsAttached = await this.attachCharactersFromFlowLibrary();
 
             // CORREÇÃO: Se os personagens NÃO foram anexados, interrompe a execução do slide
@@ -5442,13 +5448,18 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         }
 
         // Passo 5: Clicar na seta no campo direito para enviar o prompt e gerar imagens no FLOW
-        this.currentAction = '🚀 Enviando prompt para geração no FLOW...';
+        this.currentAction = isRepetition
+          ? `🚀 [Repetição ${rep + 1}/${targetRepeats}] Enviando novamente o mesmo prompt no FLOW...`
+          : '🚀 Enviando prompt para geração no FLOW...';
         this.notify();
+        if (isRepetition) {
+          this.addLog(`🚀 [Repetição ${rep + 1}/${targetRepeats}] Enviando novamente o mesmo prompt para geração no FLOW...`, 'info');
+        }
         const submitBtn = this.findSubmitButton();
         const submitted = await this.simulateSubmit(submitBtn, inputEl);
 
         if (submitted) {
-          this.addLog(`✅ [Passo 5] Inserção ${rep + 1}/${targetRepeats} disparada no FLOW: ${item.slideTitle || item.title}`, 'success');
+          this.addLog(`✅ [Passo 5] ${isRepetition ? `Mesmo prompt enviado novamente com sucesso (${rep + 1}/${targetRepeats})` : `Inserção 1/${targetRepeats} disparada`} no FLOW: ${item.slideTitle || item.title}`, 'success');
           // Aguarda a geração da imagem ser concluída no Canvas do FLOW antes do intervalo/próximo slide
           await this.waitForGenerationToComplete(90);
         } else {
@@ -5461,8 +5472,8 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         // Se houver repetições configuradas para o mesmo slide, aguarda delay pré-configurado
         if (rep + 1 < targetRepeats && (this.state === 'running' || this.state === 'idle')) {
           const repDelay = Math.max(10, parseInt(this.config.repeatDelaySeconds, 10) || 15);
-          this.addLog(`⏳ [Intervalo de Repetição] Geração 100% concluída! Aguardando delay de ${repDelay}s para repetir prompt com mesmas imagens...`, 'info');
-          await this.waitWithCountdown(repDelay, `Próxima repetição (${rep + 2}/${targetRepeats})`);
+          this.addLog(`⏳ [Aguardando Repetição] Geração concluída no Canvas! Aguardando ${repDelay}s para repetir e enviar novamente o mesmo prompt (${rep + 2}/${targetRepeats})...`, 'info');
+          await this.waitWithCountdown(repDelay, `Aguardando para repetir e enviar novamente o mesmo prompt (${rep + 2}/${targetRepeats})`);
         }
       } catch (err) {
         item.status = 'error';
