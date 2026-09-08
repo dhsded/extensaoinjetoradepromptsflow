@@ -1471,10 +1471,24 @@
               <!-- Delay, Repetitions and Extra Config -->
               <div style="margin-top: 16px; display: flex; flex-direction: column; gap: 12px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px;">
                 <div style="display: flex; align-items: center; justify-content: space-between;">
-                  <span style="font-size: 12px; color: var(--fd-text-muted);">🔁 Repetições por Prompt:</span>
+                  <div style="display: flex; flex-direction: column;">
+                    <span style="font-size: 12px; font-weight: 600; color: #fff;">🔁 Repetições por Prompt:</span>
+                    <span style="font-size: 10px; color: var(--fd-text-muted);">Número de vezes que cada prompt é gerado com mesmas imagens</span>
+                  </div>
                   <div style="display: flex; align-items: center; gap: 6px;">
-                    <input type="number" id="fd-config-repeat-per-prompt" min="1" max="50" value="${engine.config.repeatPerPrompt || 1}" class="fd-modal-input" style="width: 55px; text-align: center; background: rgba(0,0,0,0.3); border: 1px solid var(--fd-border); border-radius: 6px; padding: 4px;">
+                    <input type="number" id="fd-config-repeat-per-prompt" min="1" max="50" value="${engine.config.repeatPerPrompt || 1}" class="fd-modal-input" style="width: 55px; text-align: center; background: rgba(0,0,0,0.3); border: 1px solid var(--fd-border); border-radius: 6px; padding: 4px; color: #38bdf8; font-weight: 700;">
                     <span style="font-size: 12px; color: var(--fd-text-muted);">vez(es)</span>
+                  </div>
+                </div>
+
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                  <div style="display: flex; flex-direction: column;">
+                    <span style="font-size: 12px; font-weight: 600; color: #fff;">⏳ Intervalo entre Repetições:</span>
+                    <span style="font-size: 10px; color: var(--fd-text-muted);">Pausa para reanexar imagens e prompt (Padrão: 10 segundos)</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <input type="number" id="fd-config-repeat-delay" min="3" max="300" value="${engine.config.repeatDelaySeconds || 10}" class="fd-modal-input" style="width: 55px; text-align: center; background: rgba(0,0,0,0.3); border: 1px solid var(--fd-border); border-radius: 6px; padding: 4px; color: #38bdf8; font-weight: 700;">
+                    <span style="font-size: 12px; color: var(--fd-text-muted);">seg</span>
                   </div>
                 </div>
 
@@ -1626,9 +1640,15 @@
             <div style="display: flex; flex-direction: column; gap: 6px;">
               <div style="display: flex; align-items: center; justify-content: space-between;">
                 <span style="font-size: 12px; font-weight: 600; color: var(--fd-text-muted);">Console de Execução em Tempo Real:</span>
-                <button class="fd-modal-btn-cancel" id="fd-btn-clear-logs" title="Limpar todos os registros do console" style="padding: 3px 10px; font-size: 11px; display: flex; align-items: center; gap: 4px;">
-                  🧹 Limpar Console
-                </button>
+                <div style="display: flex; gap: 6px;">
+                  <button class="fd-btn-copy-logs" id="fd-btn-copy-logs" title="Copiar todo o texto do console para a área de transferência">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                    <span>Copiar Log</span>
+                  </button>
+                  <button class="fd-modal-btn-cancel" id="fd-btn-clear-logs" title="Limpar todos os registros do console" style="padding: 3px 10px; font-size: 11px; display: flex; align-items: center; gap: 4px;">
+                    🧹 Limpar Console
+                  </button>
+                </div>
               </div>
               <div class="fd-logs-console" id="fd-logs-console">
                 <!-- Log items rendered dynamically -->
@@ -2068,11 +2088,21 @@
     const inputConfigRepeat = macroModalElement.querySelector('#fd-config-repeat-per-prompt');
     if (inputConfigRepeat) {
       inputConfigRepeat.addEventListener('change', (e) => {
-        const val = parseInt(e.target.value, 10) || 1;
+        const val = Math.max(1, parseInt(e.target.value, 10) || 1);
         engine.setGlobalRepeatCount(val);
         if (inputGlobalRepeat) inputGlobalRepeat.value = val;
         renderPromptsList();
         showToast(`🔁 Repetições padrão ajustadas para: ${val}x`, 'info');
+      });
+    }
+
+    // Intervalo pré-configurado entre repetições do mesmo prompt (padrão: 10s)
+    const inputRepeatDelay = macroModalElement.querySelector('#fd-config-repeat-delay');
+    if (inputRepeatDelay) {
+      inputRepeatDelay.addEventListener('change', (e) => {
+        const val = Math.max(3, parseInt(e.target.value, 10) || 10);
+        engine.updateConfig({ repeatDelaySeconds: val });
+        showToast(`⏳ Intervalo entre repetições: ${val}s`, 'info');
       });
     }
 
@@ -2398,6 +2428,51 @@
         engine.clearLogs();
         renderLogs();
         showToast('🧹 Console de logs limpo com sucesso!', 'info');
+      });
+    }
+
+    // Botão para copiar todo o texto do console de logs para a área de transferência
+    const btnCopyLogs = macroModalElement.querySelector('#fd-btn-copy-logs');
+    if (btnCopyLogs) {
+      btnCopyLogs.addEventListener('click', async () => {
+        try {
+          const logText = (typeof engine.getFormattedLogs === 'function') 
+            ? engine.getFormattedLogs() 
+            : engine.logs.map(l => `${l.timeDisplay || `[${l.time}]`} ${l.message}`).join('\n');
+
+          if (!logText || logText.trim().length === 0) {
+            showToast('ℹ️ Console de logs vazio, nada para copiar.', 'info');
+            return;
+          }
+
+          await navigator.clipboard.writeText(logText);
+          btnCopyLogs.innerHTML = '<span>✅ Copiado!</span>';
+          showToast('📋 Log completo copiado para a área de transferência!', 'success');
+          setTimeout(() => { 
+            btnCopyLogs.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg><span>Copiar Log</span>'; 
+          }, 2000);
+        } catch (e) {
+          // Fallback para navegadores ou contextos onde clipboard.writeText é restrito
+          try {
+            const logText = (typeof engine.getFormattedLogs === 'function') 
+              ? engine.getFormattedLogs() 
+              : engine.logs.map(l => `${l.timeDisplay || `[${l.time}]`} ${l.message}`).join('\n');
+            const ta = document.createElement('textarea');
+            ta.value = logText;
+            ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0;';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            btnCopyLogs.innerHTML = '<span>✅ Copiado!</span>';
+            showToast('📋 Log completo copiado para a área de transferência!', 'success');
+            setTimeout(() => { 
+              btnCopyLogs.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg><span>Copiar Log</span>'; 
+            }, 2000);
+          } catch (e2) {
+            showToast('❌ Não foi possível copiar o log. Tente novamente.', 'error');
+          }
+        }
       });
     }
 
@@ -3308,6 +3383,9 @@
           <button class="fd-btn-icon" id="fd-mini-btn-stop" title="Parar">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="4" y="4" width="16" height="16"></rect></svg>
           </button>
+          <button class="fd-btn-icon" id="fd-mini-btn-copy-logs" title="Copiar Logs em Tempo Real" style="color: #38bdf8;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+          </button>
           <button class="fd-btn-icon" id="fd-mini-btn-expand" title="Expandir Studio Completo">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
           </button>
@@ -3323,6 +3401,38 @@
         engine.stop();
         enableMiniRunnerMode(false);
         showToast('⏹️ Macro totalmente encerrada e progresso resetado!', 'info');
+      });
+
+      miniRunnerElement.querySelector('#fd-mini-btn-copy-logs').addEventListener('click', async () => {
+        try {
+          const logText = (typeof engine.getFormattedLogs === 'function') 
+            ? engine.getFormattedLogs() 
+            : engine.logs.map(l => `${l.timeDisplay || `[${l.time}]`} ${l.message}`).join('\n');
+
+          if (!logText || logText.trim().length === 0) {
+            showToast('ℹ️ Console de logs vazio, nada para copiar.', 'info');
+            return;
+          }
+
+          await navigator.clipboard.writeText(logText);
+          showToast('📋 Log completo copiado para a área de transferência!', 'success');
+        } catch (e) {
+          try {
+            const logText = (typeof engine.getFormattedLogs === 'function') 
+              ? engine.getFormattedLogs() 
+              : engine.logs.map(l => `${l.timeDisplay || `[${l.time}]`} ${l.message}`).join('\n');
+            const ta = document.createElement('textarea');
+            ta.value = logText;
+            ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0;';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            showToast('📋 Log completo copiado para a área de transferência!', 'success');
+          } catch (e2) {
+            showToast('❌ Não foi possível copiar o log.', 'error');
+          }
+        }
       });
 
       miniRunnerElement.querySelector('#fd-mini-btn-expand').addEventListener('click', () => {
