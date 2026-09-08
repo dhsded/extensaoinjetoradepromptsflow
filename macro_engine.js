@@ -123,6 +123,15 @@ class FlowMacroEngine {
     // Carrega o estado salvo e inicia o gravador de telemetria
     this.loadState();
     this.initRealtimeRecorder();
+
+    // Listener de confirmação de upload interceptado no Main World
+    if (typeof window !== 'undefined') {
+      window.addEventListener('message', (event) => {
+        if (event.data && event.data.type === 'FLOW_UPLOAD_INTERCEPTED') {
+          this.addLog(`✨ [Passo 3] Upload interceptado e injetado no FLOW via ${event.data.method} (${event.data.fileName})!`, 'success');
+        }
+      });
+    }
   }
 
   // =========================================================================
@@ -2088,6 +2097,51 @@ class FlowMacroEngine {
   }
 
   /**
+   * Procura recursivamente por elementos input[type="file"] atravessando inclusive Shadow Roots
+   * @param {Node} [node] - Nó raiz de busca
+   * @returns {HTMLInputElement|null}
+   */
+  findFileInputDeep(node = document.body) {
+    if (!node) return null;
+    if (node.tagName === 'INPUT' && node.type === 'file' && !node.id?.includes('fd-') && !node.className?.includes('fd-')) {
+      return node;
+    }
+    if (node.shadowRoot) {
+      const found = this.findFileInputDeep(node.shadowRoot);
+      if (found) return found;
+    }
+    for (let child = node.firstElementChild; child; child = child.nextElementSibling) {
+      const found = this.findFileInputDeep(child);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  /**
+   * Dispara sequência de Drag & Drop sintético em um elemento alvo
+   * @param {HTMLElement} target - Elemento de destino
+   * @param {File} file - Arquivo a ser enviado
+   */
+  dispatchSyntheticDrop(target, file) {
+    try {
+      if (!target || !file) return false;
+      const dt = new DataTransfer();
+      dt.items.add(file);
+
+      const enterEvt = new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: dt });
+      const overEvt = new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt });
+      const dropEvt = new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt });
+
+      target.dispatchEvent(enterEvt);
+      target.dispatchEvent(overEvt);
+      target.dispatchEvent(dropEvt);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
    * Verifica se a biblioteca / galeria de mídia do FLOW já está aberta e visível na tela
    * NUNCA confunde com a lista de cards gerados no Canvas nem com imagens expandidas!
    * @returns {boolean}
@@ -2679,7 +2733,7 @@ class FlowMacroEngine {
    * @param {number} maxWaitSeconds - Tempo máximo de espera em segundos (padrão 60s)
    * @returns {Promise<boolean>}
    */
-  async waitForCardUploadCompletion(cIdx, charName, maxWaitSeconds = 60) {
+  async waitForCardUploadCompletion(cIdx, charName, maxWaitSeconds = 35) {
     this.addLog(`⏳ [Passo 3] Monitorando envio da imagem de [${charName}] para o FLOW...`, 'info');
 
     const startTime = Date.now();
@@ -2690,9 +2744,9 @@ class FlowMacroEngine {
     while (Date.now() - startTime < maxWaitMs) {
       if (this.state === 'stopped' || this.state === 'paused') return false;
 
-      // Localiza o card correspondente ao índice
+      // Localiza o card correspondente ao índice ou o mais recente da lista
       const mediaCards = this.getLibraryMediaCards();
-      let targetCard = (cIdx < mediaCards.length) ? mediaCards[cIdx] : null;
+      let targetCard = (cIdx < mediaCards.length) ? mediaCards[cIdx] : (mediaCards.length > 0 ? mediaCards[0] : null);
 
       // Também tenta localizar o card pelo nome do personagem na lista
       if (!targetCard && charName) {
@@ -3203,39 +3257,6 @@ class FlowMacroEngine {
             await new Promise(r => setTimeout(r, 400));
 
             try {
-              // Localiza botão/área de upload pelo seletor exato .upload-text ou texto "Carregar multimídia"
-              const uploadSpan = document.querySelector('.upload-text, span.upload-text') ||
-                Array.from(document.querySelectorAll('span, div, button, label, [role="button"], p')).find(el => {
-                  if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-                  const t = (el.textContent || '').trim().toLowerCase();
-                  return t === 'carregar multimídia' || t === 'carregar multimidia' ||
-                         t.includes('carregar multimídia') || t.includes('carregar multimidia') ||
-                         t === 'enviar mídia' || t === 'enviar media' || t.includes('upload');
-                });
-
-              const uploadContainer = uploadSpan ? (uploadSpan.closest('button, label, [role="button"], div[tabindex="0"], div.upload-container, div.upload-card, div') || uploadSpan) : null;
-
-              // Localiza o input[type="file"] associado
-              let fileInput = null;
-              if (uploadContainer) {
-                fileInput = uploadContainer.querySelector('input[type="file"]');
-                if (!fileInput && uploadContainer.parentElement) {
-                  fileInput = uploadContainer.parentElement.querySelector('input[type="file"]') ||
-                              uploadContainer.parentElement.parentElement?.querySelector('input[type="file"]');
-                }
-                if (!fileInput && uploadContainer.getAttribute('for')) {
-                  fileInput = document.getElementById(uploadContainer.getAttribute('for'));
-                }
-              }
-
-              const libContainer = this.getLibraryContainer();
-              if (!fileInput && libContainer) {
-                fileInput = libContainer.querySelector('input[type="file"]:not([id*="fd-"]):not([class*="fd-"])');
-              }
-              if (!fileInput) {
-                fileInput = document.querySelector('input[type="file"]:not([id*="fd-"]):not([class*="fd-"])');
-              }
-
               // Converte avatarData para Blob e File
               let blob;
               if (avatarData.startsWith('data:') || avatarData.startsWith('blob:') || avatarData.startsWith('http')) {
@@ -3249,34 +3270,73 @@ class FlowMacroEngine {
               const dt = new DataTransfer();
               dt.items.add(file);
 
+              // 1. Envia arquivo para o interceptor Main World (flow_main_world.js)
+              if (typeof window !== 'undefined') {
+                window.postMessage({
+                  type: 'FLOW_SET_PENDING_FILE',
+                  file: file,
+                  blob: blob,
+                  name: file.name,
+                  mimeType: file.type
+                }, '*');
+                await new Promise(r => setTimeout(r, 150));
+              }
+
+              // 2. Localiza botão/área de upload pelo seletor exato .upload-text ou texto "Carregar multimídia"
+              const uploadSpan = document.querySelector('.upload-text, span.upload-text') ||
+                Array.from(document.querySelectorAll('span, div, button, label, [role="button"], p')).find(el => {
+                  if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+                  const t = (el.textContent || '').trim().toLowerCase();
+                  return t === 'carregar multimídia' || t === 'carregar multimidia' ||
+                         t.includes('carregar multimídia') || t.includes('carregar multimidia') ||
+                         t === 'enviar mídia' || t === 'enviar media' || t.includes('upload');
+                });
+
+              const uploadBtn = uploadSpan ? (uploadSpan.closest('button, label, [role="button"], div[tabindex="0"]') || uploadSpan) : null;
+
+              // 3. Busca input de arquivo diretamente (inclusive atravessando Shadow Roots)
+              let fileInput = this.findFileInputDeep();
+              if (!fileInput && uploadBtn) {
+                fileInput = uploadBtn.querySelector('input[type="file"]') ||
+                            uploadBtn.parentElement?.querySelector('input[type="file"]');
+              }
+
               let uploadDispatched = false;
 
               if (fileInput) {
-                this.addLog(`📤 [Passo 3] Disparando envio de "${file.name}" para o FLOW via file input...`, 'info');
+                this.addLog(`📤 [Passo 3] Disparando envio de "${file.name}" via input de arquivo localizado...`, 'info');
                 fileInput.files = dt.files;
                 fileInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
                 fileInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+                if (typeof fileInput.onchange === 'function') {
+                  try { fileInput.onchange(new Event('change')); } catch (e) {}
+                }
                 uploadDispatched = true;
               }
 
-              // Dispara também evento de drop no uploadContainer como reforço
-              if (uploadContainer) {
-                try {
-                  const dropEvent = new DragEvent('drop', {
-                    bubbles: true,
-                    cancelable: true,
-                    dataTransfer: dt
-                  });
-                  uploadContainer.dispatchEvent(dropEvent);
-                  uploadDispatched = true;
-                } catch (e) {}
+              // 4. Clica no botão de upload (acionando o interceptor Main World para chamadas programáticas de file picker)
+              if (uploadBtn) {
+                const btnLabel = (uploadBtn.textContent || '').trim().substring(0, 30);
+                this.addLog(`📤 [Passo 3] Acionando botão "${btnLabel}" para upload de [${char.name}]...`, 'info');
+                this.simulateClick(uploadBtn);
+                uploadDispatched = true;
+                await new Promise(r => setTimeout(r, 500));
+              }
+
+              // 5. Dispara Drag & Drop sintético como reforço na área da modal
+              const modalContainer = this.getLibraryContainer() || document.querySelector('.cdk-overlay-pane');
+              if (modalContainer) {
+                this.dispatchSyntheticDrop(modalContainer, file);
+              }
+              if (uploadBtn && uploadBtn !== modalContainer) {
+                this.dispatchSyntheticDrop(uploadBtn, file);
               }
 
               if (!uploadDispatched) {
                 this.addLog('⚠️ [Passo 3] Não foi possível encontrar input de arquivos nem área de upload no FLOW.', 'warning');
               } else {
-                // Monitora ativamente o upload até 100% de conclusão
-                await this.waitForCardUploadCompletion(cIdx, char.name, 60);
+                // Monitora ativamente o upload até 100% de conclusão (timeout: 35s)
+                await this.waitForCardUploadCompletion(cIdx, char.name, 35);
 
                 if (this.uploadedAvatarsInFlow) {
                   this.uploadedAvatarsInFlow.add(char.name);

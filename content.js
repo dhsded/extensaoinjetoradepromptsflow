@@ -60,6 +60,14 @@
     return;
   }
 
+  // Injeção dinâmica do script Main World para interceptação de upload
+  try {
+    const s = document.createElement('script');
+    s.src = chrome.runtime.getURL('flow_main_world.js');
+    (document.head || document.documentElement).appendChild(s);
+    s.onload = () => s.remove();
+  } catch (e) { /* ignora */ }
+
   // Limpeza de instâncias anteriores na página caso a extensão tenha sido recarregada
   try {
     const oldHud = document.getElementById('flow-downloader-hud-container');

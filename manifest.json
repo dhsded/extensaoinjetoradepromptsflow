@@ -24,6 +24,17 @@
         "https://labs.google/*",
         "https://*.google.com/*"
       ],
+      "js": ["flow_main_world.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://flow.google.com/*",
+        "https://flow.google/*",
+        "https://labs.google/*",
+        "https://*.google.com/*"
+      ],
       "js": ["pdf_extractor.js", "macro_engine.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
@@ -60,5 +71,11 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["flow_main_world.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }
