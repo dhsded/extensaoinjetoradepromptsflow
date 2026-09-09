@@ -102,6 +102,10 @@ class FlowMacroEngine {
       autoDownloadResults: false,      // Baixa as imagens automaticamente após a geração
       carouselFolderMode: 'individual', // 'individual' (subpastas por carrossel) | 'single' (pasta única)
       downloadFolder: 'FLOW_Downloads', // Pasta base de downloads
+      // Notificações ao Vivo no Telegram
+      telegramEnabled: false,          // Ativa envio de relatórios e progresso no Telegram
+      telegramBotToken: '',            // Token do Bot (@BotFather)
+      telegramChatId: '',              // Chat ID do usuário ou grupo
       // Integração com Inteligência Artificial para Auto-Diagnóstico em Tempo Real
       aiProvider: 'gemini',            // Provedor de I.A: 'gemini' | 'groq' | 'openrouter'
       aiApiKey: '',                    // Chave ativa de I.A
@@ -1001,6 +1005,47 @@ class FlowMacroEngine {
     this.logs.unshift(entry);
     if (this.logs.length > 150) this.logs.pop(); // Mantém no máximo 150 logs na memória
     this.notify();
+  }
+
+  /**
+   * Envia uma mensagem formatada para o bot do Telegram configurado
+   * @param {string} text - Conteúdo da mensagem em Markdown
+   * @returns {Promise<boolean>}
+   */
+  async sendTelegramNotification(text) {
+    if (!this.config || !this.config.telegramEnabled) return false;
+    const token = (this.config.telegramBotToken || '').trim();
+    const chatId = (this.config.telegramChatId || '').trim();
+
+    if (!token || !chatId) {
+      console.warn('[Telegram Notifier] Token ou Chat ID não preenchido.');
+      return false;
+    }
+
+    try {
+      const url = `https://api.telegram.org/bot${token}/sendMessage`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: text,
+          parse_mode: 'Markdown'
+        })
+      });
+
+      const data = await res.json();
+      if (!data.ok) {
+        console.warn('[Telegram Notifier] Erro retornado pela API:', data.description);
+        this.addLog(`⚠️ Telegram API: ${data.description}`, 'warning');
+        return false;
+      }
+      return true;
+    } catch (e) {
+      console.error('[Telegram Notifier] Erro de requisição:', e);
+      this.addLog(`⚠️ Erro de conexão com Telegram: ${e.message}`, 'warning');
+      return false;
+    }
   }
 
   // =========================================================================
@@ -5459,6 +5504,15 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
     this.addLog('▶️ Macro iniciada com controle de tempo e Keep-Alive de segundo plano ativos.', 'success');
     this.notify();
 
+    // Dispara notificação de início no Telegram se habilitado
+    this.sendTelegramNotification(
+      `🚀 *[FLOW Studio Pro]*\n` +
+      `🎬 *Início de Execução!*\n` +
+      `• *Total de Prompts:* ${this.prompts.length}\n` +
+      `• *Carrosséis na Fila:* ${this.carousels && this.carousels.length > 0 ? this.carousels.length : 1}\n` +
+      `• *Horário de Início:* ${new Date().toLocaleTimeString()}`
+    );
+
     // Inicia a partir do primeiro slide pendente se não estiver retomando
     if (this.currentIndex === -1 || this.currentIndex >= this.prompts.length) {
       const firstPending = this.prompts.findIndex(p => p.enabled && p.status !== 'completed');
@@ -6174,6 +6228,16 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       }
       this.saveState();
 
+      // Notificação ao Vivo no Telegram a cada Carrossel Concluído
+      const statusIcon = hasFailedSlides ? '⚠️' : '🎉';
+      const statusLabel = hasFailedSlides ? 'Finalizado com Alertas' : 'Concluído com Sucesso';
+      this.sendTelegramNotification(
+        `${statusIcon} *[Carrossel ${cIdx + 1}/${carouselsToRun.length}] ${statusLabel}*\n` +
+        `📚 *Título:* ${carousel.title}\n` +
+        `🖼️ *Slides gerados:* ${activeSlides.length}\n` +
+        `⏱️ *Tempo decorrido:* ${FlowMacroEngine.formatDuration(this.elapsedSeconds)}`
+      );
+
       // =======================================================================
       // Gatilho de Download Automático por Carrossel (Individual ou Pasta Única)
       // Executa ANTES de transicionar ou navegar para novo projeto do FLOW
@@ -6234,6 +6298,22 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         }
       }
       this.saveState();
+
+      // Notificação Final no Telegram
+      if (anyCarouselFailed) {
+        this.sendTelegramNotification(
+          `⚠️ *[FLOW Studio Pro - Finalizado com Alertas]*\n` +
+          `• Duração total: *${totalElapsed}*\n` +
+          `• Alguns slides apresentaram pendências. Verifique o painel.`
+        );
+      } else {
+        this.sendTelegramNotification(
+          `🏆 *[FLOW Studio Pro - 100% CONCLUÍDO!]*\n` +
+          `• Todos os *${carouselsToRun.length} carrosséis* foram gerados no FLOW!\n` +
+          `• Duração total: *${totalElapsed}*\n` +
+          `• Todas as imagens foram processadas e salvas!`
+        );
+      }
 
       // =======================================================================
       // Gatilho de Download Automático em Lote ao Concluir Tudo

@@ -467,7 +467,7 @@
   // ==========================================================================
 
   /**
-   * Encontra todos os containers roláveis (feed principal, janela, listas)
+   * Encontra todos os containers roláveis (feed principal, virtuoso, janela, listas)
    * @returns {Array<Object>} - Lista de scrollers manipuláveis
    */
   function findScrollContainers() {
@@ -475,21 +475,43 @@
     const docElem = document.documentElement;
     const body = document.body;
 
-    // Rolagem da janela/documento
+    // 1. Prioridade máxima: Scrollers dedicados do Virtuoso do Google FLOW
+    const virtuosoScrollers = document.querySelectorAll('[data-testid="virtuoso-scroller"], [data-virtuoso-scroller="true"]');
+    for (const el of virtuosoScrollers) {
+      if (el.closest('[id*="fd-"], [class*="fd-"]')) continue;
+      containers.push({
+        element: el,
+        isWindow: false,
+        getScrollTop: () => el.scrollTop,
+        getScrollHeight: () => el.scrollHeight,
+        getClientHeight: () => el.clientHeight,
+        scrollBy: (val) => {
+          el.scrollBy({ top: val, behavior: 'instant' });
+          el.dispatchEvent(new Event('scroll', { bubbles: true }));
+        },
+        scrollTo: (top) => {
+          el.scrollTo({ top: top, behavior: 'instant' });
+          el.dispatchEvent(new Event('scroll', { bubbles: true }));
+        }
+      });
+    }
+
+    // 2. Rolagem da janela/documento
     containers.push({
       element: window,
       isWindow: true,
       getScrollTop: () => window.scrollY || docElem.scrollTop || body.scrollTop,
       getScrollHeight: () => Math.max(docElem.scrollHeight, body.scrollHeight),
       getClientHeight: () => window.innerHeight,
-      scrollBy: (val) => window.scrollBy({ top: val, behavior: 'smooth' }),
-      scrollTo: (top) => window.scrollTo({ top, behavior: 'smooth' })
+      scrollBy: (val) => window.scrollBy({ top: val, behavior: 'instant' }),
+      scrollTo: (top) => window.scrollTo({ top, behavior: 'instant' })
     });
 
-    // Rolagem de divs e seções internas
-    const allDivs = document.querySelectorAll('main, [role="main"], [role="feed"], #main-content, section, div');
+    // 3. Rolagem de divs e seções internas do Canvas
+    const allDivs = document.querySelectorAll('main, [role="main"], [role="feed"], #main-content, section, div[class*="canvas" i]');
     for (const el of allDivs) {
-      if (el.scrollHeight > el.clientHeight + 80 && el.clientHeight > 200) {
+      if (el.closest('[id*="fd-"], [class*="fd-"]')) continue;
+      if (el.scrollHeight > el.clientHeight + 60 && el.clientHeight > 150) {
         const style = window.getComputedStyle(el);
         if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
           containers.push({
@@ -498,8 +520,14 @@
             getScrollTop: () => el.scrollTop,
             getScrollHeight: () => el.scrollHeight,
             getClientHeight: () => el.clientHeight,
-            scrollBy: (val) => el.scrollBy({ top: val, behavior: 'smooth' }),
-            scrollTo: (top) => el.scrollTo({ top, behavior: 'smooth' })
+            scrollBy: (val) => {
+              el.scrollBy({ top: val, behavior: 'instant' });
+              el.dispatchEvent(new Event('scroll', { bubbles: true }));
+            },
+            scrollTo: (top) => {
+              el.scrollTo({ top: top, behavior: 'instant' });
+              el.dispatchEvent(new Event('scroll', { bubbles: true }));
+            }
           });
         }
       }
@@ -721,11 +749,27 @@
     }
 
     showToast(`📁 Pasta de destino: Downloads/${targetFolder}`, 'info');
-    showToast('📜 Rolando até o fim da página para carregar todas as imagens...', 'info');
+    showToast('⬆️ Subindo ao topo da página para carregar todas as imagens desde o início...', 'info');
 
     const scrollers = findScrollContainers();
-    const primaryScroller = scrollers[0];
-    const initialTop = primaryScroller.getScrollTop();
+    const primaryScroller = scrollers[0] || {
+      scrollTo: () => window.scrollTo(0, 0),
+      scrollBy: (v) => window.scrollBy(0, v),
+      getScrollTop: () => window.scrollY,
+      getScrollHeight: () => document.documentElement.scrollHeight,
+      getClientHeight: () => window.innerHeight
+    };
+
+    // PASSO 1: Sobe totalmente a barra de rolagem de todos os containers para o topo absoluto (0)
+    for (const scroller of scrollers) {
+      scroller.scrollTo(0);
+    }
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+
+    // Aguarda 1.2s para o Virtuoso do FLOW renderizar os cards iniciais do topo
+    await new Promise(r => setTimeout(r, 1200));
 
     // Mapa para acumular imagens descobertas durante a rolagem (previne perdas em virtual lists)
     const collectedMap = new Map();
@@ -743,14 +787,16 @@
       updateImageCountBadge(collectedMap.size);
     }
 
-    // Coleta inicial
+    // Coleta inicial no topo absoluto
     collectAllVisible();
 
-    // 1. Loop de rolagem progressiva com verificação de fim de página
+    showToast('📜 Descendo progressivamente até o final para capturar todas as imagens...', 'info');
+
+    // PASSO 2: Loop de descida progressiva controlada em passos de 380px
     let lastHeight = 0;
     let lastImageCount = collectedMap.size;
     let bottomConfirmationCount = 0;
-    const maxSteps = 45;
+    const maxSteps = 60; // Suporta páginas longas com múltiplos carrosséis
 
     for (let step = 1; step <= maxSteps; step++) {
       if (cancelRequested) {
@@ -760,21 +806,21 @@
         return;
       }
 
-      // Rola todos os containers ativos em 550px
+      // Rola todos os containers ativos em passos graduais de 380px
       for (const scroller of scrollers) {
-        scroller.scrollBy(550);
+        scroller.scrollBy(380);
       }
 
-      // Rola carrosséis horizontais se existirem
+      // Rola eventuais strips horizontais
       const horizontalStrips = document.querySelectorAll('[style*="overflow-x"], div, section');
       for (const el of horizontalStrips) {
         if (el.scrollWidth > el.clientWidth + 50) {
-          el.scrollBy({ left: 400, behavior: 'smooth' });
+          el.scrollBy({ left: 350, behavior: 'smooth' });
         }
       }
 
-      // Aguarda 850ms por passo para o DOM e as requisições de rede renderizarem
-      await new Promise(r => setTimeout(r, 850));
+      // Aguarda 750ms por passo para o DOM virtual e as requisições de imagem renderizarem
+      await new Promise(r => setTimeout(r, 750));
 
       if (cancelRequested) {
         resetHudButtons();
@@ -785,17 +831,21 @@
       collectAllVisible();
 
       const currentHeight = primaryScroller.getScrollHeight();
+      const currentScrollTop = primaryScroller.getScrollTop();
+      const clientH = primaryScroller.getClientHeight();
       const currentCount = collectedMap.size;
 
-      // Verifica se novos conteúdos foram carregados
+      // Verifica se alcançou o fim físico da rolagem
+      const isAtBottom = (currentScrollTop + clientH >= currentHeight - 35);
+
       if (currentHeight > lastHeight + 10 || currentCount > lastImageCount) {
         bottomConfirmationCount = 0;
         lastHeight = currentHeight;
         lastImageCount = currentCount;
-      } else {
+      } else if (isAtBottom) {
         bottomConfirmationCount++;
-        // Confirma 4 verificações consecutivas sem mudanças para decretar o fim da página
-        if (bottomConfirmationCount >= 4) {
+        // Confirma 3 verificações consecutivas no fundo absoluto da página
+        if (bottomConfirmationCount >= 3) {
           console.log('[FLOW Downloader] Fim definitivo da página verificado com sucesso.');
           break;
         }
@@ -808,13 +858,14 @@
       return;
     }
 
-    // Aguarda 600ms no fundo da página para carregamento das últimas imagens
-    await new Promise(r => setTimeout(r, 600));
+    // PASSO 3: Aguarda 800ms no fundo da página para carregamento das últimas imagens e coleta final
+    await new Promise(r => setTimeout(r, 800));
     collectAllVisible();
 
-    // 2. Retorna a rolagem para a posição inicial de forma suave
-    primaryScroller.scrollTo(initialTop);
-    await new Promise(r => setTimeout(r, 300));
+    // PASSO 4: Retorna a rolagem para o topo suavemente
+    primaryScroller.scrollTo(0);
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    await new Promise(r => setTimeout(r, 400));
 
     // 3. Prepara a lista consolidada de todas as imagens encontradas
     const allDiscovered = Array.from(collectedMap.values());
@@ -1674,6 +1725,39 @@
                   </select>
                 </div>
 
+                <!-- Configuração de Notificações no Telegram -->
+                <div style="background: rgba(0, 136, 204, 0.08); border: 1px solid rgba(0, 136, 204, 0.3); border-radius: 8px; padding: 12px; margin-top: 10px;">
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <span style="font-size: 16px;">✈️</span>
+                      <span style="font-size: 12px; font-weight: 700; color: #38bdf8;">Notificações ao Vivo no Telegram</span>
+                    </div>
+                    <label class="fd-switch">
+                      <input type="checkbox" id="fd-toggle-telegram-enabled" name="fd_toggle_telegram_enabled" ${engine.config.telegramEnabled ? 'checked' : ''} autocomplete="off">
+                      <span class="fd-slider"></span>
+                    </label>
+                  </div>
+                  <div style="font-size: 10px; color: var(--fd-text-muted); margin-bottom: 10px;">
+                    Receba relatórios instantâneos do progresso de cada carrossel e alertas direto no seu celular via Telegram Bot.
+                  </div>
+
+                  <div style="display: flex; flex-direction: column; gap: 8px;">
+                    <div>
+                      <label style="display: block; font-size: 10px; color: #94a3b8; margin-bottom: 2px;">🤖 Bot Token (@BotFather):</label>
+                      <input type="password" id="fd-input-telegram-token" value="${escapeHtml(engine.config.telegramBotToken || '')}" placeholder="Ex: 7123456789:AAHq_Abc123..." class="fd-modal-input" style="width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.4); border: 1px solid var(--fd-border); border-radius: 6px; padding: 6px 8px; color: #fff; font-size: 11px;">
+                    </div>
+                    <div>
+                      <label style="display: block; font-size: 10px; color: #94a3b8; margin-bottom: 2px;">💬 Chat ID (@userinfobot):</label>
+                      <div style="display: flex; gap: 6px;">
+                        <input type="text" id="fd-input-telegram-chatid" value="${escapeHtml(engine.config.telegramChatId || '')}" placeholder="Ex: 123456789 ou -100..." class="fd-modal-input" style="flex: 1; box-sizing: border-box; background: rgba(0,0,0,0.4); border: 1px solid var(--fd-border); border-radius: 6px; padding: 6px 8px; color: #fff; font-size: 11px;">
+                        <button type="button" id="fd-btn-test-telegram" style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.4); color: #38bdf8; border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s;">
+                          📲 Testar Notificação
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 10px; border-top: 1px dashed rgba(255,255,255,0.08); margin-top: 6px;">
                   <div style="display: flex; flex-direction: column;">
                     <span style="font-size: 12px; font-weight: 600; color: #fff;">🧭 Detecção de Página do FLOW:</span>
@@ -2289,6 +2373,68 @@
         settings.carouselFolderMode = mode;
         chrome.storage.local.set({ carouselFolderMode: mode });
         showToast(mode === 'individual' ? '📁 Pastas individuais por carrossel ATIVADAS!' : '📦 Pasta única consolidada ATIVADA!', 'info');
+      });
+    }
+
+    // Configurações e Teste de Notificações no Telegram
+    const toggleTelegram = macroModalElement.querySelector('#fd-toggle-telegram-enabled');
+    if (toggleTelegram) {
+      toggleTelegram.addEventListener('change', (e) => {
+        engine.updateConfig({ telegramEnabled: e.target.checked });
+        showToast(e.target.checked ? '✈️ Notificações no Telegram ATIVADAS!' : 'Notificações no Telegram desativadas.', 'info');
+      });
+    }
+
+    const inputTelegramToken = macroModalElement.querySelector('#fd-input-telegram-token');
+    if (inputTelegramToken) {
+      inputTelegramToken.addEventListener('input', (e) => {
+        engine.updateConfig({ telegramBotToken: e.target.value.trim() });
+      });
+    }
+
+    const inputTelegramChatId = macroModalElement.querySelector('#fd-input-telegram-chatid');
+    if (inputTelegramChatId) {
+      inputTelegramChatId.addEventListener('input', (e) => {
+        engine.updateConfig({ telegramChatId: e.target.value.trim() });
+      });
+    }
+
+    const btnTestTelegram = macroModalElement.querySelector('#fd-btn-test-telegram');
+    if (btnTestTelegram) {
+      btnTestTelegram.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const token = inputTelegramToken ? inputTelegramToken.value.trim() : '';
+        const chatId = inputTelegramChatId ? inputTelegramChatId.value.trim() : '';
+
+        if (!token || !chatId) {
+          showToast('⚠️ Preencha o Bot Token e o Chat ID antes de testar!', 'warning');
+          return;
+        }
+
+        btnTestTelegram.disabled = true;
+        btnTestTelegram.textContent = '⏳ Enviando...';
+
+        engine.updateConfig({
+          telegramEnabled: true,
+          telegramBotToken: token,
+          telegramChatId: chatId
+        });
+
+        const success = await engine.sendTelegramNotification(
+          `🧪 *[FLOW Studio Pro - Teste de Conexão]*\n\n` +
+          `✅ *Parabéns!* O seu bot do Telegram foi conectado com sucesso ao FLOW Studio Pro!\n\n` +
+          `Você receberá os relatórios ao vivo de cada carrossel gerado e alertas diretamente neste chat.\n` +
+          `⏰ *Horário do teste:* ${new Date().toLocaleTimeString()}`
+        );
+
+        btnTestTelegram.disabled = false;
+        btnTestTelegram.textContent = '📲 Testar Notificação';
+
+        if (success) {
+          showToast('🎉 Mensagem de teste enviada com sucesso para o Telegram!', 'success');
+        } else {
+          showToast('❌ Falha ao enviar para o Telegram. Verifique Token e Chat ID.', 'error');
+        }
       });
     }
 
