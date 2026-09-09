@@ -3508,7 +3508,6 @@ class FlowMacroEngine {
         } else {
           this.addLog(`⚠️ [Passo 4] Card para [${char.name}] não encontrado na biblioteca. Tentativa ${attempt + 1}/3.`, 'warning');
           if (attempt < 2) continue;
-          this.stop();
           return false;
         }
 
