@@ -19,7 +19,10 @@ const DEFAULT_SETTINGS = {
   showFloatingHud: true,       // Exibe o widget flutuante de controle do macro na tela
   downloadDelay: 400,          // Intervalo em milissegundos entre downloads em lote para evitar throttling
   totalDownloadedCount: 0,     // Contador acumulativo de downloads realizados
-  downloadedIds: []            // Lista de IDs de imagens já baixadas para evitar duplicidade
+  downloadedIds: [],           // Lista de IDs de imagens já baixadas para evitar duplicidade
+  telegramEnabled: true,       // Ativa envio de notificações no Telegram
+  telegramBotToken: '8680557957:AAGsOQ9pC49uWXktu4ZCJfnI1IRsNC9sbyk', // Token do Bot (@BotFather)
+  telegramChatId: '6969102297' // Chat ID do usuário Ares (@suporteares)
 };
 
 // ============================================================================

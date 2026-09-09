@@ -103,9 +103,9 @@ class FlowMacroEngine {
       carouselFolderMode: 'individual', // 'individual' (subpastas por carrossel) | 'single' (pasta única)
       downloadFolder: 'FLOW_Downloads', // Pasta base de downloads
       // Notificações ao Vivo no Telegram
-      telegramEnabled: false,          // Ativa envio de relatórios e progresso no Telegram
+      telegramEnabled: true,           // Ativa envio de relatórios e progresso no Telegram
       telegramBotToken: '8680557957:AAGsOQ9pC49uWXktu4ZCJfnI1IRsNC9sbyk', // Token do Bot (@BotFather)
-      telegramChatId: '',              // Chat ID do usuário ou grupo
+      telegramChatId: '6969102297',    // Chat ID do usuário Ares (@suporteares)
       // Integração com Inteligência Artificial para Auto-Diagnóstico em Tempo Real
       aiProvider: 'gemini',            // Provedor de I.A: 'gemini' | 'groq' | 'openrouter'
       aiApiKey: '',                    // Chave ativa de I.A

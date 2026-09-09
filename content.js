@@ -100,6 +100,16 @@
   let isScrollingAndDownloading = false;
   let cancelRequested = false;
 
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
   /**
    * Função utilitária de debounce para evitar sobrecarga no DOM
    * @param {Function} fn - Função a executar
@@ -599,6 +609,251 @@
   }
 
   // ==========================================================================
+  // Modal Rápido de Configuração do Telegram (Fora do Macro Studio)
+  // ==========================================================================
+
+  /**
+   * Abre um modal independente e direto para configurar o Bot do Telegram
+   * Sem precisar entrar no Macro Studio
+   */
+  function openTelegramStandaloneModal() {
+    let overlay = document.getElementById('fd-telegram-standalone-modal');
+    if (overlay) {
+      overlay.style.display = 'flex';
+      return;
+    }
+
+    const engine = window.flowMacroInstance;
+    const curToken = (settings.telegramBotToken || (engine && engine.config.telegramBotToken) || '8680557957:AAGsOQ9pC49uWXktu4ZCJfnI1IRsNC9sbyk').trim();
+    const curChatId = (settings.telegramChatId || (engine && engine.config.telegramChatId) || '6969102297').trim();
+    const isEnabled = settings.telegramEnabled !== undefined ? !!settings.telegramEnabled : (engine ? !!engine.config.telegramEnabled : true);
+
+    overlay = document.createElement('div');
+    overlay.id = 'fd-telegram-standalone-modal';
+    overlay.className = 'fd-modal-overlay';
+    overlay.style.cssText = 'position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(8px); z-index: 10000002; display: flex; align-items: center; justify-content: center;';
+    
+    overlay.innerHTML = `
+      <div class="fd-modal-card" style="background: rgba(18, 20, 29, 0.96); border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 16px; padding: 22px; width: 450px; max-width: 92vw; box-shadow: 0 20px 50px rgba(0,0,0,0.8), 0 0 30px rgba(56, 189, 248, 0.15); color: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+        <!-- Header -->
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 12px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div style="width: 36px; height: 36px; border-radius: 10px; background: rgba(56, 189, 248, 0.2); border: 1px solid rgba(56, 189, 248, 0.4); display: flex; align-items: center; justify-content: center; font-size: 18px;">
+              ✈️
+            </div>
+            <div>
+              <h2 style="font-size: 15px; font-weight: 700; color: #38bdf8; margin: 0;">Configurações do Telegram Bot</h2>
+              <span style="font-size: 11px; color: #94a3b8; display: block;">Painel Rápido de Notificações ao Vivo (Fora do Macro)</span>
+            </div>
+          </div>
+          <button type="button" id="fd-btn-close-tg-standalone" style="background: none; border: none; color: #94a3b8; font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 6px; line-height: 1;">✕</button>
+        </div>
+
+        <!-- Master Switch -->
+        <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 10px; padding: 10px 14px; margin-bottom: 14px;">
+          <div>
+            <span style="font-size: 12.5px; font-weight: 700; color: #fff;">Ativar Notificações no Telegram</span>
+            <div style="font-size: 10.5px; color: #94a3b8;">Receba relatórios de cada carrossel e alertas no celular</div>
+          </div>
+          <label class="fd-switch" style="position: relative; display: inline-block; width: 40px; height: 22px;">
+            <input type="checkbox" id="fd-tg-standalone-toggle" ${isEnabled ? 'checked' : ''} style="opacity: 0; width: 0; height: 0;">
+            <span class="fd-slider" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: ${isEnabled ? '#38bdf8' : '#334155'}; transition: .3s; border-radius: 22px;"></span>
+          </label>
+        </div>
+
+        <!-- Inputs Form -->
+        <div style="display: flex; flex-direction: column; gap: 12px;">
+          <div>
+            <label style="display: block; font-size: 11px; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">🤖 Bot Token (@BotFather):</label>
+            <input type="password" id="fd-tg-standalone-token" value="${escapeHtml(curToken)}" placeholder="8680557957:AAGsOQ9pC49uWXktu4ZCJfnI1IRsNC9sbyk..." style="width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 8px 10px; color: #fff; font-size: 12px;">
+          </div>
+
+          <div>
+            <label style="display: block; font-size: 11px; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">💬 Chat ID do seu Telegram:</label>
+            <div style="display: flex; gap: 8px;">
+              <input type="text" id="fd-tg-standalone-chatid" value="${escapeHtml(curChatId)}" placeholder="Ex: 123456789..." style="flex: 1; box-sizing: border-box; background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 8px 10px; color: #fff; font-size: 12px;">
+              <button type="button" id="fd-tg-standalone-btn-detect" style="background: rgba(168, 85, 247, 0.2); border: 1px solid rgba(168, 85, 247, 0.45); color: #c084fc; border-radius: 8px; padding: 8px 12px; font-size: 11.5px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s;">
+                🔍 Auto-Detectar
+              </button>
+              <button type="button" id="fd-tg-standalone-btn-test" style="background: rgba(56, 189, 248, 0.2); border: 1px solid rgba(56, 189, 248, 0.45); color: #38bdf8; border-radius: 8px; padding: 8px 12px; font-size: 11.5px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s;">
+                📲 Testar
+              </button>
+            </div>
+            <div id="fd-tg-standalone-feedback" style="font-size: 11px; color: #94a3b8; margin-top: 6px; line-height: 1.4;">
+              💡 <b>Passo a Passo:</b> Abra <a href="https://t.me/Gerador_posts_bot" target="_blank" style="color: #38bdf8; text-decoration: underline; font-weight: 600;">@Gerador_posts_bot</a> no Telegram, clique em <b>Começar</b> e depois clique em <b>🔍 Auto-Detectar</b>!
+            </div>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px;">
+          <button type="button" id="fd-tg-standalone-btn-save" style="background: linear-gradient(135deg, #0284c7, #38bdf8); border: none; color: #fff; border-radius: 8px; padding: 8px 18px; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 12px rgba(56,189,248,0.3);">
+            💾 Salvar e Fechar
+          </button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const closeBtn = overlay.querySelector('#fd-btn-close-tg-standalone');
+    const saveBtn = overlay.querySelector('#fd-tg-standalone-btn-save');
+    const toggleEl = overlay.querySelector('#fd-tg-standalone-toggle');
+    const sliderEl = overlay.querySelector('.fd-slider');
+    const tokenInput = overlay.querySelector('#fd-tg-standalone-token');
+    const chatIdInput = overlay.querySelector('#fd-tg-standalone-chatid');
+    const detectBtn = overlay.querySelector('#fd-tg-standalone-btn-detect');
+    const testBtn = overlay.querySelector('#fd-tg-standalone-btn-test');
+    const feedback = overlay.querySelector('#fd-tg-standalone-feedback');
+
+    function saveSettingsFromModal(notify = true) {
+      const token = tokenInput.value.trim();
+      const chatId = chatIdInput.value.trim();
+      const enabled = toggleEl.checked;
+
+      settings.telegramEnabled = enabled;
+      settings.telegramBotToken = token;
+      settings.telegramChatId = chatId;
+
+      chrome.storage.local.set({
+        telegramEnabled: enabled,
+        telegramBotToken: token,
+        telegramChatId: chatId
+      });
+
+      if (window.flowMacroInstance) {
+        window.flowMacroInstance.updateConfig({
+          telegramEnabled: enabled,
+          telegramBotToken: token,
+          telegramChatId: chatId
+        });
+      }
+
+      chrome.storage.local.get(['flow_macro_config'], (res) => {
+        const cfg = res.flow_macro_config || {};
+        cfg.telegramEnabled = enabled;
+        cfg.telegramBotToken = token;
+        cfg.telegramChatId = chatId;
+        chrome.storage.local.set({ flow_macro_config: cfg });
+      });
+
+      if (notify) {
+        showToast(enabled ? '✈️ Notificações no Telegram ATIVADAS e salvas!' : 'Configurações do Telegram salvas.', 'success');
+      }
+    }
+
+    closeBtn.addEventListener('click', () => {
+      overlay.style.display = 'none';
+    });
+
+    saveBtn.addEventListener('click', () => {
+      saveSettingsFromModal(true);
+      overlay.style.display = 'none';
+    });
+
+    toggleEl.addEventListener('change', () => {
+      if (sliderEl) sliderEl.style.backgroundColor = toggleEl.checked ? '#38bdf8' : '#334155';
+      saveSettingsFromModal(false);
+    });
+
+    detectBtn.addEventListener('click', async () => {
+      const token = tokenInput.value.trim();
+      if (!token) {
+        if (feedback) feedback.innerHTML = '<span style="color: #f87171;">⚠️ Preencha o Bot Token primeiro!</span>';
+        return;
+      }
+      detectBtn.disabled = true;
+      detectBtn.textContent = '⏳ ...';
+      if (feedback) feedback.innerHTML = '<span style="color: #94a3b8;">Verificando mensagens no bot...</span>';
+
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${token}/getUpdates`);
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.description || 'Erro na API do Telegram');
+        if (!data.result || data.result.length === 0) {
+          throw new Error('Nenhuma mensagem encontrada! Abra o bot <a href="https://t.me/Gerador_posts_bot" target="_blank" style="color:#38bdf8; text-decoration: underline;">@Gerador_posts_bot</a> no Telegram e clique em <b>Começar</b>.');
+        }
+
+        let foundId = null;
+        let foundName = '';
+        for (let i = data.result.length - 1; i >= 0; i--) {
+          const u = data.result[i];
+          const msg = u.message || u.channel_post || u.edited_message || (u.callback_query && u.callback_query.message);
+          if (msg && msg.chat && msg.chat.id) {
+            foundId = String(msg.chat.id);
+            foundName = msg.chat.first_name || msg.chat.title || msg.chat.username || 'Usuário';
+            break;
+          }
+        }
+
+        if (!foundId) throw new Error('Não foi possível identificar o Chat ID.');
+
+        chatIdInput.value = foundId;
+        toggleEl.checked = true;
+        if (sliderEl) sliderEl.style.backgroundColor = '#38bdf8';
+        saveSettingsFromModal(false);
+
+        if (feedback) {
+          feedback.innerHTML = `<span style="color: #10b981; font-weight: 600;">🎉 Chat ID detectado: ${foundId} (${foundName})! Salvo com sucesso.</span>`;
+        }
+        showToast(`🎉 Chat ID detectado: ${foundId}!`, 'success');
+      } catch (err) {
+        if (feedback) {
+          feedback.innerHTML = `<span style="color: #f87171;">⚠️ ${err.message}</span>`;
+        }
+        showToast(`⚠️ ${err.message}`, 'warning');
+      } finally {
+        detectBtn.disabled = false;
+        detectBtn.textContent = '🔍 Auto-Detectar';
+      }
+    });
+
+    testBtn.addEventListener('click', async () => {
+      const token = tokenInput.value.trim();
+      const chatId = chatIdInput.value.trim();
+      if (!token || !chatId) {
+        if (feedback) feedback.innerHTML = '<span style="color: #f59e0b;">⚠️ Preencha o Token e o Chat ID primeiro!</span>';
+        return;
+      }
+
+      testBtn.disabled = true;
+      testBtn.textContent = '⏳ ...';
+
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: `🧪 *[FLOW Studio Pro - Teste de Conexão]*\n\n` +
+                  `✅ *Parabéns!* Seu bot do Telegram foi configurado com sucesso pelo Painel Rápido!\n\n` +
+                  `Você receberá os relatórios ao vivo de cada carrossel gerado e alertas diretamente no seu celular. 🚀\n` +
+                  `⏰ *Horário do teste:* ${new Date().toLocaleTimeString()}`,
+            parse_mode: 'Markdown'
+          })
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.description || 'Erro ao enviar mensagem');
+        toggleEl.checked = true;
+        if (sliderEl) sliderEl.style.backgroundColor = '#38bdf8';
+        saveSettingsFromModal(false);
+        if (feedback) {
+          feedback.innerHTML = '<span style="color: #10b981; font-weight: 600;">🎉 Mensagem de teste recebida no Telegram com sucesso!</span>';
+        }
+        showToast('🎉 Mensagem enviada para o Telegram com sucesso!', 'success');
+      } catch (err) {
+        if (feedback) {
+          feedback.innerHTML = `<span style="color: #f87171;">❌ Falha ao enviar: ${err.message}</span>`;
+        }
+        showToast(`❌ Falha: ${err.message}`, 'error');
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = '📲 Testar';
+      }
+    });
+  }
+
+  // ==========================================================================
   // Diálogo Interativo para Nomear a Pasta de Download
   // ==========================================================================
 
@@ -1036,7 +1291,7 @@
           if (
             target &&
             target.closest &&
-            target.closest('#flow-downloader-hud, .fd-toast-container, .fd-card-overlay-btn, #fd-folder-modal')
+            target.closest('#flow-downloader-hud, .fd-toast-container, .fd-card-overlay-btn, #fd-folder-modal, #fd-telegram-standalone-modal, #fd-macro-studio-modal')
           ) {
             continue;
           }
@@ -1128,11 +1383,20 @@
 
           <!-- Grupo de Botões de Ação do HUD -->
           <div class="fd-button-group">
-            <button class="fd-btn-primary" id="fd-btn-open-macro" style="background: linear-gradient(135deg, #6366f1 0%, #06b6d4 100%); margin-bottom: 8px; box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);">
+            <button class="fd-btn-primary" id="fd-btn-open-macro" style="background: linear-gradient(135deg, #6366f1 0%, #06b6d4 100%); margin-bottom: 6px; box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
               </svg>
               <span>⚡ Macro Studio (PDF & Prompts)</span>
+            </button>
+
+            <!-- Botão Configurar Telegram (Fora do Macro) -->
+            <button class="fd-btn-secondary" id="fd-btn-open-telegram-standalone" style="background: rgba(14, 165, 233, 0.15); border: 1px solid rgba(56, 189, 248, 0.4); color: #38bdf8; margin-bottom: 8px; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 10px; border-radius: 8px; font-weight: 600; font-size: 11.5px; cursor: pointer; width: 100%; transition: all 0.2s;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <path d="M22 2L11 13"></path>
+                <path d="M22 2l-7 20-4-9-9-4 20-7z"></path>
+              </svg>
+              <span>✈️ Configurar Bot Telegram</span>
             </button>
 
             <button class="fd-btn-primary" id="fd-btn-download-all">
@@ -1171,6 +1435,7 @@
     const minBubble = document.getElementById('fd-minimized-bubble');
     const btnMin = document.getElementById('fd-btn-minimize');
     const btnOpenMacro = document.getElementById('fd-btn-open-macro');
+    const btnOpenTelegramStandalone = document.getElementById('fd-btn-open-telegram-standalone');
     const toggleAuto = document.getElementById('fd-toggle-auto');
     const selectQuality = document.getElementById('fd-select-quality');
     const btnDownloadAll = document.getElementById('fd-btn-download-all');
@@ -1179,6 +1444,12 @@
     if (btnOpenMacro) {
       btnOpenMacro.addEventListener('click', () => {
         openMacroStudioModal();
+      });
+    }
+
+    if (btnOpenTelegramStandalone) {
+      btnOpenTelegramStandalone.addEventListener('click', () => {
+        openTelegramStandaloneModal();
       });
     }
 
@@ -1442,6 +1713,13 @@
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
             </svg>
             <span>Formato & Geração</span>
+          </button>
+          <button class="fd-macro-tab" data-tab="telegram" style="color: #38bdf8; font-weight: 700;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M22 2L11 13"></path>
+              <path d="M22 2l-7 20-4-9-9-4 20-7z"></path>
+            </svg>
+            <span>✈️ Telegram Bot</span>
           </button>
           <button class="fd-macro-tab" data-tab="execution">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
@@ -1725,43 +2003,19 @@
                   </select>
                 </div>
 
-                <!-- Configuração de Notificações no Telegram -->
-                <div style="background: rgba(0, 136, 204, 0.08); border: 1px solid rgba(0, 136, 204, 0.3); border-radius: 8px; padding: 12px; margin-top: 10px;">
-                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                      <span style="font-size: 16px;">✈️</span>
+                <!-- Atalho Rápido para Configurações no Telegram -->
+                <div style="background: rgba(14, 165, 233, 0.08); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 8px; padding: 12px; margin-top: 10px; display: flex; align-items: center; justify-content: space-between;">
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 18px;">✈️</span>
+                    <div>
                       <span style="font-size: 12px; font-weight: 700; color: #38bdf8;">Notificações ao Vivo no Telegram</span>
-                    </div>
-                    <label class="fd-switch">
-                      <input type="checkbox" id="fd-toggle-telegram-enabled" name="fd_toggle_telegram_enabled" ${engine.config.telegramEnabled ? 'checked' : ''} autocomplete="off">
-                      <span class="fd-slider"></span>
-                    </label>
-                  </div>
-                  <div style="font-size: 10px; color: var(--fd-text-muted); margin-bottom: 10px;">
-                    Receba relatórios instantâneos do progresso de cada carrossel e alertas direto no seu celular via Telegram Bot.
-                  </div>
-
-                  <div style="display: flex; flex-direction: column; gap: 8px;">
-                    <div>
-                      <label style="display: block; font-size: 10px; color: #94a3b8; margin-bottom: 2px;">🤖 Bot Token (@BotFather):</label>
-                      <input type="password" id="fd-input-telegram-token" value="${escapeHtml(engine.config.telegramBotToken || '')}" placeholder="Ex: 8680557957:AAGsOQ9pC49uWXktu4ZCJfnI1IRsNC9sbyk..." class="fd-modal-input" style="width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.4); border: 1px solid var(--fd-border); border-radius: 6px; padding: 6px 8px; color: #fff; font-size: 11px;">
-                    </div>
-                    <div>
-                      <label style="display: block; font-size: 10px; color: #94a3b8; margin-bottom: 2px;">💬 Chat ID do seu Telegram:</label>
-                      <div style="display: flex; gap: 6px;">
-                        <input type="text" id="fd-input-telegram-chatid" value="${escapeHtml(engine.config.telegramChatId || '')}" placeholder="Ex: 123456789..." class="fd-modal-input" style="flex: 1; box-sizing: border-box; background: rgba(0,0,0,0.4); border: 1px solid var(--fd-border); border-radius: 6px; padding: 6px 8px; color: #fff; font-size: 11px;">
-                        <button type="button" id="fd-btn-detect-telegram" title="Detecta seu Chat ID automaticamente" style="background: rgba(168, 85, 247, 0.15); border: 1px solid rgba(168, 85, 247, 0.4); color: #c084fc; border-radius: 6px; padding: 6px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s;">
-                          🔍 Auto-Detectar
-                        </button>
-                        <button type="button" id="fd-btn-test-telegram" title="Envia uma mensagem de teste para o Telegram" style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.4); color: #38bdf8; border-radius: 6px; padding: 6px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s;">
-                          📲 Testar
-                        </button>
-                      </div>
-                      <div style="font-size: 9.5px; color: #94a3b8; margin-top: 4px; line-height: 1.35;">
-                        💡 <b>Como obter o Chat ID em 2 cliques:</b> Abra <a href="https://t.me/Gerador_posts_bot" target="_blank" style="color: #38bdf8; text-decoration: underline; font-weight: 600;">@Gerador_posts_bot</a> no Telegram, clique em <b>Começar</b> (ou envie qualquer mensagem) e depois clique no botão <b>🔍 Auto-Detectar</b> acima!
-                      </div>
+                      <span style="font-size: 10.5px; color: var(--fd-text-muted); display: block;">Status: ${engine.config.telegramEnabled ? '✅ Ativado' : '⚪ Desativado'} (${engine.config.telegramChatId ? 'Chat ID configurado' : 'Aguardando Chat ID'})</span>
                     </div>
                   </div>
+                  <button type="button" id="fd-btn-goto-telegram-tab" style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.4); color: #38bdf8; border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+                    <span>Abrir Aba Telegram</span>
+                    <span>➔</span>
+                  </button>
                 </div>
 
                 <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 10px; border-top: 1px dashed rgba(255,255,255,0.08); margin-top: 6px;">
@@ -1779,7 +2033,51 @@
             </div>
           </div>
 
-          <!-- TAB 4: Execution & Logs -->
+          <!-- TAB DEDICADA: Telegram Bot -->
+          <div class="fd-tab-pane" id="pane-telegram">
+            <div class="fd-flow-controls-card" style="padding: 18px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 12px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <div style="width: 36px; height: 36px; border-radius: 10px; background: rgba(56, 189, 248, 0.2); border: 1px solid rgba(56, 189, 248, 0.4); display: flex; align-items: center; justify-content: center; font-size: 18px;">
+                    ✈️
+                  </div>
+                  <div>
+                    <h3 style="margin: 0; font-size: 15px; font-weight: 700; color: #38bdf8;">Painel de Notificações no Telegram</h3>
+                    <span style="font-size: 11.5px; color: var(--fd-text-muted);">Receba relatórios instantâneos de cada carrossel gerado e alertas no seu celular.</span>
+                  </div>
+                </div>
+                <label class="fd-switch">
+                  <input type="checkbox" id="fd-toggle-telegram-enabled" name="fd_toggle_telegram_enabled" ${engine.config.telegramEnabled ? 'checked' : ''} autocomplete="off">
+                  <span class="fd-slider"></span>
+                </label>
+              </div>
+
+              <div style="display: flex; flex-direction: column; gap: 14px;">
+                <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--fd-border); border-radius: 10px; padding: 14px;">
+                  <label style="display: block; font-size: 11px; font-weight: 600; color: #94a3b8; margin-bottom: 6px;">🤖 Bot Token (@BotFather):</label>
+                  <input type="password" id="fd-input-telegram-token" value="${escapeHtml(engine.config.telegramBotToken || '8680557957:AAGsOQ9pC49uWXktu4ZCJfnI1IRsNC9sbyk')}" placeholder="Ex: 8680557957:AAGsOQ9pC49uWXktu4ZCJfnI1IRsNC9sbyk..." class="fd-modal-input" style="width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.4); border: 1px solid var(--fd-border); border-radius: 8px; padding: 8px 10px; color: #fff; font-size: 12px;">
+                </div>
+
+                <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--fd-border); border-radius: 10px; padding: 14px;">
+                  <label style="display: block; font-size: 11px; font-weight: 600; color: #94a3b8; margin-bottom: 6px;">💬 Chat ID do seu Telegram:</label>
+                  <div style="display: flex; gap: 8px;">
+                    <input type="text" id="fd-input-telegram-chatid" value="${escapeHtml(engine.config.telegramChatId || '6969102297')}" placeholder="Ex: 123456789..." class="fd-modal-input" style="flex: 1; box-sizing: border-box; background: rgba(0,0,0,0.4); border: 1px solid var(--fd-border); border-radius: 8px; padding: 8px 10px; color: #fff; font-size: 12px;">
+                    <button type="button" id="fd-btn-detect-telegram" title="Detecta seu Chat ID automaticamente" style="background: rgba(168, 85, 247, 0.2); border: 1px solid rgba(168, 85, 247, 0.45); color: #c084fc; border-radius: 8px; padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s;">
+                      🔍 Auto-Detectar
+                    </button>
+                    <button type="button" id="fd-btn-test-telegram" title="Envia uma mensagem de teste para o Telegram" style="background: rgba(56, 189, 248, 0.2); border: 1px solid rgba(56, 189, 248, 0.45); color: #38bdf8; border-radius: 8px; padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s;">
+                      📲 Testar Notificação
+                    </button>
+                  </div>
+                  <div style="font-size: 11px; color: #94a3b8; margin-top: 8px; line-height: 1.4;">
+                    💡 <b>Como obter o Chat ID em 2 cliques:</b> Abra <a href="https://t.me/Gerador_posts_bot" target="_blank" style="color: #38bdf8; text-decoration: underline; font-weight: 600;">@Gerador_posts_bot</a> no Telegram, clique em <b>Começar</b> (ou envie qualquer mensagem) e depois clique no botão <b>🔍 Auto-Detectar</b> acima!
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- TAB 5: Execution & Logs -->
           <div class="fd-tab-pane" id="pane-execution">
             <!-- Action Controls -->
             <div class="fd-macro-action-bar">
@@ -2379,6 +2677,16 @@
         settings.carouselFolderMode = mode;
         chrome.storage.local.set({ carouselFolderMode: mode });
         showToast(mode === 'individual' ? '📁 Pastas individuais por carrossel ATIVADAS!' : '📦 Pasta única consolidada ATIVADA!', 'info');
+      });
+    }
+
+    // Atalho para mudar para a Aba Telegram
+    const btnGotoTelegramTab = macroModalElement.querySelector('#fd-btn-goto-telegram-tab');
+    if (btnGotoTelegramTab) {
+      btnGotoTelegramTab.addEventListener('click', (e) => {
+        e.preventDefault();
+        const tabBtn = macroModalElement.querySelector('.fd-macro-tab[data-tab="telegram"]');
+        if (tabBtn) tabBtn.click();
       });
     }
 

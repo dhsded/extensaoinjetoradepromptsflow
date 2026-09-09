@@ -15,6 +15,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const togglePromptName = document.getElementById('toggle-prompt-name');       // Checkbox para incluir o prompt no nome do arquivo
   const toggleOverlayBtn = document.getElementById('toggle-overlay-btn');       // Checkbox para mostrar botões sobre os cards no FLOW
   const toggleHud = document.getElementById('toggle-hud');                     // Checkbox para exibir a barra flutuante de automação
+  const toggleTelegramEnabled = document.getElementById('toggle-telegram-enabled'); // Checkbox Notificações Telegram
+  const inputTelegramToken = document.getElementById('input-telegram-token');       // Token do Bot do Telegram
+  const inputTelegramChatId = document.getElementById('input-telegram-chatid');     // Chat ID do Telegram
+  const btnDetectTelegram = document.getElementById('btn-detect-telegram');         // Botão Auto-Detectar Chat ID
+  const btnTestTelegram = document.getElementById('btn-test-telegram');             // Botão Testar Envio Telegram
+  const telegramStatusFeedback = document.getElementById('telegram-status-feedback'); // Feedback de status do Telegram
   const btnDownloadTab = document.getElementById('btn-download-tab');           // Botão "Baixar Todas da Aba Ativa"
   const btnCancelDownloads = document.getElementById('btn-cancel-downloads');   // Botão para cancelar downloads em andamento
   const btnClearHistory = document.getElementById('btn-clear-history');         // Botão para resetar contador e histórico
@@ -38,6 +44,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     toggleOverlayBtn.checked = s.showOverlayButtons !== false;
     toggleHud.checked = s.showFloatingHud !== false;
     statDownloaded.innerText = (s.totalDownloadedCount || 0).toString();
+
+    // Configurações do Telegram
+    const macroCfg = s.flow_macro_config || {};
+    const defaultToken = '8680557957:AAGsOQ9pC49uWXktu4ZCJfnI1IRsNC9sbyk';
+    const defaultChatId = '6969102297';
+    if (toggleTelegramEnabled) {
+      toggleTelegramEnabled.checked = s.telegramEnabled !== undefined ? !!s.telegramEnabled : (macroCfg.telegramEnabled !== undefined ? !!macroCfg.telegramEnabled : true);
+    }
+    if (inputTelegramToken) {
+      inputTelegramToken.value = s.telegramBotToken || macroCfg.telegramBotToken || defaultToken;
+    }
+    if (inputTelegramChatId) {
+      inputTelegramChatId.value = s.telegramChatId || macroCfg.telegramChatId || defaultChatId;
+    }
 
     // Atualiza o visual do botão de download de acordo com o estado atual da fila
     updateDownloadButtonState(s.isDownloading, s.queueRemaining);
@@ -148,7 +168,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       downloadFolder: inputFolder.value.trim() || 'FLOW_Downloads',
       nameWithPrompt: togglePromptName.checked,
       showOverlayButtons: toggleOverlayBtn.checked,
-      showFloatingHud: toggleHud.checked
+      showFloatingHud: toggleHud.checked,
+      telegramEnabled: toggleTelegramEnabled ? toggleTelegramEnabled.checked : false,
+      telegramBotToken: inputTelegramToken ? inputTelegramToken.value.trim() : '',
+      telegramChatId: inputTelegramChatId ? inputTelegramChatId.value.trim() : ''
     };
 
     // Grava no storage local
@@ -156,6 +179,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (chrome.runtime.lastError) {
         console.warn('[FLOW Downloader] Erro ao salvar configurações:', chrome.runtime.lastError.message);
       }
+    });
+
+    // Atualiza também dentro de flow_macro_config para sincronização com Macro Studio
+    chrome.storage.local.get(['flow_macro_config'], (res) => {
+      const cfg = res.flow_macro_config || {};
+      cfg.telegramEnabled = updated.telegramEnabled;
+      cfg.telegramBotToken = updated.telegramBotToken;
+      cfg.telegramChatId = updated.telegramChatId;
+      chrome.storage.local.set({ flow_macro_config: cfg });
     });
 
     // Envia mensagem ao Service Worker para propagar as alterações a todas as abas
@@ -176,6 +208,109 @@ document.addEventListener('DOMContentLoaded', async () => {
   togglePromptName.addEventListener('change', saveCurrentSettings);
   toggleOverlayBtn.addEventListener('change', saveCurrentSettings);
   toggleHud.addEventListener('change', saveCurrentSettings);
+
+  if (toggleTelegramEnabled) toggleTelegramEnabled.addEventListener('change', saveCurrentSettings);
+  if (inputTelegramToken) inputTelegramToken.addEventListener('input', saveCurrentSettings);
+  if (inputTelegramChatId) inputTelegramChatId.addEventListener('input', saveCurrentSettings);
+
+  // Botão Auto-Detectar Chat ID do Telegram no Popup
+  if (btnDetectTelegram) {
+    btnDetectTelegram.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const token = inputTelegramToken ? inputTelegramToken.value.trim() : '';
+      if (!token) {
+        if (telegramStatusFeedback) telegramStatusFeedback.innerHTML = '<span style="color: #f87171;">⚠️ Preencha o Bot Token primeiro!</span>';
+        return;
+      }
+
+      btnDetectTelegram.disabled = true;
+      btnDetectTelegram.textContent = '⏳ ...';
+      if (telegramStatusFeedback) telegramStatusFeedback.innerHTML = '<span style="color: #94a3b8;">Verificando mensagens no bot...</span>';
+
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${token}/getUpdates`);
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.description || 'Erro na API do Telegram');
+        if (!data.result || data.result.length === 0) {
+          throw new Error('Nenhuma mensagem encontrada! Abra o bot <a href="https://t.me/Gerador_posts_bot" target="_blank" style="color:#38bdf8; text-decoration: underline;">@Gerador_posts_bot</a> no Telegram e clique em <b>Começar</b>.');
+        }
+
+        let foundId = null;
+        let foundName = '';
+        for (let i = data.result.length - 1; i >= 0; i--) {
+          const u = data.result[i];
+          const msg = u.message || u.channel_post || u.edited_message || (u.callback_query && u.callback_query.message);
+          if (msg && msg.chat && msg.chat.id) {
+            foundId = String(msg.chat.id);
+            foundName = msg.chat.first_name || msg.chat.title || msg.chat.username || 'Usuário';
+            break;
+          }
+        }
+
+        if (!foundId) throw new Error('Não foi possível identificar o Chat ID.');
+
+        if (inputTelegramChatId) inputTelegramChatId.value = foundId;
+        if (toggleTelegramEnabled) toggleTelegramEnabled.checked = true;
+        saveCurrentSettings();
+
+        if (telegramStatusFeedback) {
+          telegramStatusFeedback.innerHTML = `<span style="color: #10b981; font-weight: 600;">🎉 Chat ID detectado: ${foundId} (${foundName})! Salvo com sucesso.</span>`;
+        }
+      } catch (err) {
+        if (telegramStatusFeedback) {
+          telegramStatusFeedback.innerHTML = `<span style="color: #f87171;">⚠️ ${err.message}</span>`;
+        }
+      } finally {
+        btnDetectTelegram.disabled = false;
+        btnDetectTelegram.textContent = '🔍 Auto';
+      }
+    });
+  }
+
+  // Botão Testar Notificação do Telegram no Popup
+  if (btnTestTelegram) {
+    btnTestTelegram.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const token = inputTelegramToken ? inputTelegramToken.value.trim() : '';
+      const chatId = inputTelegramChatId ? inputTelegramChatId.value.trim() : '';
+      if (!token || !chatId) {
+        if (telegramStatusFeedback) telegramStatusFeedback.innerHTML = '<span style="color: #f59e0b;">⚠️ Preencha o Token e o Chat ID primeiro!</span>';
+        return;
+      }
+
+      btnTestTelegram.disabled = true;
+      btnTestTelegram.textContent = '⏳ ...';
+
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: `🧪 *[FLOW Studio Pro - Teste de Conexão]*\n\n` +
+                  `✅ *Parabéns!* Seu bot do Telegram foi conectado com sucesso pelo Painel da Extensão!\n\n` +
+                  `Você receberá os relatórios ao vivo de cada carrossel gerado e alertas diretamente no seu celular. 🚀\n` +
+                  `⏰ *Horário do teste:* ${new Date().toLocaleTimeString()}`,
+            parse_mode: 'Markdown'
+          })
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.description || 'Erro ao enviar mensagem');
+        if (toggleTelegramEnabled) toggleTelegramEnabled.checked = true;
+        saveCurrentSettings();
+        if (telegramStatusFeedback) {
+          telegramStatusFeedback.innerHTML = '<span style="color: #10b981; font-weight: 600;">🎉 Notificação de teste recebida no Telegram com sucesso!</span>';
+        }
+      } catch (err) {
+        if (telegramStatusFeedback) {
+          telegramStatusFeedback.innerHTML = `<span style="color: #f87171;">❌ Falha ao enviar: ${err.message}</span>`;
+        }
+      } finally {
+        btnTestTelegram.disabled = false;
+        btnTestTelegram.textContent = '📲 Testar';
+      }
+    });
+  }
 
   // ==========================================================================
   // 6. Botão para Abrir o Macro Studio no FLOW

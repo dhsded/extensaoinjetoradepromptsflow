@@ -139,6 +139,48 @@
         </div>
       </section>
 
+      <!-- Telegram Notifications Section -->
+      <section class="section" style="background: rgba(14, 165, 233, 0.08); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 12px; padding: 12px; margin-top: 4px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div style="width: 28px; height: 28px; border-radius: 7px; background: rgba(56, 189, 248, 0.2); display: flex; align-items: center; justify-content: center; font-size: 15px;">
+              ✈️
+            </div>
+            <div>
+              <h2 style="font-size: 13px; font-weight: 700; color: #38bdf8; margin: 0;">Bot do Telegram</h2>
+              <span style="font-size: 10px; color: var(--text-muted); display: block;">Relatórios de progresso ao vivo no celular</span>
+            </div>
+          </div>
+          <label class="switch switch-sm">
+            <input type="checkbox" id="toggle-telegram-enabled" name="toggle_telegram_enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
+          <div>
+            <label for="input-telegram-token" style="display: block; font-size: 10.5px; color: var(--text-muted); margin-bottom: 3px;">🤖 Bot Token (@BotFather):</label>
+            <input type="password" id="input-telegram-token" name="input_telegram_token" class="text-input" placeholder="8680557957:AAGsOQ9pC49uWXktu4ZCJfnI1IRsNC9sbyk..." style="width: 100%; font-size: 11px; padding: 6px 8px;">
+          </div>
+          <div>
+            <label for="input-telegram-chatid" style="display: block; font-size: 10.5px; color: var(--text-muted); margin-bottom: 3px;">💬 Chat ID do seu Telegram:</label>
+            <div style="display: flex; gap: 6px;">
+              <input type="text" id="input-telegram-chatid" name="input_telegram_chatid" class="text-input" placeholder="Ex: 123456789..." style="flex: 1; font-size: 11px; padding: 6px 8px;">
+              <button type="button" class="btn" id="btn-detect-telegram" title="Detectar Chat ID automaticamente" style="background: rgba(168, 85, 247, 0.25); border: 1px solid rgba(168, 85, 247, 0.45); color: #c084fc; font-size: 11px; padding: 6px 9px; font-weight: 600; width: auto; white-space: nowrap; cursor: pointer;">
+                🔍 Auto
+              </button>
+              <button type="button" class="btn btn-primary" id="btn-test-telegram" title="Enviar mensagem de teste" style="background: rgba(56, 189, 248, 0.25); border: 1px solid rgba(56, 189, 248, 0.45); color: #38bdf8; font-size: 11px; padding: 6px 9px; font-weight: 600; width: auto; white-space: nowrap; cursor: pointer;">
+                📲 Testar
+              </button>
+            </div>
+            <div id="telegram-status-feedback" style="font-size: 10px; margin-top: 6px; color: #94a3b8; line-height: 1.35;">
+              💡 <b>1.</b> Abra <a href="https://t.me/Gerador_posts_bot" target="_blank" style="color: #38bdf8; text-decoration: underline; font-weight: 600;">@Gerador_posts_bot</a> no Telegram e clique <b>Começar</b>.<br>
+              <b>2.</b> Clique em <b>🔍 Auto</b> acima para puxar seu Chat ID!
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- Stats Bar -->
       <div class="stats-card">
         <div class="stat-box">
