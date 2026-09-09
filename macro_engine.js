@@ -242,6 +242,11 @@ class FlowMacroEngine {
     }
 
     this.notify();
+
+    // Verifica se há sessão de auto-recuperação pendente após recarga da página por erro de tela
+    setTimeout(() => {
+      this.checkAndResumeAutoRecovery();
+    }, 1500);
   }
 
   scheduleSaveState() {
@@ -2396,6 +2401,13 @@ class FlowMacroEngine {
       } catch (e) { /* ignora */ }
     }
 
+    if (triggered) {
+      // Rola imediatamente o Canvas para o topo para que o usuário veja a nova imagem gerando
+      this.scrollCanvasToTop();
+      setTimeout(() => this.scrollCanvasToTop(), 250);
+      setTimeout(() => this.scrollCanvasToTop(), 700);
+    }
+
     return triggered;
   }
 
@@ -4274,30 +4286,50 @@ class FlowMacroEngine {
 
   /**
    * Rola a barra de rolagem do Canvas do Google FLOW para o topo (scrollTop = 0)
-   * Garante que os cards mais recentes gerados e eventuais cards com erro fiquem montados no DOM pelo Virtuoso
+   * Garante que os cards mais recentes gerados e a fila de produção fiquem imediatamente visíveis
+   * @param {Object} [options] - Opções de rolagem
+   * @param {boolean} [options.wait] - Se deve aguardar estabilização do DOM
    * @returns {Promise<boolean>}
    */
-  async scrollCanvasToTop() {
+  async scrollCanvasToTop(options = { wait: false }) {
     try {
       let scrolledAny = false;
 
-      // 1. Scroller do Virtuoso do Canvas
-      const virtuosoScrollers = Array.from(document.querySelectorAll('[data-testid="virtuoso-scroller"], [data-virtuoso-scroller="true"]')).filter(el => {
+      // 1. Scroller do Virtuoso do Canvas e listas Virtuoso
+      const virtuosoScrollers = Array.from(document.querySelectorAll([
+        '[data-testid="virtuoso-scroller"]',
+        '[data-virtuoso-scroller="true"]',
+        'div[data-testid="virtuoso-item-list"]'
+      ].join(', '))).filter(el => {
         if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
         return true;
       });
 
-      for (const scroller of virtuosoScrollers) {
-        if (scroller.scrollTop > 0) {
-          scroller.scrollTop = 0;
-          try { scroller.scrollTo({ top: 0, behavior: 'instant' }); } catch (e) {}
-          scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+      for (const el of virtuosoScrollers) {
+        if (el.matches && el.matches('div[data-testid="virtuoso-item-list"]')) {
+          let p = el.parentElement;
+          while (p && p !== document.body) {
+            if (p.scrollTop > 0) {
+              p.scrollTop = 0;
+              try { p.scrollTo({ top: 0, behavior: 'instant' }); } catch (e) {}
+              p.dispatchEvent(new Event('scroll', { bubbles: true }));
+              scrolledAny = true;
+            }
+            p = p.parentElement;
+          }
+          if (el.firstElementChild) {
+            try { el.firstElementChild.scrollIntoView({ behavior: 'instant', block: 'start' }); } catch (e) {}
+          }
+        } else if (el.scrollTop > 0) {
+          el.scrollTop = 0;
+          try { el.scrollTo({ top: 0, behavior: 'instant' }); } catch (e) {}
+          el.dispatchEvent(new Event('scroll', { bubbles: true }));
           scrolledAny = true;
         }
       }
 
-      // 2. Outros containers de rolagem do Canvas
-      const scrollableCandidates = Array.from(document.querySelectorAll('main, section, div[class*="canvas" i], div[class*="scroller" i], div[class*="grid" i], div[class*="feed" i]')).filter(el => {
+      // 2. Outros containers de rolagem conhecidos do Canvas do FLOW
+      const scrollableCandidates = Array.from(document.querySelectorAll('main, section, div[class*="canvas" i], div[class*="scroller" i], div[class*="grid" i], div[class*="feed" i], div[class*="stream" i], div[class*="gallery" i]')).filter(el => {
         if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
         if (el.closest('[role="dialog"], [role="presentation"], .cdk-overlay-pane')) return false;
         return (el.scrollHeight > el.clientHeight + 40) && (getComputedStyle(el).overflowY !== 'hidden');
@@ -4312,7 +4344,19 @@ class FlowMacroEngine {
         }
       }
 
-      // 3. Janela e documento
+      // 3. Varredura direta de qualquer elemento no DOM com scrollTop > 0 (garantia universal contra novos layouts do FLOW)
+      const allScrolled = Array.from(document.querySelectorAll('*')).filter(el => {
+        if (el.closest && el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        return el.scrollTop > 0;
+      });
+      for (const sc of allScrolled) {
+        sc.scrollTop = 0;
+        try { sc.scrollTo({ top: 0, behavior: 'instant' }); } catch (e) {}
+        sc.dispatchEvent(new Event('scroll', { bubbles: true }));
+        scrolledAny = true;
+      }
+
+      // 4. Janela e documento raiz
       if (window.scrollY > 0 || document.documentElement.scrollTop > 0 || document.body.scrollTop > 0) {
         window.scrollTo({ top: 0, behavior: 'instant' });
         document.documentElement.scrollTop = 0;
@@ -4320,13 +4364,383 @@ class FlowMacroEngine {
         scrolledAny = true;
       }
 
-      // Pausa breve para o Virtuoso montar os nós superiores no DOM
-      await new Promise(r => setTimeout(r, 400));
+      if (options && options.wait) {
+        await new Promise(r => setTimeout(r, 250));
+      }
       return true;
     } catch (e) {
       console.warn('[FLOW Macro] Erro em scrollCanvasToTop:', e);
       return false;
     }
+  }
+
+  // =========================================================================
+  // Detecção de Erros de Tela do FLOW e Auto-Recuperação com Atualização de Página
+  // =========================================================================
+
+  /**
+   * Detecta se existem ERROS PRESENTES NA TELA DO FLOW (toasts de erro, modais, banners, falhas de sistema).
+   * IMPORTANTE: Distingue erros de tela/sistema de falhas normais de geração em cards individuais.
+   * @returns {{ hasError: boolean, message: string, element: HTMLElement|null }}
+   */
+  detectFlowScreenError() {
+    if (typeof document === 'undefined') return { hasError: false, message: '', element: null };
+
+    const screenErrorKeywords = [
+      'algo deu errado',
+      'something went wrong',
+      'ocorreu um erro',
+      'an error occurred',
+      'tivemos um problema',
+      'we ran into a problem',
+      'houve um problema',
+      'erro inesperado',
+      'unexpected error',
+      'limite de cota',
+      'limite de geração',
+      'limite atingido',
+      'quota exceeded',
+      'rate limit',
+      'too many requests',
+      'falha na solicitação',
+      'falha de rede',
+      'network error',
+      'failed to fetch',
+      'recarregue a página',
+      'recarregar a página',
+      'recarregar página',
+      'reload the page',
+      'please refresh',
+      'servidor indisponível',
+      'service unavailable',
+      'internal server error',
+      'não foi possível conectar',
+      'unable to connect'
+    ];
+
+    // Seletores de alertas, notificações, toasts, banners e caixas de diálogo do FLOW
+    const candidateSelectors = [
+      '[role="alert"]',
+      '[aria-live="assertive"]',
+      'div[class*="toast" i]',
+      'div[class*="snack" i]',
+      'div[class*="banner" i]',
+      'div[class*="error" i]',
+      'div[class*="Error" i]',
+      'div[class*="notification" i]',
+      'div[class*="alert" i]',
+      'div[role="dialog"]',
+      '.cdk-overlay-pane'
+    ];
+
+    const errorEls = Array.from(document.querySelectorAll(candidateSelectors.join(', '))).filter(el => {
+      // Ignora elementos da própria interface da extensão
+      if (el.closest && el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+
+      // Ignora se estiver dentro de um card individual de imagem no Canvas (falhas de imagem são tratadas pelo fluxo de cards)
+      if (el.closest && el.closest('[data-testid="virtuoso-item-list"], [role="article"], div.sc-784d6f75-0, div.sc-784d6f75-1')) {
+        return false;
+      }
+
+      if (!FlowMacroEngine.isElementVisible(el)) return false;
+
+      const rawText = (el.textContent || el.innerText || '').trim().toLowerCase();
+      if (!rawText || rawText.length > 350) return false;
+
+      return screenErrorKeywords.some(keyword => rawText.includes(keyword));
+    });
+
+    if (errorEls.length > 0) {
+      const firstEl = errorEls[0];
+      const text = (firstEl.textContent || firstEl.innerText || '').trim().replace(/\s+/g, ' ');
+      return {
+        hasError: true,
+        message: text.length > 100 ? `${text.substring(0, 97)}...` : text,
+        element: firstEl
+      };
+    }
+
+    return { hasError: false, message: '', element: null };
+  }
+
+  /**
+   * Aciona a auto-recuperação do macro quando um erro de tela for detectado:
+   * Salva o estado exato da produção, URL do projeto, carrossel, slide, repetição e cronômetro,
+   * exibe aviso na tela e atualiza a página para retornar ao projeto.
+   * @param {string} [errorReason] - Mensagem descritiva do erro encontrado na tela
+   */
+  async triggerAutoRecovery(errorReason = 'Erro detectado na tela do FLOW') {
+    if (this._isTriggeringRecovery) return;
+    this._isTriggeringRecovery = true;
+
+    this.addLog(`🚨 [Auto-Recuperação] Erro na tela do FLOW detectado: "${errorReason}".`, 'warning');
+    this.addLog('💾 Salvando estado da produção e preparando reinício da página...', 'info');
+
+    const projectUrl = window.location.href;
+    const projectId = FlowMacroEngine.getCurrentProjectId();
+
+    // Determina carrossel e slide atualmente em execução
+    let activeCarouselIndex = 0;
+    let activeCarouselId = null;
+    let activeSlideIndex = this.currentIndex >= 0 ? this.currentIndex : 0;
+    let activeSlideId = null;
+    let currentRep = 0;
+
+    const runningCarouselIdx = this.carousels.findIndex(c => c.status === 'running');
+    if (runningCarouselIdx !== -1) {
+      activeCarouselIndex = runningCarouselIdx;
+      activeCarouselId = this.carousels[runningCarouselIdx].id;
+      const c = this.carousels[runningCarouselIdx];
+      if (c.slides && Array.isArray(c.slides)) {
+        const runningSlideIdx = c.slides.findIndex(s => s.status === 'running');
+        if (runningSlideIdx !== -1) {
+          activeSlideId = c.slides[runningSlideIdx].id;
+          currentRep = c.slides[runningSlideIdx].completedRepeats || 0;
+        }
+      }
+    }
+
+    if (!activeSlideId && this.prompts && this.prompts[activeSlideIndex]) {
+      activeSlideId = this.prompts[activeSlideIndex].id;
+      currentRep = this.prompts[activeSlideIndex].completedRepeats || 0;
+    }
+
+    // Leitura do histórico recente de recuperações para evitar loop infinito
+    let reloadCount = 1;
+    try {
+      const stored = (typeof localStorage !== 'undefined') ? localStorage.getItem('flow_macro_recovery_state') : null;
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed && parsed.slideId === activeSlideId && (Date.now() - (parsed.timestamp || 0)) < 600000) {
+          reloadCount = (parsed.reloadCount || 0) + 1;
+        }
+      }
+    } catch (e) {}
+
+    // Proteção Anti-Loop: Se o mesmo slide já provocou mais de 3 recargas
+    if (reloadCount > 3) {
+      this.addLog(`⚠️ [Auto-Recuperação] O slide atual causou ${reloadCount - 1} recargas consecutivas por erro na tela. Marcando como erro e avançando na fila...`, 'error');
+      if (activeSlideId) {
+        const targetPrompt = this.prompts.find(p => p.id === activeSlideId);
+        if (targetPrompt) {
+          targetPrompt.status = 'error';
+          targetPrompt.errorMsg = `Erro persistente na tela do FLOW (${errorReason}).`;
+        }
+        for (const car of this.carousels) {
+          const s = (car.slides || []).find(sl => sl.id === activeSlideId);
+          if (s) {
+            s.status = 'error';
+            s.errorMsg = `Erro persistente na tela do FLOW (${errorReason}).`;
+          }
+        }
+      }
+      this.saveState();
+      this._isTriggeringRecovery = false;
+
+      if (typeof window !== 'undefined' && typeof window.flowShowToast === 'function') {
+        window.flowShowToast('⚠️ Erro persistente no slide. Pulando para o próximo da fila...', 'warning');
+      }
+
+      this.clearRecoveryState();
+      this.dismissDangerousModals();
+      return;
+    }
+
+    const recoveryData = {
+      isRecovering: true,
+      projectUrl: projectUrl,
+      projectId: projectId,
+      carouselIndex: activeCarouselIndex,
+      carouselId: activeCarouselId,
+      slideIndex: activeSlideIndex,
+      slideId: activeSlideId,
+      currentRepeat: currentRep,
+      prompts: this.prompts,
+      carousels: this.carousels,
+      elapsedSeconds: this.elapsedSeconds,
+      startTime: this.startTime,
+      reloadCount: reloadCount,
+      errorReason: errorReason,
+      timestamp: Date.now()
+    };
+
+    // Salva o estado tanto no chrome.storage quanto no localStorage
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        await chrome.storage.local.set({ flow_macro_recovery_state: recoveryData });
+      }
+    } catch (e) {
+      console.warn('[FLOW Macro] Falha ao salvar no chrome.storage:', e);
+    }
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('flow_macro_recovery_state', JSON.stringify(recoveryData));
+      }
+    } catch (e) {
+      console.warn('[FLOW Macro] Falha ao salvar no localStorage:', e);
+    }
+
+    // Toast de notificação na tela
+    if (typeof window !== 'undefined' && typeof window.flowShowToast === 'function') {
+      window.flowShowToast(`🔄 [Erro na Tela] ${errorReason}. Atualizando página e voltando ao projeto em 3s...`, 'warning');
+    }
+
+    // Notificação de alerta no Telegram
+    if (this.config.telegramEnabled !== false && this.config.telegramBotToken && this.config.telegramChatId) {
+      try {
+        await this.sendTelegramNotification(
+          `🔄 *[FLOW Studio Pro - Auto-Recuperação]*\n` +
+          `🚨 *Erro na tela detectado:* ${errorReason}\n` +
+          `• *Tentativa de recarga:* ${reloadCount}/3\n` +
+          `• *Slide atual:* ${activeSlideIndex + 1}/${this.prompts.length}\n` +
+          `• *Ação:* Atualizando página e retomando projeto na fila...`
+        );
+      } catch (e) {}
+    }
+
+    // Pausa de 2.5s para conclusão das gravações e visualização do usuário
+    await new Promise(r => setTimeout(r, 2500));
+
+    // Executa a atualização da página e retorno ao projeto
+    if (projectUrl && window.location.href !== projectUrl) {
+      window.location.href = projectUrl;
+    } else {
+      window.location.reload();
+    }
+  }
+
+  /**
+   * Verifica se existe um estado de recuperação pendente após a recarga da página e retoma a execução
+   */
+  async checkAndResumeAutoRecovery() {
+    if (this._recoveryChecked) return;
+    this._recoveryChecked = true;
+
+    let recoveryData = null;
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        const res = await chrome.storage.local.get(['flow_macro_recovery_state']);
+        recoveryData = res.flow_macro_recovery_state;
+      }
+    } catch (e) {}
+
+    if (!recoveryData && typeof localStorage !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('flow_macro_recovery_state');
+        if (raw) recoveryData = JSON.parse(raw);
+      } catch (e) {}
+    }
+
+    if (!recoveryData || !recoveryData.isRecovering) return;
+
+    // Se o estado salvo tiver mais de 15 minutos, descarta
+    if (Date.now() - (recoveryData.timestamp || 0) > 15 * 60 * 1000) {
+      this.clearRecoveryState();
+      return;
+    }
+
+    this.addLog('🔄 [Auto-Recuperação] Sessão anterior interrompida por erro de tela detectada!', 'warning');
+    this.addLog(`🔄 [Auto-Recuperação] Motivo: "${recoveryData.errorReason || 'Erro na tela'}". Retomando projeto...`, 'info');
+
+    // Verifica se a URL atual corresponde ao projeto salvo
+    const targetUrl = recoveryData.projectUrl;
+    const currentProjectId = FlowMacroEngine.getCurrentProjectId();
+
+    if (recoveryData.projectId && currentProjectId !== recoveryData.projectId && targetUrl) {
+      this.addLog(`🔄 [Auto-Recuperação] Redirecionando para a URL do projeto anterior: ${targetUrl}`, 'info');
+      await new Promise(r => setTimeout(r, 1200));
+      window.location.href = targetUrl;
+      return;
+    }
+
+    // Aguarda a interface do FLOW carregar (prompt input, virtuoso scroller e canvas prontos)
+    this.addLog('⏳ [Auto-Recuperação] Aguardando Canvas e interface do FLOW carregarem...', 'info');
+    const flowReady = await this.waitForFlowReady(35);
+    if (!flowReady) {
+      this.addLog('⚠️ [Auto-Recuperação] Interface do FLOW demorou para responder. Aguardando mais alguns instantes...', 'warning');
+      await new Promise(r => setTimeout(r, 3000));
+    }
+
+    // Restaura o estado salvo da fila de produção
+    if (recoveryData.prompts && Array.isArray(recoveryData.prompts)) {
+      this.prompts = recoveryData.prompts;
+    }
+    if (recoveryData.carousels && Array.isArray(recoveryData.carousels)) {
+      this.carousels = recoveryData.carousels;
+    }
+    if (recoveryData.elapsedSeconds) {
+      this.elapsedSeconds = recoveryData.elapsedSeconds;
+    }
+    if (recoveryData.startTime) {
+      this.startTime = recoveryData.startTime;
+    }
+    if (recoveryData.slideIndex !== undefined) {
+      this.currentIndex = recoveryData.slideIndex;
+    }
+
+    this.addLog(`✅ [Auto-Recuperação] Estado restaurado: Carrossel ${(recoveryData.carouselIndex || 0) + 1}, Slide ${(recoveryData.slideIndex || 0) + 1} (Repetição ${(recoveryData.currentRepeat || 0) + 1}).`, 'success');
+
+    if (typeof window !== 'undefined' && typeof window.flowShowToast === 'function') {
+      window.flowShowToast('🔄 [Auto-Recuperação] Conexão com o projeto restaurada! Retomando fila de produção...', 'success');
+    }
+
+    // Limpa a flag isRecovering para evitar re-disparos em caso de recarga normal
+    recoveryData.isRecovering = false;
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        await chrome.storage.local.set({ flow_macro_recovery_state: recoveryData });
+      }
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('flow_macro_recovery_state', JSON.stringify(recoveryData));
+      }
+    } catch (e) {}
+
+    // Rola para o topo imediatamente
+    await this.scrollCanvasToTop({ wait: true });
+
+    // Inicia a execução mantendo o estado restaurado
+    await new Promise(r => setTimeout(r, 1800));
+    this.start();
+  }
+
+  /**
+   * Aguarda a interface e os elementos de controle do FLOW ficarem prontos após recarga
+   * @param {number} [maxSeconds=35] - Tempo limite em segundos
+   * @returns {Promise<boolean>}
+   */
+  async waitForFlowReady(maxSeconds = 35) {
+    const start = Date.now();
+    const maxMs = maxSeconds * 1000;
+    while (Date.now() - start < maxMs) {
+      this.dismissFlowOnboardingBanners();
+      this.dismissDangerousModals();
+
+      const inputEl = this.findPromptInput();
+      const submitBtn = this.findSubmitButton();
+      const hasCanvas = document.querySelector('[data-testid="virtuoso-item-list"], [data-testid="virtuoso-scroller"], div[class*="canvas" i]');
+
+      if (inputEl && (submitBtn || hasCanvas)) {
+        return true;
+      }
+      await new Promise(r => setTimeout(r, 800));
+    }
+    return false;
+  }
+
+  /**
+   * Limpa o estado de recuperação salvo do storage
+   */
+  clearRecoveryState() {
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.remove('flow_macro_recovery_state');
+      }
+    } catch (e) {}
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('flow_macro_recovery_state');
+      }
+    } catch (e) {}
   }
 
   /**
@@ -4476,14 +4890,25 @@ class FlowMacroEngine {
     const startTime = Date.now();
     const maxMs = maxWaitSeconds * 1000;
 
-    // Sobe o Canvas para o topo para garantir detecção correta dos cards novos
-    await this.scrollCanvasToTop();
+    // Rola o Canvas para o topo imediatamente
+    await this.scrollCanvasToTop({ wait: true });
 
     // Registra a contagem de cards com erro já existentes no Canvas antes do novo envio
     const initialFailCount = this.hasCanvasFailedGenerations().count;
 
-    // Período de carência inicial para o FLOW registrar o envio e criar os cards no Canvas
-    await new Promise(r => { this.timer = setTimeout(r, 2500); });
+    // Período de carência inicial: mantém no topo e monitora erros de tela imediatos
+    for (let g = 0; g < 5; g++) {
+      if (this.isStopped || this.state !== 'running') return false;
+      await this.scrollCanvasToTop();
+
+      const screenError = this.detectFlowScreenError();
+      if (screenError.hasError) {
+        this.addLog(`🚨 [FLOW] Erro de tela detectado logo após o envio: "${screenError.message}"`, 'warning');
+        await this.triggerAutoRecovery(screenError.message);
+        return false;
+      }
+      await new Promise(r => { this.timer = setTimeout(r, 500); });
+    }
 
     let sawGenerating = false;
     let consecutiveIdleChecks = 0;
@@ -4493,9 +4918,15 @@ class FlowMacroEngine {
       if (this.isStopped || this.state !== 'running') return false;
       loopCount++;
 
-      // A cada 4 segundos, garante que o Canvas continua no topo
-      if (loopCount % 4 === 0) {
-        await this.scrollCanvasToTop();
+      // Rola continuamente o Canvas para o topo a cada segundo para que o usuário acompanhe as imagens
+      await this.scrollCanvasToTop();
+
+      // 0. Verifica se há ERRO PRESENTE NA TELA DO FLOW (Toasts, Modais, Banners, Erro de Sistema)
+      const screenError = this.detectFlowScreenError();
+      if (screenError.hasError) {
+        this.addLog(`🚨 [FLOW] Erro presente na tela detectado durante geração: "${screenError.message}"`, 'warning');
+        await this.triggerAutoRecovery(screenError.message);
+        return false;
       }
 
       // 1. Verifica se surgiram NOVOS cards com falha explícita no Canvas gerados por este envio
@@ -4523,7 +4954,7 @@ class FlowMacroEngine {
             const totalElapsed = Math.round((Date.now() - startTime) / 1000);
 
             // Re-verifica se ao finalizar as porcentagens não surgiu novo card de falha
-            await this.scrollCanvasToTop();
+            await this.scrollCanvasToTop({ wait: true });
             const postFailCheck = this.hasCanvasFailedGenerations();
             if (postFailCheck.failed && postFailCheck.count > initialFailCount) {
               this.addLog(`⚠️ [FLOW] Imagem finalizou com status de falha (${postFailCheck.count - initialFailCount} novo(s) card(s) "Falhou").`, 'warning');
@@ -4540,7 +4971,7 @@ class FlowMacroEngine {
       await new Promise(r => { this.timer = setTimeout(r, 1000); });
     }
 
-    await this.scrollCanvasToTop();
+    await this.scrollCanvasToTop({ wait: true });
     const finalFail = this.hasCanvasFailedGenerations();
     if (finalFail.failed && finalFail.count > initialFailCount) return false;
 
@@ -6479,6 +6910,13 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
     for (let cIdx = 0; cIdx < carouselsToRun.length; cIdx++) {
       if (this.isStopped || this.state !== 'running') break;
       const carousel = carouselsToRun[cIdx];
+
+      // Se este carrossel já foi concluído com sucesso anteriormente (ex: em retomada pós-recarga)
+      if (carousel.status === 'completed') {
+        this.addLog(`⏭️ [Carrossel ${cIdx + 1}/${carouselsToRun.length}] "${carousel.title}" já concluído anteriormente. Avançando...`, 'info');
+        continue;
+      }
+
       carousel.status = 'running';
 
       this.addLog(`\n========================================\n🌟 [Carrossel ${cIdx + 1}/${carouselsToRun.length}] Iniciando: ${carousel.title}\n========================================`, 'info');
@@ -6500,8 +6938,26 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         if (this.isStopped || this.state !== 'running') break;
         const slide = activeSlides[sIdx];
 
+        const defaultRepeats = parseInt(this.config.repeatPerPrompt, 10) || 1;
+        const pRep = parseInt(slide.repeatCount, 10);
+        const targetRepeats = Math.max(1, (pRep && pRep > 1) ? pRep : defaultRepeats);
+
+        // Se este slide já foi concluído anteriormente (todas as repetições finalizadas)
+        if (slide.status === 'completed' && (slide.completedRepeats || 0) >= targetRepeats) {
+          this.addLog(`⏭️ [Slide ${sIdx + 1}/${activeSlides.length}] "${slide.slideTitle || slide.title}" já finalizado (${slide.completedRepeats}/${targetRepeats}). Pulando...`, 'info');
+          continue;
+        }
+
         // O 1º slide de cada carrossel anexa os personagens e aplica as configurações iniciais
-        const isFirstSlideOfCarousel = (sIdx === 0);
+        // Se os slides anteriores foram pulados, o primeiro slide ativo que rodar atuará como o inicial
+        const isFirstSlideOfCarousel = (sIdx === 0 || activeSlides.slice(0, sIdx).every(s => s.status === 'completed'));
+
+        // Atualiza o índice do prompt global para refletir o slide atual na barra de status
+        const globalSlideIdx = this.prompts.indexOf(slide);
+        if (globalSlideIdx !== -1) {
+          this.currentIndex = globalSlideIdx;
+        }
+        this.saveState();
 
         await this.executeSlide(slide, isFirstSlideOfCarousel, sIdx + 1, activeSlides.length, carousel.title);
 
@@ -6929,6 +7385,11 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
 
         this.addLog(`✅ [Tentativa 1/${maxAttemptsPerPrompt}] ${isRepetition ? `Mesmo prompt enviado (${rep + 1}/${targetRepeats})` : `Inserção 1/${targetRepeats} disparada`} no FLOW: ${item.slideTitle || item.title}`, 'success');
 
+        // Rola imediatamente para o topo e mantém fixado para o usuário ver a imagem gerada
+        await this.scrollCanvasToTop({ wait: true });
+        setTimeout(() => this.scrollCanvasToTop(), 250);
+        setTimeout(() => this.scrollCanvasToTop(), 700);
+
         // Aguarda a geração da imagem ser concluída no Canvas do FLOW (timeout: 60s)
         genSuccess = await this.waitForGenerationToComplete(60);
 
@@ -7007,6 +7468,9 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
 
           if (retrySubmitted) {
             this.addLog(`✅ [Tentativa ${attempt}/${maxAttemptsPerPrompt}] Prompt reenviado. Aguardando geração...`, 'success');
+            await this.scrollCanvasToTop({ wait: true });
+            setTimeout(() => this.scrollCanvasToTop(), 250);
+            setTimeout(() => this.scrollCanvasToTop(), 700);
             genSuccess = await this.waitForGenerationToComplete(60);
           } else {
             this.addLog(`⚠️ [Tentativa ${attempt}/${maxAttemptsPerPrompt}] Não foi possível acionar o botão de envio.`, 'warning');

@@ -4806,6 +4806,11 @@
       renderCharactersList();
       renderLogs();
       renderInspectorTab();
+
+      // Dispara verificação de auto-recuperação pós-recarga se houver sessão de erro ativa
+      if (typeof engine.checkAndResumeAutoRecovery === 'function') {
+        engine.checkAndResumeAutoRecovery();
+      }
     });
 
     // Exporta utilitários globais para integração com o motor de macro
