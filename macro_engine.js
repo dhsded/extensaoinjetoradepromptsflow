@@ -1466,8 +1466,15 @@ class FlowMacroEngine {
         try {
           const editor = this.getSlateEditor(targetEditable);
           if (editor && editor.children && Array.isArray(editor.children)) {
-            // Preserva nós de chips/anexos de personagens existentes no editor!
-            const existingChips = editor.children.filter(n => n.type !== 'paragraph');
+            // Preserva apenas nós reais de chips/anexos de imagens, NUNCA blocos de texto/parágrafos
+            const existingChips = editor.children.filter(n => {
+              if (!n) return false;
+              if (n.type === 'paragraph' || n.type === 'line' || n.type === 'text') return false;
+              if (n.children && n.children.length === 1 && typeof n.children[0]?.text === 'string' && !n.url && !n.src && !n.assetId && !n.type) {
+                return false;
+              }
+              return n.type === 'image' || n.type === 'attachment' || n.type === 'asset' || n.type === 'media' || n.type === 'chip' || Boolean(n.url || n.src || n.assetId);
+            });
             editor.children = [...existingChips, { type: 'paragraph', children: [{ text: '' }] }];
             if (editor.selection) {
               const pIndex = Math.max(0, editor.children.length - 1);
@@ -1624,8 +1631,15 @@ class FlowMacroEngine {
         try {
           const editor = this.getSlateEditor(targetEditable);
           if (editor && editor.children && Array.isArray(editor.children)) {
-            // Preserva nós de chips/anexos existentes no editor!
-            const existingChips = editor.children.filter(n => n.type !== 'paragraph');
+            // Preserva apenas nós reais de chips/anexos de imagens, NUNCA blocos de texto/parágrafos
+            const existingChips = editor.children.filter(n => {
+              if (!n) return false;
+              if (n.type === 'paragraph' || n.type === 'line' || n.type === 'text') return false;
+              if (n.children && n.children.length === 1 && typeof n.children[0]?.text === 'string' && !n.url && !n.src && !n.assetId && !n.type) {
+                return false;
+              }
+              return n.type === 'image' || n.type === 'attachment' || n.type === 'asset' || n.type === 'media' || n.type === 'chip' || Boolean(n.url || n.src || n.assetId);
+            });
             const lines = cleanText.split('\n');
             const paragraphs = lines.map(line => ({
               type: 'paragraph',
@@ -1969,7 +1983,15 @@ class FlowMacroEngine {
     try {
       const editor = this.getSlateEditor(targetEditable);
       if (editor && editor.children && Array.isArray(editor.children)) {
-        const slateChips = editor.children.filter(n => n.type !== 'paragraph');
+        // NUNCA aceita parágrafos ou blocos de texto como chips!
+        const slateChips = editor.children.filter(n => {
+          if (!n) return false;
+          if (n.type === 'paragraph' || n.type === 'line' || n.type === 'text') return false;
+          if (n.children && n.children.length === 1 && typeof n.children[0]?.text === 'string' && !n.url && !n.src && !n.assetId && !n.type) {
+            return false;
+          }
+          return n.type === 'image' || n.type === 'attachment' || n.type === 'asset' || n.type === 'media' || n.type === 'chip' || Boolean(n.url || n.src || n.assetId);
+        });
         if (slateChips.length > 0) {
           return slateChips;
         }
@@ -1980,33 +2002,51 @@ class FlowMacroEngine {
     if (!promptContainer || isExcluded(promptContainer)) return [];
 
     // 2. Busca elementos no DOM do editor com data-slate-node que contenham imagem
-    const slateElements = Array.from(promptContainer.querySelectorAll('[data-slate-node="element"]:has(img), [data-slate-void="true"]')).filter(el => {
+    const slateElements = Array.from(promptContainer.querySelectorAll('[data-slate-node="element"]:has(img)')).filter(el => {
       return FlowMacroEngine.isElementVisible(el) && !isExcluded(el);
     });
     if (slateElements.length > 0) return slateElements;
 
-    // 3. Busca chips/miniaturas reais no container do prompt (devem ter botão de fechar/remover ou classe de chip e NÃO serem botões de modelo)
-    const chipCandidates = Array.from(promptContainer.querySelectorAll('div, span')).filter(el => {
+    // 3. Busca chips/miniaturas reais no container do prompt e no dock de anexos
+    // No FLOW, as imagens anexadas aparecem em um dock acima do input ou ao lado dele
+    const chipCandidates = Array.from(document.querySelectorAll('div, span')).filter(el => {
       if (!FlowMacroEngine.isElementVisible(el) || isExcluded(el)) return false;
       if (el === promptContainer || el === promptInput || el.contains(promptInput)) return false;
+
+      // Restringe à região inferior da tela onde fica a barra de prompt (últimos 350px)
+      const rect = el.getBoundingClientRect();
+      if (rect.bottom < window.innerHeight - 350) return false;
 
       const img = el.querySelector('img');
       if (!img || !FlowMacroEngine.isElementVisible(img)) return false;
 
-      const rect = img.getBoundingClientRect();
-      if (rect.width < 14 || rect.width > 120 || rect.height < 14 || rect.height > 120) return false;
+      const imgRect = img.getBoundingClientRect();
+      if (imgRect.width < 14 || imgRect.width > 150 || imgRect.height < 14 || imgRect.height > 150) return false;
 
+      const fullText = (el.textContent || '').toLowerCase();
       // Ignora botões de modelo ou proporção
+      if (fullText.includes('banana') || fullText.includes('imagen') || fullText.includes('pro') || fullText.includes('fast') || fullText.includes('ultra')) {
+        return false;
+      }
+      // Ignora o botão/pill de "Agente"
+      if (fullText.includes('agente') || fullText.includes('agent')) {
+        return false;
+      }
+      // Ignora chips residuais do Canvas com rótulo "Baixar"
+      if (fullText.includes('baixar') || fullText.includes('download')) {
+        return false;
+      }
+
       const parentBtn = el.closest('button, [role="button"]');
       if (parentBtn) {
         const btnText = (parentBtn.textContent || '').toLowerCase();
-        if (btnText.includes('banana') || btnText.includes('imagen') || btnText.includes('pro') || btnText.includes('fast') || btnText.includes('ultra')) {
+        if (btnText.includes('banana') || btnText.includes('imagen') || btnText.includes('pro') || btnText.includes('fast') || btnText.includes('ultra') || btnText.includes('agente') || btnText.includes('agent')) {
           return false;
         }
       }
 
       const hasRemoveBtn = el.querySelector('button, [role="button"], svg, [class*="remove" i], [class*="close" i], [aria-label*="remover" i], [aria-label*="remove" i]');
-      const isChipClass = (el.className || '').toString().match(/chip|pill|asset|ingredient|thumb/i);
+      const isChipClass = (el.className || '').toString().match(/chip|pill|asset|ingredient|thumb|dock/i);
       return hasRemoveBtn || isChipClass;
     });
 
@@ -3173,17 +3213,25 @@ class FlowMacroEngine {
    */
   cleanupStrayPromptChips() {
     try {
-      const promptContainer = this.getPromptContainer();
-      if (!promptContainer) return;
+      // 1. Elementos dentro do promptContainer ou no dock de anexos inferior
+      const containers = [this.getPromptContainer(), document.body].filter(Boolean);
+      const strayCandidates = [];
 
-      const strayCandidates = Array.from(promptContainer.querySelectorAll('div[class*="chip" i], span[class*="chip" i], [data-slate-node="element"]:has(img), div:has(img)')).filter(el => {
-        if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
-        const t = (el.textContent || '').toLowerCase();
-        return t.includes('baixar') || t.includes('download');
-      });
+      for (const container of containers) {
+        const els = Array.from(container.querySelectorAll('div, span')).filter(el => {
+          if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+          if (el.closest('[class*="canvas" i], [data-testid="virtuoso-scroller"], [data-testid="virtuoso-item-list"]')) return false;
+          const rect = el.getBoundingClientRect();
+          if (rect.bottom < window.innerHeight - 350) return false;
+          const t = (el.textContent || '').toLowerCase();
+          const hasImg = el.querySelector('img') !== null;
+          return hasImg && (t.includes('baixar') || t.includes('download'));
+        });
+        strayCandidates.push(...els);
+      }
 
       for (const stray of strayCandidates) {
-        const delBtn = stray.querySelector('button, [role="button"], svg, [class*="close" i], [class*="remove" i], [class*="delete" i]');
+        const delBtn = stray.querySelector('button, [role="button"], svg, [class*="close" i], [class*="remove" i], [class*="delete" i], [aria-label*="remover" i], [aria-label*="remove" i]');
         if (delBtn && FlowMacroEngine.isSafeToClick(delBtn)) {
           this.clickElementWithOverlay(delBtn);
         }
@@ -3264,8 +3312,7 @@ class FlowMacroEngine {
           if (!libraryOpen) {
             this.addLog('⚠️ Biblioteca do FLOW não abriu após clicar no botão "+".', 'warning');
             if (attempt < 2) continue;
-            this.addLog(`❌ [ERRO CRÍTICO] Não foi possível acessar a biblioteca do FLOW após 3 tentativas.`, 'error');
-            this.stop();
+            this.addLog(`⚠️ Não foi possível acessar a biblioteca do FLOW após 3 tentativas.`, 'warning');
             return false;
           }
         } else {
@@ -3522,12 +3569,9 @@ class FlowMacroEngine {
           this.addLog(`✅ [Passo 4 Concluído] Personagem [${char.name}] (${cIdx + 1}/${activeChars.length}) anexado com sucesso ao comando!`, 'success');
           chipConfirmedForChar = true;
 
-          // Fecha modal se for o último
-          if (cIdx === activeChars.length - 1) {
-            await this.closeResourceModal();
-          }
-
-          await new Promise(r => setTimeout(r, 500));
+          // Fecha modal de recursos após anexar o personagem para garantir estado limpo ao próximo
+          await this.closeResourceModal();
+          await new Promise(r => setTimeout(r, 600));
           break;
         } else {
           this.addLog(`⚠️ [Passo 4] Anexo de [${char.name}] não confirmado na barra de prompt. Tentativa ${attempt + 1}/3.`, 'warning');
@@ -3536,8 +3580,7 @@ class FlowMacroEngine {
       } // fim das tentativas
 
       if (!chipConfirmedForChar) {
-        this.addLog(`❌ [ERRO CRÍTICO] Não foi possível anexar o personagem [${char.name}] após 3 tentativas. O macro NÃO prosseguirá sem todos os personagens de referência.`, 'error');
-        this.stop();
+        this.addLog(`⚠️ Não foi possível anexar o personagem [${char.name}] nesta tentativa. O slide tentará novamente na auto-recuperação.`, 'warning');
         return false;
       }
 
@@ -3681,6 +3724,63 @@ class FlowMacroEngine {
   }
 
   /**
+   * Rola a barra de rolagem do Canvas do Google FLOW para o topo (scrollTop = 0)
+   * Garante que os cards mais recentes gerados e eventuais cards com erro fiquem montados no DOM pelo Virtuoso
+   * @returns {Promise<boolean>}
+   */
+  async scrollCanvasToTop() {
+    try {
+      let scrolledAny = false;
+
+      // 1. Scroller do Virtuoso do Canvas
+      const virtuosoScrollers = Array.from(document.querySelectorAll('[data-testid="virtuoso-scroller"], [data-virtuoso-scroller="true"]')).filter(el => {
+        if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        return true;
+      });
+
+      for (const scroller of virtuosoScrollers) {
+        if (scroller.scrollTop > 0) {
+          scroller.scrollTop = 0;
+          try { scroller.scrollTo({ top: 0, behavior: 'instant' }); } catch (e) {}
+          scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+          scrolledAny = true;
+        }
+      }
+
+      // 2. Outros containers de rolagem do Canvas
+      const scrollableCandidates = Array.from(document.querySelectorAll('main, section, div[class*="canvas" i], div[class*="scroller" i], div[class*="grid" i], div[class*="feed" i]')).filter(el => {
+        if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        if (el.closest('[role="dialog"], [role="presentation"], .cdk-overlay-pane')) return false;
+        return (el.scrollHeight > el.clientHeight + 40) && (getComputedStyle(el).overflowY !== 'hidden');
+      });
+
+      for (const container of scrollableCandidates) {
+        if (container.scrollTop > 0) {
+          container.scrollTop = 0;
+          try { container.scrollTo({ top: 0, behavior: 'instant' }); } catch (e) {}
+          container.dispatchEvent(new Event('scroll', { bubbles: true }));
+          scrolledAny = true;
+        }
+      }
+
+      // 3. Janela e documento
+      if (window.scrollY > 0 || document.documentElement.scrollTop > 0 || document.body.scrollTop > 0) {
+        window.scrollTo({ top: 0, behavior: 'instant' });
+        document.documentElement.scrollTop = 0;
+        document.body.scrollTop = 0;
+        scrolledAny = true;
+      }
+
+      // Pausa breve para o Virtuoso montar os nós superiores no DOM
+      await new Promise(r => setTimeout(r, 400));
+      return true;
+    } catch (e) {
+      console.warn('[FLOW Macro] Erro em scrollCanvasToTop:', e);
+      return false;
+    }
+  }
+
+  /**
    * Detecta se existem cards com falha explícita de geração de imagem no Canvas do FLOW
    * Mensagem: "Falhou - Lamentamos, mas não foi possível gerar esta imagem. Não lhe foi cobrado nenhum valor por esta geração."
    * @returns {{ failed: boolean, count: number, elements: HTMLElement[] }}
@@ -3732,15 +3832,24 @@ class FlowMacroEngine {
 
   /**
    * Exclui ou descarta os cards com falha no Canvas clicando no botão de lixeira [🗑] do card
-   * @returns {number} Quantidade de cards descartados
+   * Sobe o Canvas para o topo para garantir que os cards mais recentes com erro fiquem visíveis no Virtuoso
+   * @returns {Promise<number>} Quantidade de cards descartados
    */
-  dismissFailedCards() {
+  async dismissFailedCards() {
+    // 1. Sobe o Canvas para o topo antes de buscar os cards com erro
+    await this.scrollCanvasToTop();
+
     const failedCheck = this.hasCanvasFailedGenerations();
     if (!failedCheck.failed) return 0;
 
     let dismissed = 0;
     for (const card of failedCheck.elements) {
       try {
+        card.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+        if (card.focus) card.focus();
+        card.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+        card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+
         const btns = Array.from(card.querySelectorAll('button, [role="button"], div[role="button"], svg, [tabindex="0"]')).filter(b => FlowMacroEngine.isElementVisible(b));
         let trashBtn = btns.find(b => {
           const aria = (b.getAttribute('aria-label') || '').toLowerCase();
@@ -3782,6 +3891,7 @@ class FlowMacroEngine {
             }
           } catch(e) {}
           dismissed++;
+          await new Promise(r => setTimeout(r, 200));
         }
       } catch (e) {
         console.warn('[FLOW Macro] Erro ao descartar card com falha:', e);
@@ -3795,7 +3905,12 @@ class FlowMacroEngine {
     });
     if (confirmBtn) {
       this.simulateClick(confirmBtn);
-      try { confirmBtn.click(); } catch(e) {}
+      try { confirmBtn.click(); } catch (e) {}
+    }
+
+    if (dismissed > 0) {
+      await new Promise(r => setTimeout(r, 400));
+      await this.scrollCanvasToTop();
     }
 
     return dismissed;
@@ -3804,13 +3919,16 @@ class FlowMacroEngine {
   /**
    * Monitora e aguarda a conclusão da geração da imagem no Canvas do FLOW
    * Detecta porcentagens (ex: 87%), cancelamento por STOP e falhas explícitas ("Falhou")
-   * @param {number} maxWaitSeconds - Tempo máximo de espera em segundos (padrão: 90s)
+   * @param {number} maxWaitSeconds - Tempo máximo de espera em segundos (padrão: 60s)
    * @returns {Promise<boolean>}
    */
-  async waitForGenerationToComplete(maxWaitSeconds = 90) {
+  async waitForGenerationToComplete(maxWaitSeconds = 60) {
     this.addLog('⏳ [FLOW] Aguardando geração da imagem ser concluída no Canvas...', 'info');
     const startTime = Date.now();
     const maxMs = maxWaitSeconds * 1000;
+
+    // Sobe o Canvas para o topo para garantir detecção correta dos cards novos
+    await this.scrollCanvasToTop();
 
     // Registra a contagem de cards com erro já existentes no Canvas antes do novo envio
     const initialFailCount = this.hasCanvasFailedGenerations().count;
@@ -3820,9 +3938,16 @@ class FlowMacroEngine {
 
     let sawGenerating = false;
     let consecutiveIdleChecks = 0;
+    let loopCount = 0;
 
     while (Date.now() - startTime < maxMs) {
       if (this.isStopped || this.state !== 'running') return false;
+      loopCount++;
+
+      // A cada 4 segundos, garante que o Canvas continua no topo
+      if (loopCount % 4 === 0) {
+        await this.scrollCanvasToTop();
+      }
 
       // 1. Verifica se surgiram NOVOS cards com falha explícita no Canvas gerados por este envio
       const failCheck = this.hasCanvasFailedGenerations();
@@ -3841,14 +3966,15 @@ class FlowMacroEngine {
         this.currentAction = `⏳ ${check.reason} (${elapsed}s)...`;
         this.notify();
       } else {
-        // Se a geração já esteve em andamento ou se já se passaram pelo menos 10 segundos
-        if (sawGenerating || (Date.now() - startTime > 10000)) {
+        // Se a geração já esteve em andamento ou se já se passaram pelo menos 8 segundos
+        if (sawGenerating || (Date.now() - startTime > 8000)) {
           consecutiveIdleChecks++;
           // Exige 3 verificações consecutivas vazias (3s de estabilidade confirmada)
           if (consecutiveIdleChecks >= 3) {
             const totalElapsed = Math.round((Date.now() - startTime) / 1000);
 
             // Re-verifica se ao finalizar as porcentagens não surgiu novo card de falha
+            await this.scrollCanvasToTop();
             const postFailCheck = this.hasCanvasFailedGenerations();
             if (postFailCheck.failed && postFailCheck.count > initialFailCount) {
               this.addLog(`⚠️ [FLOW] Imagem finalizou com status de falha (${postFailCheck.count - initialFailCount} novo(s) card(s) "Falhou").`, 'warning');
@@ -3856,7 +3982,7 @@ class FlowMacroEngine {
             }
 
             this.addLog(`✨ [FLOW] Geração de imagens concluída no Canvas (${totalElapsed}s)!`, 'success');
-            await new Promise(r => { this.timer = setTimeout(r, 2000); });
+            await new Promise(r => { this.timer = setTimeout(r, 1500); });
             return true;
           }
         }
@@ -3865,6 +3991,7 @@ class FlowMacroEngine {
       await new Promise(r => { this.timer = setTimeout(r, 1000); });
     }
 
+    await this.scrollCanvasToTop();
     const finalFail = this.hasCanvasFailedGenerations();
     if (finalFail.failed && finalFail.count > initialFailCount) return false;
 
@@ -3972,9 +4099,17 @@ class FlowMacroEngine {
     if (reuseBtns.length > 0) {
       const latestBtn = reuseBtns[reuseBtns.length - 1];
       this.simulateClick(latestBtn);
-      this.addLog('🔁 [Passo 7 - Reutilizar Comando] Personagens e configurações reaproveitados do FLOW.', 'success');
-      await new Promise(r => setTimeout(r, 800));
-      return true;
+      await new Promise(r => setTimeout(r, 1200));
+      this.cleanupStrayPromptChips();
+
+      // Valida se a reutilização de fato manteve os personagens na barra
+      if (this.hasCharacterChipsAttached()) {
+        this.addLog('🔁 [Passo 7 - Reutilizar Comando] Personagens e configurações reaproveitados com sucesso do FLOW.', 'success');
+        return true;
+      } else {
+        this.addLog('⚠️ [Passo 7] Reutilizar comando não preservou os personagens. Re-anexando da biblioteca...', 'warning');
+        return false;
+      }
     }
 
     // Se os personagens já estiverem anexados no prompt, considera sucesso
@@ -6062,6 +6197,15 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           }
         }
 
+        // Garante que os personagens de referência continuam anexados na barra de prompt antes do envio
+        if (this.config.applyGlobalCharacters !== false && this.characters && this.characters.length > 0) {
+          if (!this.hasCharacterChipsAttached()) {
+            this.addLog('🎭 [Pré-Envio] Imagens de personagens não detectadas na barra de prompt! Anexando da biblioteca...', 'info');
+            await this.attachCharactersFromFlowLibrary();
+            await new Promise(r => setTimeout(r, 600));
+          }
+        }
+
         if (this.isStopped || this.state !== 'running') return;
 
         // Garante que o Canvas está 100% desocupado antes de clicar no botão de envio
@@ -6074,17 +6218,29 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
 
         if (this.isStopped || this.state !== 'running') return;
 
-        // Limpa cards com falha residuais antes do novo envio
-        this.dismissFailedCards();
+        // Sobe o Canvas para o topo e limpa cards com falha residuais antes do envio
+        await this.scrollCanvasToTop();
+        await this.dismissFailedCards();
 
-        // Passo 5: Clicar na seta no campo direito para enviar o prompt e gerar imagens no FLOW
+        // =========================================================================
+        // Tentativas de Execução do Prompt (Máximo 3 tentativas por slide)
+        // Se as 3 falharem, o macro avança para o próximo slide/prompt sem travar!
+        // =========================================================================
+        const maxAttemptsPerPrompt = 3;
+        let attempt = 1;
+        let genSuccess = false;
+
+        // Tentativa 1: Envio inicial do prompt
         this.currentAction = isRepetition
-          ? `🚀 [Repetição ${rep + 1}/${targetRepeats}] Enviando novamente o mesmo prompt no FLOW...`
-          : '🚀 Enviando prompt para geração no FLOW...';
+          ? `🚀 [Repetição ${rep + 1}/${targetRepeats}] Enviando prompt no FLOW...`
+          : `🚀 [Tentativa 1/${maxAttemptsPerPrompt}] Enviando prompt para geração no FLOW...`;
         this.notify();
         if (isRepetition) {
           this.addLog(`🚀 [Repetição ${rep + 1}/${targetRepeats}] Enviando novamente o mesmo prompt para geração no FLOW...`, 'info');
+        } else {
+          this.addLog(`🚀 [Tentativa 1/${maxAttemptsPerPrompt}] Enviando prompt no FLOW: ${item.slideTitle || item.title}`, 'info');
         }
+
         const submitBtn = this.findSubmitButton();
         const submitted = await this.simulateSubmit(submitBtn, inputEl);
 
@@ -6092,97 +6248,112 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           throw new Error('Não foi possível acionar o botão de envio nem a tecla Enter no FLOW.');
         }
 
-        this.addLog(`✅ [Passo 5] ${isRepetition ? `Mesmo prompt enviado novamente com sucesso (${rep + 1}/${targetRepeats})` : `Inserção 1/${targetRepeats} disparada`} no FLOW: ${item.slideTitle || item.title}`, 'success');
+        this.addLog(`✅ [Tentativa 1/${maxAttemptsPerPrompt}] ${isRepetition ? `Mesmo prompt enviado (${rep + 1}/${targetRepeats})` : `Inserção 1/${targetRepeats} disparada`} no FLOW: ${item.slideTitle || item.title}`, 'success');
 
-        // Aguarda a geração da imagem ser concluída no Canvas do FLOW
-        let genSuccess = await this.waitForGenerationToComplete(90);
+        // Aguarda a geração da imagem ser concluída no Canvas do FLOW (timeout: 60s)
+        genSuccess = await this.waitForGenerationToComplete(60);
 
         if (this.isStopped || this.state !== 'running') {
           this.addLog('⏹️ Execução interrompida durante a geração.', 'warning');
           return;
         }
 
-        // =========================================================================
-        // Auto-Recuperação: Detecta se a imagem falhou ("Falhou" no card do Canvas) e reenvia
-        // =========================================================================
-        const maxFailRetries = 3;
-        let failRetry = 0;
+        // Auto-Recuperação: Se falhou na tentativa 1, tenta até mais 2 vezes (totalizando 3 tentativas)
+        while (!genSuccess && attempt < maxAttemptsPerPrompt && !this.isStopped && this.state === 'running') {
+          attempt++;
+          this.addLog(`⚠️ [Tentativa ${attempt}/${maxAttemptsPerPrompt}] Falha na geração anterior. Iniciando recuperação do slide ${slideNum}...`, 'warning');
 
-        while (!genSuccess && failRetry < maxFailRetries && !this.isStopped && this.state === 'running') {
-          failRetry++;
-          const failCheck = this.hasCanvasFailedGenerations();
-          this.addLog(`⚠️ [Auto-Recuperação ${failRetry}/${maxFailRetries}] Detectada falha na geração no Canvas (${failCheck.failed ? 'Card com status "Falhou"' : 'Geração incompleta'}).`, 'warning');
-          this.addLog(`🗑️ [Auto-Recuperação] Removendo card(s) com erro do Canvas...`, 'info');
+          // 1. Sobe a barra de rolagem para o topo do Canvas para expor os cards com erro
+          await this.scrollCanvasToTop();
 
-          const dismissedCount = this.dismissFailedCards();
+          // 2. Remove os cards com erro do Canvas
+          this.addLog(`🗑️ [Tentativa ${attempt}/${maxAttemptsPerPrompt}] Apagando card(s) com erro do Canvas...`, 'info');
+          const dismissedCount = await this.dismissFailedCards();
           if (dismissedCount > 0) {
-            this.addLog(`✅ [Auto-Recuperação] ${dismissedCount} card(s) com erro removido(s) do Canvas.`, 'info');
+            this.addLog(`✅ [Tentativa ${attempt}/${maxAttemptsPerPrompt}] ${dismissedCount} card(s) com erro removido(s) do Canvas.`, 'info');
           }
-          await new Promise(r => setTimeout(r, 2000));
+          await new Promise(r => setTimeout(r, 1200));
           this.dismissDangerousModals();
 
           if (this.isStopped || this.state !== 'running') return;
 
-          // Aguarda Canvas estabilizar
+          // 3. Aguarda Canvas estabilizar se ainda houver processamento residual
           const activeCheck = this.isCanvasGenerating();
           if (activeCheck.generating) {
-            this.addLog(`⏳ [Auto-Recuperação] Aguardando Canvas desocupar...`, 'info');
-            await this.waitForGenerationToComplete(30);
+            this.addLog(`⏳ [Tentativa ${attempt}/${maxAttemptsPerPrompt}] Aguardando Canvas desocupar...`, 'info');
+            await this.waitForGenerationToComplete(20);
           }
 
           if (this.isStopped || this.state !== 'running') return;
 
-          // Re-insere texto do prompt
-          this.addLog(`📝 [Auto-Recuperação ${failRetry}/${maxFailRetries}] Re-inserindo o texto do prompt para nova tentativa...`, 'info');
+          // 4. Re-insere texto do prompt
+          this.addLog(`📝 [Tentativa ${attempt}/${maxAttemptsPerPrompt}] Re-inserindo o texto do prompt...`, 'info');
           let retryInput = this.findPromptInput();
           if (retryInput) {
             await this.clearPromptInput(retryInput);
-            await new Promise(r => setTimeout(r, 300));
+            await new Promise(r => setTimeout(r, 250));
             const composedText = this.composePromptText(item);
             await this.setPromptInputValue(retryInput, composedText);
-            await new Promise(r => setTimeout(r, 500));
+            await new Promise(r => setTimeout(r, 400));
           }
 
-          // Re-anexa personagens da biblioteca se necessário
+          // 5. Re-anexa personagens da biblioteca se necessário
           if (this.config.applyGlobalCharacters !== false && this.characters && this.characters.length > 0) {
             if (!this.hasCharacterChipsAttached()) {
-              this.addLog(`🎭 [Auto-Recuperação ${failRetry}/${maxFailRetries}] Reanexando personagens da biblioteca...`, 'info');
+              this.addLog(`🎭 [Tentativa ${attempt}/${maxAttemptsPerPrompt}] Reanexando personagens da biblioteca...`, 'info');
               await this.attachCharactersFromFlowLibrary();
-              await new Promise(r => setTimeout(r, 1000));
+              await new Promise(r => setTimeout(r, 800));
 
               retryInput = this.findPromptInput();
               const txt = retryInput ? (retryInput.value || retryInput.innerText || retryInput.textContent || '').trim() : '';
               if (!txt || txt.length < 10) {
                 const composedText = this.composePromptText(item);
                 await this.setPromptInputValue(retryInput, composedText);
-                await new Promise(r => setTimeout(r, 500));
+                await new Promise(r => setTimeout(r, 400));
               }
             }
           }
 
           if (this.isStopped || this.state !== 'running') return;
 
-          this.currentAction = `🚀 [Auto-Recuperação ${failRetry}/${maxFailRetries}] Reenviando prompt...`;
+          // Sobe para o topo mais uma vez antes de disparar
+          await this.scrollCanvasToTop();
+
+          // 6. Reenvia prompt
+          this.currentAction = `🚀 [Tentativa ${attempt}/${maxAttemptsPerPrompt}] Reenviando prompt...`;
           this.notify();
-          this.addLog(`🚀 [Auto-Recuperação ${failRetry}/${maxFailRetries}] Reenviando prompt no FLOW após falha...`, 'info');
+          this.addLog(`🚀 [Tentativa ${attempt}/${maxAttemptsPerPrompt}] Reenviando prompt no FLOW após limpar falhas...`, 'info');
           const retrySubmitBtn = this.findSubmitButton();
           const retrySubmitted = await this.simulateSubmit(retrySubmitBtn, retryInput);
 
           if (retrySubmitted) {
-            this.addLog(`✅ [Auto-Recuperação ${failRetry}/${maxFailRetries}] Prompt reenviado. Aguardando geração...`, 'success');
-            genSuccess = await this.waitForGenerationToComplete(90);
+            this.addLog(`✅ [Tentativa ${attempt}/${maxAttemptsPerPrompt}] Prompt reenviado. Aguardando geração...`, 'success');
+            genSuccess = await this.waitForGenerationToComplete(60);
           } else {
-            this.addLog(`⚠️ [Auto-Recuperação] Não foi possível acionar o botão de envio na tentativa ${failRetry}.`, 'warning');
-            await new Promise(r => setTimeout(r, 2000));
+            this.addLog(`⚠️ [Tentativa ${attempt}/${maxAttemptsPerPrompt}] Não foi possível acionar o botão de envio.`, 'warning');
+            await new Promise(r => setTimeout(r, 1500));
           }
         }
 
         if (this.isStopped || this.state !== 'running') return;
 
+        // Se após as 3 tentativas ainda não concluiu a geração:
         if (!genSuccess) {
-          throw new Error(`A imagem não pôde ser gerada no FLOW após ${maxFailRetries} tentativas de auto-recuperação.`);
+          this.addLog(`⚠️ [Avanço Automático] Slide ${slideNum} atingiu o limite de ${maxAttemptsPerPrompt} tentativas sem sucesso. Prosseguindo para o próximo slide/prompt...`, 'warning');
+          item.status = 'error';
+          item.errorMsg = `Falha na geração após ${maxAttemptsPerPrompt} tentativas.`;
+          this.saveState();
+
+          // Limpa campo de prompt para não misturar no próximo slide
+          const cleanupInput = this.findPromptInput();
+          if (cleanupInput) {
+            await this.clearPromptInput(cleanupInput);
+          }
+          // Retorna permitindo que o loop do carrossel siga imediatamente para o próximo slide!
+          return;
         }
 
+        // Geração concluída com sucesso!
         item.completedRepeats = rep + 1;
         this.saveState();
 
@@ -6199,12 +6370,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         item.status = 'error';
         item.errorMsg = err.message || 'Erro ao executar prompt';
         this.addLog(`❌ Falha no ${item.title} (rep ${rep + 1}): ${item.errorMsg}`, 'error');
-
-        // Se o 1º slide do carrossel falhou criticamente, interrompe imediatamente para não cascadear erros
-        if (isFirstSlideOfCarousel) {
-          this.addLog(`🛑 [Interrupção] O 1º slide do carrossel falhou criticamente. O macro NÃO prosseguirá para os próximos slides.`, 'error');
-          this.stop();
-        }
+        this.addLog(`⏩ Prosseguindo para o próximo slide/prompt...`, 'info');
 
         // Auto-diagnóstico em tempo real por I.A se habilitado
         if (this.config.aiAutoHeal !== false && this.config.aiApiKey) {
