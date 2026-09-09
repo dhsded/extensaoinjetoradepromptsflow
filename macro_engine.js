@@ -3285,10 +3285,10 @@ class FlowMacroEngine {
       this.currentAction = `🎭 Anexando personagem: ${char.name} (${cIdx + 1}/${activeChars.length})...`;
       this.notify();
 
-      // Verifica se este personagem específico já está presente na barra de prompt
-      const existingChips = this.getPromptAttachedChips();
-      if (existingChips.length >= (cIdx + 1)) {
-        this.addLog(`ℹ️ Personagem [${char.name}] (${cIdx + 1}/${activeChars.length}) já anexado ao prompt.`, 'info');
+      // Verifica se este personagem específico já está presente na barra de prompt (validação visual)
+      const alreadyAttached = await this.validateCharacterChipAttached(char, cIdx);
+      if (alreadyAttached) {
+        this.addLog(`ℹ️ Personagem [${char.name}] (${cIdx + 1}/${activeChars.length}) já anexado ao prompt (confirmado visualmente).`, 'info');
         continue;
       }
 
@@ -3296,6 +3296,13 @@ class FlowMacroEngine {
 
       for (let attempt = 0; attempt < 3; attempt++) {
         if (attempt > 0) {
+          // Antes de re-tentar, verifica se o chip já foi inserido na tentativa anterior
+          const alreadyDoneNow = await this.validateCharacterChipAttached(char, cIdx);
+          if (alreadyDoneNow) {
+            this.addLog(`✅ [Tentativa ${attempt + 1}/3] Chip de [${char.name}] já confirmado! Não é necessário re-tentar.`, 'success');
+            chipConfirmedForChar = true;
+            break;
+          }
           this.addLog(`🔄 [Tentativa ${attempt + 1}/3] Re-tentando anexar [${char.name}]...`, 'warning');
           await new Promise(r => setTimeout(r, 1000));
         }
@@ -3559,9 +3566,15 @@ class FlowMacroEngine {
         }
 
         if (!chipAttached && includeBtn) {
-          // Se o botão "Adicionar ao comando" foi clicado com sucesso na modal, consideramos o anexo válido
-          chipAttached = true;
-          this.addLog(`ℹ️ [Passo 4] Anexo de [${char.name}] registrado após acionar o botão de inclusão.`, 'info');
+          // Re-verifica com delay adicional antes de dar como válido — não assume apenas pelo clique
+          await new Promise(r => setTimeout(r, 800));
+          const recheckChips = this.getPromptAttachedChips();
+          if (recheckChips.length >= (cIdx + 1)) {
+            chipAttached = true;
+            this.addLog(`✅ [Passo 4] Chip de [${char.name}] confirmado na re-verificação após botão.`, 'success');
+          } else {
+            this.addLog(`⚠️ [Passo 4] Botão "Adicionar ao comando" foi clicado mas chip de [${char.name}] não detectado no DOM. Tentando novamente...`, 'warning');
+          }
         }
 
         if (chipAttached) {
