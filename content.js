@@ -627,6 +627,9 @@
     const curToken = (settings.telegramBotToken || (engine && engine.config.telegramBotToken) || '8680557957:AAGsOQ9pC49uWXktu4ZCJfnI1IRsNC9sbyk').trim();
     const curChatId = (settings.telegramChatId || (engine && engine.config.telegramChatId) || '6969102297').trim();
     const isEnabled = settings.telegramEnabled !== undefined ? !!settings.telegramEnabled : (engine ? !!engine.config.telegramEnabled : true);
+    const sendCover = settings.telegramSendCoverPhoto !== undefined ? !!settings.telegramSendCoverPhoto : (engine && engine.config.telegramSendCoverPhoto !== undefined ? !!engine.config.telegramSendCoverPhoto : true);
+    const sendPrompts = settings.telegramSendDetailedPrompts !== undefined ? !!settings.telegramSendDetailedPrompts : (engine && engine.config.telegramSendDetailedPrompts !== undefined ? !!engine.config.telegramSendDetailedPrompts : true);
+    const sendChars = settings.telegramSendCharacterThumbnails !== undefined ? !!settings.telegramSendCharacterThumbnails : (engine && engine.config.telegramSendCharacterThumbnails !== undefined ? !!engine.config.telegramSendCharacterThumbnails : true);
 
     overlay = document.createElement('div');
     overlay.id = 'fd-telegram-standalone-modal';
@@ -683,6 +686,23 @@
               💡 <b>Passo a Passo:</b> Abra <a href="https://t.me/Gerador_posts_bot" target="_blank" style="color: #38bdf8; text-decoration: underline; font-weight: 600;">@Gerador_posts_bot</a> no Telegram, clique em <b>Começar</b> e depois clique em <b>🔍 Auto-Detectar</b>!
             </div>
           </div>
+
+          <!-- Opções Específicas de Notificação -->
+          <div style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; margin-top: 2px;">
+            <span style="font-size: 11px; font-weight: 700; color: #38bdf8; text-transform: uppercase; letter-spacing: 0.5px;">Opções de Envio ao Vivo:</span>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: #e2e8f0; cursor: pointer;">
+              <input type="checkbox" id="fd-tg-standalone-cover" ${sendCover ? 'checked' : ''} style="accent-color: #38bdf8; width: 15px; height: 15px; cursor: pointer;">
+              <span>📸 <b>Enviar Foto de Capa do Carrossel</b> <span style="font-size: 9.5px; color: #38bdf8; background: rgba(56,189,248,0.15); padding: 1px 5px; border-radius: 4px; font-weight: 600;">Recomendado - leve e visual</span></span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: #e2e8f0; cursor: pointer;">
+              <input type="checkbox" id="fd-tg-standalone-prompts" ${sendPrompts ? 'checked' : ''} style="accent-color: #38bdf8; width: 15px; height: 15px; cursor: pointer;">
+              <span>📝 <b>Relatório detalhado por prompt/fluxo concluído</b></span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: #e2e8f0; cursor: pointer;">
+              <input type="checkbox" id="fd-tg-standalone-chars" ${sendChars ? 'checked' : ''} style="accent-color: #38bdf8; width: 15px; height: 15px; cursor: pointer;">
+              <span>🎭 <b>Miniaturas dos personagens no início de cada carrossel</b></span>
+            </label>
+          </div>
         </div>
 
         <!-- Actions -->
@@ -702,6 +722,9 @@
     const sliderEl = overlay.querySelector('.fd-slider');
     const tokenInput = overlay.querySelector('#fd-tg-standalone-token');
     const chatIdInput = overlay.querySelector('#fd-tg-standalone-chatid');
+    const coverInput = overlay.querySelector('#fd-tg-standalone-cover');
+    const promptsInput = overlay.querySelector('#fd-tg-standalone-prompts');
+    const charsInput = overlay.querySelector('#fd-tg-standalone-chars');
     const detectBtn = overlay.querySelector('#fd-tg-standalone-btn-detect');
     const testBtn = overlay.querySelector('#fd-tg-standalone-btn-test');
     const feedback = overlay.querySelector('#fd-tg-standalone-feedback');
@@ -710,22 +733,34 @@
       const token = tokenInput.value.trim();
       const chatId = chatIdInput.value.trim();
       const enabled = toggleEl.checked;
+      const coverPhoto = coverInput ? coverInput.checked : true;
+      const detailedPrompts = promptsInput ? promptsInput.checked : true;
+      const charThumbnails = charsInput ? charsInput.checked : true;
 
       settings.telegramEnabled = enabled;
       settings.telegramBotToken = token;
       settings.telegramChatId = chatId;
+      settings.telegramSendCoverPhoto = coverPhoto;
+      settings.telegramSendDetailedPrompts = detailedPrompts;
+      settings.telegramSendCharacterThumbnails = charThumbnails;
 
       chrome.storage.local.set({
         telegramEnabled: enabled,
         telegramBotToken: token,
-        telegramChatId: chatId
+        telegramChatId: chatId,
+        telegramSendCoverPhoto: coverPhoto,
+        telegramSendDetailedPrompts: detailedPrompts,
+        telegramSendCharacterThumbnails: charThumbnails
       });
 
       if (window.flowMacroInstance) {
         window.flowMacroInstance.updateConfig({
           telegramEnabled: enabled,
           telegramBotToken: token,
-          telegramChatId: chatId
+          telegramChatId: chatId,
+          telegramSendCoverPhoto: coverPhoto,
+          telegramSendDetailedPrompts: detailedPrompts,
+          telegramSendCharacterThumbnails: charThumbnails
         });
       }
 
@@ -734,6 +769,9 @@
         cfg.telegramEnabled = enabled;
         cfg.telegramBotToken = token;
         cfg.telegramChatId = chatId;
+        cfg.telegramSendCoverPhoto = coverPhoto;
+        cfg.telegramSendDetailedPrompts = detailedPrompts;
+        cfg.telegramSendCharacterThumbnails = charThumbnails;
         chrome.storage.local.set({ flow_macro_config: cfg });
       });
 
@@ -2073,6 +2111,26 @@
                     💡 <b>Como obter o Chat ID em 2 cliques:</b> Abra <a href="https://t.me/Gerador_posts_bot" target="_blank" style="color: #38bdf8; text-decoration: underline; font-weight: 600;">@Gerador_posts_bot</a> no Telegram, clique em <b>Começar</b> (ou envie qualquer mensagem) e depois clique no botão <b>🔍 Auto-Detectar</b> acima!
                   </div>
                 </div>
+
+                <!-- Opções de Envio ao Vivo no Telegram -->
+                <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--fd-border); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px;">
+                  <span style="font-size: 11px; font-weight: 700; color: #38bdf8; text-transform: uppercase; letter-spacing: 0.5px;">Opções de Envio ao Vivo:</span>
+
+                  <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: #e2e8f0; cursor: pointer;">
+                    <input type="checkbox" id="fd-toggle-telegram-cover" ${engine.config.telegramSendCoverPhoto !== false ? 'checked' : ''} style="accent-color: #38bdf8; width: 16px; height: 16px; cursor: pointer;">
+                    <span>📸 <b>Enviar Foto de Capa do Carrossel</b> <span style="font-size: 10px; color: #38bdf8; background: rgba(56,189,248,0.15); padding: 2px 6px; border-radius: 4px; font-weight: 600;">Recomendado - leve e visual</span></span>
+                  </label>
+
+                  <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: #e2e8f0; cursor: pointer;">
+                    <input type="checkbox" id="fd-toggle-telegram-prompts" ${engine.config.telegramSendDetailedPrompts !== false ? 'checked' : ''} style="accent-color: #38bdf8; width: 16px; height: 16px; cursor: pointer;">
+                    <span>📝 <b>Relatório detalhado por prompt/fluxo concluído</b></span>
+                  </label>
+
+                  <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: #e2e8f0; cursor: pointer;">
+                    <input type="checkbox" id="fd-toggle-telegram-chars" ${engine.config.telegramSendCharacterThumbnails !== false ? 'checked' : ''} style="accent-color: #38bdf8; width: 16px; height: 16px; cursor: pointer;">
+                    <span>🎭 <b>Miniaturas dos personagens no início de cada carrossel</b></span>
+                  </label>
+                </div>
               </div>
             </div>
           </div>
@@ -2710,6 +2768,30 @@
     if (inputTelegramChatId) {
       inputTelegramChatId.addEventListener('input', (e) => {
         engine.updateConfig({ telegramChatId: e.target.value.trim() });
+      });
+    }
+
+    const toggleTgCover = macroModalElement.querySelector('#fd-toggle-telegram-cover');
+    if (toggleTgCover) {
+      toggleTgCover.addEventListener('change', (e) => {
+        engine.updateConfig({ telegramSendCoverPhoto: e.target.checked });
+        chrome.storage.local.set({ telegramSendCoverPhoto: e.target.checked });
+      });
+    }
+
+    const toggleTgPrompts = macroModalElement.querySelector('#fd-toggle-telegram-prompts');
+    if (toggleTgPrompts) {
+      toggleTgPrompts.addEventListener('change', (e) => {
+        engine.updateConfig({ telegramSendDetailedPrompts: e.target.checked });
+        chrome.storage.local.set({ telegramSendDetailedPrompts: e.target.checked });
+      });
+    }
+
+    const toggleTgChars = macroModalElement.querySelector('#fd-toggle-telegram-chars');
+    if (toggleTgChars) {
+      toggleTgChars.addEventListener('change', (e) => {
+        engine.updateConfig({ telegramSendCharacterThumbnails: e.target.checked });
+        chrome.storage.local.set({ telegramSendCharacterThumbnails: e.target.checked });
       });
     }
 
@@ -4730,6 +4812,7 @@
     window.flowShowToast = showToast;
     window.flowStartBatchDownload = startScrollAndBatchDownload;
     window.flowSettings = settings;
+    window.flowFindGeneratedImages = findFlowImages;
   }
 })();
 

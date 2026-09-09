@@ -106,6 +106,9 @@ class FlowMacroEngine {
       telegramEnabled: true,           // Ativa envio de relatórios e progresso no Telegram
       telegramBotToken: '8680557957:AAGsOQ9pC49uWXktu4ZCJfnI1IRsNC9sbyk', // Token do Bot (@BotFather)
       telegramChatId: '6969102297',    // Chat ID do usuário Ares (@suporteares)
+      telegramSendCoverPhoto: true,    // 📸 Envia Foto de Capa ao concluir carrossel
+      telegramSendDetailedPrompts: true, // 📝 Envia prompt detalhado a cada fluxo concluído
+      telegramSendCharacterThumbnails: true, // 🎭 Envia miniatura de personagens no início de cada carrossel
       // Integração com Inteligência Artificial para Auto-Diagnóstico em Tempo Real
       aiProvider: 'gemini',            // Provedor de I.A: 'gemini' | 'groq' | 'openrouter'
       aiApiKey: '',                    // Chave ativa de I.A
@@ -1022,6 +1025,11 @@ class FlowMacroEngine {
       return false;
     }
 
+    let safeText = (text || '').trim();
+    if (safeText.length > 4000) {
+      safeText = safeText.substring(0, 3950) + '\n\n... [Mensagem longa truncada pelo Telegram]';
+    }
+
     try {
       const url = `https://api.telegram.org/bot${token}/sendMessage`;
       const res = await fetch(url, {
@@ -1029,13 +1037,27 @@ class FlowMacroEngine {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: chatId,
-          text: text,
+          text: safeText,
           parse_mode: 'Markdown'
         })
       });
 
       const data = await res.json();
       if (!data.ok) {
+        // Se a falha foi por parsing de entidades markdown no prompt, tenta enviar sem parse_mode
+        if ((data.description || '').toLowerCase().includes('entities')) {
+          const retryRes = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: chatId,
+              text: safeText
+            })
+          });
+          const retryData = await retryRes.json();
+          if (retryData.ok) return true;
+        }
+
         console.warn('[Telegram Notifier] Erro retornado pela API:', data.description);
         this.addLog(`⚠️ Telegram API: ${data.description}`, 'warning');
         return false;
@@ -1046,6 +1068,261 @@ class FlowMacroEngine {
       this.addLog(`⚠️ Erro de conexão com Telegram: ${e.message}`, 'warning');
       return false;
     }
+  }
+
+  /**
+   * Converte uma fonte de imagem (Data URL, Blob, URL HTTP ou elemento) em um Blob otimizado
+   * Se maxDim for fornecido, redimensiona proporcionalmente via Canvas
+   * @param {string|Blob|HTMLImageElement} source
+   * @param {number} [maxDim=null] - Dimensão máxima (largura/altura)
+   * @returns {Promise<Blob|null>}
+   */
+  async imageSourceToBlob(source, maxDim = null) {
+    if (!source) return null;
+    if (typeof Blob !== 'undefined' && source instanceof Blob) {
+      return source;
+    }
+
+    // Se estiver no navegador e puder desenhar via canvas
+    if (typeof Image !== 'undefined' && typeof document !== 'undefined') {
+      try {
+        const blobFromCanvas = await new Promise((resolve) => {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = () => {
+            try {
+              let w = img.naturalWidth || img.width || 200;
+              let h = img.naturalHeight || img.height || 200;
+
+              if (maxDim && (w > maxDim || h > maxDim)) {
+                if (w > h) {
+                  h = Math.round((h * maxDim) / w);
+                  w = maxDim;
+                } else {
+                  w = Math.round((w * maxDim) / h);
+                  h = maxDim;
+                }
+              }
+
+              // Garante dimensões mínimas aceitas pelo Telegram
+              w = Math.max(w, 60);
+              h = Math.max(h, 60);
+
+              const canvas = document.createElement('canvas');
+              canvas.width = w;
+              canvas.height = h;
+              const ctx = canvas.getContext('2d');
+              ctx.drawImage(img, 0, 0, w, h);
+              canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.85);
+            } catch (err) {
+              resolve(null);
+            }
+          };
+          img.onerror = () => resolve(null);
+          img.src = typeof source === 'string' ? source : (source.src || '');
+        });
+
+        if (blobFromCanvas) return blobFromCanvas;
+      } catch (e) {}
+    }
+
+    // Fallback: fetch direto da URL para blob
+    if (typeof source === 'string') {
+      try {
+        const res = await fetch(source);
+        if (res.ok) {
+          return await res.blob();
+        }
+      } catch (e) {}
+    }
+
+    return null;
+  }
+
+  /**
+   * Envia uma foto com legenda para o bot do Telegram usando FormData e Blob binário
+   * @param {string|Blob} photoSource - URL, Data URL ou Blob da foto
+   * @param {string} caption - Legenda em Markdown (máximo 1000 caracteres)
+   * @param {number} [maxDim=null] - Dimensão máxima de redimensionamento
+   * @returns {Promise<boolean>}
+   */
+  async sendTelegramPhoto(photoSource, caption = '', maxDim = null) {
+    if (!this.config || !this.config.telegramEnabled) return false;
+    const token = (this.config.telegramBotToken || '').trim();
+    const chatId = (this.config.telegramChatId || '').trim();
+
+    if (!token || !chatId || !photoSource) {
+      return false;
+    }
+
+    try {
+      let safeCaption = (caption || '').trim();
+      if (safeCaption.length > 1000) {
+        safeCaption = safeCaption.substring(0, 990) + '...';
+      }
+
+      const blob = await this.imageSourceToBlob(photoSource, maxDim);
+      const url = `https://api.telegram.org/bot${token}/sendPhoto`;
+
+      // Tentativa 1: Envio via FormData com Blob binário
+      if (blob) {
+        const formData = new FormData();
+        formData.append('chat_id', chatId);
+        formData.append('photo', blob, 'photo.jpg');
+        if (safeCaption) {
+          formData.append('caption', safeCaption);
+          formData.append('parse_mode', 'Markdown');
+        }
+
+        const res = await fetch(url, {
+          method: 'POST',
+          body: formData
+        });
+
+        const data = await res.json();
+        if (data.ok) return true;
+
+        // Se falhou por entidades markdown na legenda, tenta novamente sem parse_mode
+        if (!data.ok && safeCaption && (data.description || '').toLowerCase().includes('entities')) {
+          const retryFormData = new FormData();
+          retryFormData.append('chat_id', chatId);
+          retryFormData.append('photo', blob, 'photo.jpg');
+          retryFormData.append('caption', safeCaption);
+          const retryRes = await fetch(url, { method: 'POST', body: retryFormData });
+          const retryData = await retryRes.json();
+          if (retryData.ok) return true;
+        }
+
+        console.warn('[Telegram Notifier] Falha no envio de foto FormData:', data.description);
+      }
+
+      // Tentativa 2: Se photoSource for URL HTTP externa, tenta enviar diretamente a URL
+      if (typeof photoSource === 'string' && photoSource.startsWith('http')) {
+        const jsonBody = {
+          chat_id: chatId,
+          photo: photoSource
+        };
+        if (safeCaption) {
+          jsonBody.caption = safeCaption;
+          jsonBody.parse_mode = 'Markdown';
+        }
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(jsonBody)
+        });
+
+        const data = await res.json();
+        if (data.ok) return true;
+      }
+
+      // Se não conseguiu enviar a imagem, garante que a mensagem de texto com o relatório seja entregue
+      if (safeCaption) {
+        return await this.sendTelegramNotification(safeCaption);
+      }
+
+      return false;
+    } catch (e) {
+      console.warn('[Telegram Notifier] Erro no envio de foto:', e);
+      if (caption) {
+        return await this.sendTelegramNotification(caption);
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Identifica os personagens cadastrados envolvidos no carrossel atual
+   * @param {Object} carousel
+   * @returns {Array<Object>}
+   */
+  getInvolvedCharactersForCarousel(carousel) {
+    if (!this.characters || this.characters.length === 0) return [];
+
+    // Se o carrossel possuir lista explícita de personagens configurada
+    if (carousel && Array.isArray(carousel.characters) && carousel.characters.length > 0) {
+      return carousel.characters.filter(c => c && c.enabled !== false);
+    }
+
+    // Se a configuração de personagens globais estiver ativa
+    if (this.config.applyGlobalCharacters !== false) {
+      return this.characters.filter(c => c && c.enabled !== false);
+    }
+
+    return [];
+  }
+
+  /**
+   * Envia miniaturas dos personagens envolvidos no início do carrossel para o Telegram
+   * @param {Object} carousel - Objeto do carrossel atual
+   * @param {number} currentNum - Índice do carrossel atual (1-based)
+   * @param {number} totalNum - Total de carrosséis na fila
+   */
+  async sendTelegramCarouselCharacters(carousel, currentNum, totalNum) {
+    if (!this.config || !this.config.telegramEnabled || this.config.telegramSendCharacterThumbnails === false) {
+      return;
+    }
+
+    const involvedChars = this.getInvolvedCharactersForCarousel(carousel);
+    if (!involvedChars || involvedChars.length === 0) return;
+
+    this.addLog(`✈️ [Telegram] Enviando miniaturas de ${involvedChars.length} personagem(ns) do carrossel...`, 'info');
+
+    for (let i = 0; i < involvedChars.length; i++) {
+      if (this.isStopped || this.state !== 'running') break;
+      const char = involvedChars[i];
+      const caption = 
+        `🎭 *Personagem do Carrossel*\n` +
+        `• *Nome:* ${char.name}\n` +
+        `• *Carrossel ${currentNum}/${totalNum}:* ${carousel.title || 'Sem título'}` +
+        (char.promptTag ? `\n• *Tag:* \`${char.promptTag}\`` : '');
+
+      if (char.avatarUrl) {
+        // Redimensiona para miniatura pequena (~200px)
+        await this.sendTelegramPhoto(char.avatarUrl, caption, 200);
+      } else {
+        await this.sendTelegramNotification(caption);
+      }
+
+      // Pequena pausa entre envios para respeitar rate-limit da API do Telegram
+      if (i + 1 < involvedChars.length) {
+        await new Promise(r => setTimeout(r, 600));
+      }
+    }
+  }
+
+  /**
+   * Obtém a URL ou src da imagem gerada mais recente no Canvas do FLOW
+   * @returns {string|null}
+   */
+  findLatestGeneratedImageUrl() {
+    try {
+      // 1. Tenta usar o utilitário global exposto no content.js
+      if (typeof window !== 'undefined' && typeof window.flowFindGeneratedImages === 'function') {
+        const items = window.flowFindGeneratedImages();
+        if (items && items.length > 0) {
+          return items[0].url || items[0].id || (items[0].img ? (items[0].img.currentSrc || items[0].img.src) : null);
+        }
+      }
+
+      // 2. Fallback direto varrendo imagens do DOM que atendem aos critérios do Canvas
+      const allImgs = Array.from(document.querySelectorAll('img')).filter(img => {
+        if (!FlowMacroEngine.isElementVisible(img)) return false;
+        if (img.closest('[id*="fd-"], [class*="fd-"], [role="dialog"], [class*="modal" i], header, nav')) return false;
+        const src = (img.currentSrc || img.src || '').toLowerCase();
+        if (!src || src.startsWith('data:image/svg') || src.includes('avatar') || src.includes('profile') || src.includes('icon')) return false;
+        if ((img.naturalWidth > 0 && img.naturalWidth < 80) || (img.width > 0 && img.width < 80)) return false;
+        return true;
+      });
+
+      if (allImgs.length > 0) {
+        return allImgs[0].currentSrc || allImgs[0].src;
+      }
+    } catch (e) {
+      console.warn('[FLOW Macro] Erro ao buscar imagem gerada:', e);
+    }
+    return null;
   }
 
   /**
@@ -6219,6 +6496,9 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       this.addLog(`\n========================================\n🌟 [Carrossel ${cIdx + 1}/${carouselsToRun.length}] Iniciando: ${carousel.title}\n========================================`, 'info');
       this.notify();
 
+      // Envia miniaturas dos personagens envolvidos no início do carrossel para o Telegram
+      await this.sendTelegramCarouselCharacters(carousel, cIdx + 1, carouselsToRun.length);
+
       // Se for um novo carrossel subsequente e a opção de criar novo projeto estiver ativa
       if (cIdx > 0 && this.config.autoCreateNewProjectPerCarousel) {
         if (this.isStopped || this.state !== 'running') break;
@@ -6267,12 +6547,27 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       // Notificação ao Vivo no Telegram a cada Carrossel Concluído
       const statusIcon = hasFailedSlides ? '⚠️' : '🎉';
       const statusLabel = hasFailedSlides ? 'Finalizado com Alertas' : 'Concluído com Sucesso';
-      this.sendTelegramNotification(
+      const carouselReport = 
         `${statusIcon} *[Carrossel ${cIdx + 1}/${carouselsToRun.length}] ${statusLabel}*\n` +
         `📚 *Título:* ${carousel.title}\n` +
         `🖼️ *Slides gerados:* ${activeSlides.length}\n` +
-        `⏱️ *Tempo decorrido:* ${FlowMacroEngine.formatDuration(this.elapsedSeconds)}`
-      );
+        `⏱️ *Tempo decorrido:* ${FlowMacroEngine.formatDuration(this.elapsedSeconds)}`;
+
+      // Se a imagem de capa ainda não foi definida, busca a última imagem gerada no Canvas
+      if (!carousel.coverImageUrl) {
+        carousel.coverImageUrl = this.findLatestGeneratedImageUrl();
+      }
+
+      // 📸 Envia Foto de Capa do Carrossel com relatório na legenda (se habilitado)
+      if (this.config.telegramSendCoverPhoto !== false && carousel.coverImageUrl) {
+        this.addLog(`✈️ [Telegram] Enviando foto de capa do carrossel "${carousel.title}"...`, 'info');
+        const photoSent = await this.sendTelegramPhoto(carousel.coverImageUrl, carouselReport, 1280);
+        if (!photoSent) {
+          await this.sendTelegramNotification(carouselReport);
+        }
+      } else {
+        await this.sendTelegramNotification(carouselReport);
+      }
 
       // =======================================================================
       // Gatilho de Download Automático por Carrossel (Individual ou Pasta Única)
@@ -6740,6 +7035,18 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
           item.errorMsg = `Falha na geração após ${maxAttemptsPerPrompt} tentativas.`;
           this.saveState();
 
+          // Notificação de alerta no Telegram
+          if (this.config.telegramSendDetailedPrompts !== false) {
+            const promptDetail = this.composePromptText(item) || item.fullText || item.imagePrompt || item.title || '';
+            this.sendTelegramNotification(
+              `⚠️ *[Alerta no Slide ${slideNum}/${totalSlides}]*\n` +
+              `📚 *Carrossel:* ${carouselTitle}\n` +
+              `❌ *Status:* Falha após ${maxAttemptsPerPrompt} tentativas\n` +
+              `📝 *Prompt:*\n\`\`\`\n${promptDetail.trim()}\n\`\`\`\n` +
+              `⏩ Avançando automaticamente para o próximo slide.`
+            );
+          }
+
           // Limpa campo de prompt para não misturar no próximo slide
           const cleanupInput = this.findPromptInput();
           if (cleanupInput) {
@@ -6756,6 +7063,36 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         this.addLog(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n✅ [SLIDE CONCLUÍDO COM SUCESSO!]\n• Slide ${slideNum}/${totalSlides}: "${item.title || ('Slide ' + slideNum)}"\n• Carrossel: "${carouselTitle}"${targetRepeats > 1 ? `\n• Repetição: ${rep + 1}/${targetRepeats}` : ''}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`, 'success');
         if (typeof window !== 'undefined' && typeof window.flowShowToast === 'function') {
           window.flowShowToast(`✅ Slide ${slideNum}/${totalSlides} concluído!`, 'success');
+        }
+
+        // 📸 Captura imagem de capa do carrossel ao concluir o 1º slide
+        if (isFirstSlideOfCarousel || slideNum === 1) {
+          try {
+            const coverUrl = this.findLatestGeneratedImageUrl();
+            if (coverUrl) {
+              const targetCarousel = (this.carousels || []).find(c => c.title === carouselTitle || (c.slides && c.slides.includes(item)));
+              if (targetCarousel) {
+                targetCarousel.coverImageUrl = coverUrl;
+              }
+            }
+          } catch (covErr) {
+            console.warn('[FLOW Macro] Erro ao registrar capa do slide 1:', covErr);
+          }
+        }
+
+        // 📝 Notificação detalhada de cada fluxo/prompt concluído no Telegram
+        if (this.config.telegramSendDetailedPrompts !== false) {
+          const promptDetail = this.composePromptText(item) || item.fullText || item.imagePrompt || item.title || '';
+          const dialogueText = item.dialogue ? `\n💬 *Fala/Diálogo:* ${item.dialogue}` : '';
+          const repText = targetRepeats > 1 ? ` (Repetição ${rep + 1}/${targetRepeats})` : '';
+
+          await this.sendTelegramNotification(
+            `✅ *[Fluxo Concluído - Slide ${slideNum}/${totalSlides}${repText}]*\n` +
+            `📚 *Carrossel:* ${carouselTitle}\n` +
+            `🎬 *Slide:* ${item.slideTitle || item.title || `Slide ${slideNum}`}\n` +
+            (dialogueText ? dialogueText + '\n' : '') +
+            `📝 *Prompt Detalhado:*\n\`\`\`\n${promptDetail.trim()}\n\`\`\``
+          );
         }
 
         // Se houver repetições configuradas para o mesmo slide, aguarda delay pré-configurado

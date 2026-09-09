@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FLOW Studio Pro - Macro de Prompts & Baixador Automático",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Automação de Prompts por PDF/Roteiro, Personagens Pré-definidos e Download em lote no FLOW.",
   "permissions": [
     "downloads",

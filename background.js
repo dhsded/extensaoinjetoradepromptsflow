@@ -22,7 +22,10 @@ const DEFAULT_SETTINGS = {
   downloadedIds: [],           // Lista de IDs de imagens já baixadas para evitar duplicidade
   telegramEnabled: true,       // Ativa envio de notificações no Telegram
   telegramBotToken: '8680557957:AAGsOQ9pC49uWXktu4ZCJfnI1IRsNC9sbyk', // Token do Bot (@BotFather)
-  telegramChatId: '6969102297' // Chat ID do usuário Ares (@suporteares)
+  telegramChatId: '6969102297', // Chat ID do usuário Ares (@suporteares)
+  telegramSendCoverPhoto: true, // 📸 Envia Foto de Capa ao concluir carrossel
+  telegramSendDetailedPrompts: true, // 📝 Envia prompt detalhado a cada fluxo concluído
+  telegramSendCharacterThumbnails: true // 🎭 Envia miniatura de personagens no início de cada carrossel
 };
 
 // ============================================================================

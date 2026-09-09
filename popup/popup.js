@@ -16,6 +16,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const toggleOverlayBtn = document.getElementById('toggle-overlay-btn');       // Checkbox para mostrar botões sobre os cards no FLOW
   const toggleHud = document.getElementById('toggle-hud');                     // Checkbox para exibir a barra flutuante de automação
   const toggleTelegramEnabled = document.getElementById('toggle-telegram-enabled'); // Checkbox Notificações Telegram
+  const toggleTelegramCover = document.getElementById('toggle-telegram-cover');     // Checkbox Foto de Capa
+  const toggleTelegramPrompts = document.getElementById('toggle-telegram-prompts'); // Checkbox Prompt Detalhado
+  const toggleTelegramChars = document.getElementById('toggle-telegram-chars');     // Checkbox Miniaturas de Personagens
   const inputTelegramToken = document.getElementById('input-telegram-token');       // Token do Bot do Telegram
   const inputTelegramChatId = document.getElementById('input-telegram-chatid');     // Chat ID do Telegram
   const btnDetectTelegram = document.getElementById('btn-detect-telegram');         // Botão Auto-Detectar Chat ID
@@ -51,6 +54,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     const defaultChatId = '6969102297';
     if (toggleTelegramEnabled) {
       toggleTelegramEnabled.checked = s.telegramEnabled !== undefined ? !!s.telegramEnabled : (macroCfg.telegramEnabled !== undefined ? !!macroCfg.telegramEnabled : true);
+    }
+    if (toggleTelegramCover) {
+      toggleTelegramCover.checked = s.telegramSendCoverPhoto !== undefined ? !!s.telegramSendCoverPhoto : (macroCfg.telegramSendCoverPhoto !== undefined ? !!macroCfg.telegramSendCoverPhoto : true);
+    }
+    if (toggleTelegramPrompts) {
+      toggleTelegramPrompts.checked = s.telegramSendDetailedPrompts !== undefined ? !!s.telegramSendDetailedPrompts : (macroCfg.telegramSendDetailedPrompts !== undefined ? !!macroCfg.telegramSendDetailedPrompts : true);
+    }
+    if (toggleTelegramChars) {
+      toggleTelegramChars.checked = s.telegramSendCharacterThumbnails !== undefined ? !!s.telegramSendCharacterThumbnails : (macroCfg.telegramSendCharacterThumbnails !== undefined ? !!macroCfg.telegramSendCharacterThumbnails : true);
     }
     if (inputTelegramToken) {
       inputTelegramToken.value = s.telegramBotToken || macroCfg.telegramBotToken || defaultToken;
@@ -171,7 +183,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       showFloatingHud: toggleHud.checked,
       telegramEnabled: toggleTelegramEnabled ? toggleTelegramEnabled.checked : false,
       telegramBotToken: inputTelegramToken ? inputTelegramToken.value.trim() : '',
-      telegramChatId: inputTelegramChatId ? inputTelegramChatId.value.trim() : ''
+      telegramChatId: inputTelegramChatId ? inputTelegramChatId.value.trim() : '',
+      telegramSendCoverPhoto: toggleTelegramCover ? toggleTelegramCover.checked : true,
+      telegramSendDetailedPrompts: toggleTelegramPrompts ? toggleTelegramPrompts.checked : true,
+      telegramSendCharacterThumbnails: toggleTelegramChars ? toggleTelegramChars.checked : true
     };
 
     // Grava no storage local
@@ -187,6 +202,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       cfg.telegramEnabled = updated.telegramEnabled;
       cfg.telegramBotToken = updated.telegramBotToken;
       cfg.telegramChatId = updated.telegramChatId;
+      cfg.telegramSendCoverPhoto = updated.telegramSendCoverPhoto;
+      cfg.telegramSendDetailedPrompts = updated.telegramSendDetailedPrompts;
+      cfg.telegramSendCharacterThumbnails = updated.telegramSendCharacterThumbnails;
       chrome.storage.local.set({ flow_macro_config: cfg });
     });
 
@@ -210,6 +228,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   toggleHud.addEventListener('change', saveCurrentSettings);
 
   if (toggleTelegramEnabled) toggleTelegramEnabled.addEventListener('change', saveCurrentSettings);
+  if (toggleTelegramCover) toggleTelegramCover.addEventListener('change', saveCurrentSettings);
+  if (toggleTelegramPrompts) toggleTelegramPrompts.addEventListener('change', saveCurrentSettings);
+  if (toggleTelegramChars) toggleTelegramChars.addEventListener('change', saveCurrentSettings);
   if (inputTelegramToken) inputTelegramToken.addEventListener('input', saveCurrentSettings);
   if (inputTelegramChatId) inputTelegramChatId.addEventListener('input', saveCurrentSettings);
 
