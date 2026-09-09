@@ -1367,6 +1367,9 @@
                 </div>
               </div>
               <div style="display: flex; gap: 8px;">
+                <button class="fd-modal-btn-cancel" id="fd-btn-toggle-all-prompts" style="padding: 6px 12px; font-size: 12px;" title="Expandir ou recolher o texto completo de todos os prompts na lista">
+                  👁️ Expandir Prompts
+                </button>
                 <button class="fd-modal-btn-cancel" id="fd-btn-reset-status" style="padding: 6px 12px; font-size: 12px;" title="Redefinir todos os status para Pendente">
                   🔄 Redefinir Status
                 </button>
@@ -2014,6 +2017,24 @@
         if (configRepeatInput) configRepeatInput.value = val;
         renderPromptsList();
         showToast(`🔁 Todos os prompts definidos para ${val}x repetições.`, 'info');
+      });
+    }
+
+    // Botão para expandir/recolher todos os prompts na lista
+    const btnToggleAllPrompts = macroModalElement.querySelector('#fd-btn-toggle-all-prompts');
+    if (btnToggleAllPrompts) {
+      btnToggleAllPrompts.addEventListener('click', () => {
+        allPromptsExpanded = !allPromptsExpanded;
+        if (allPromptsExpanded) {
+          engine.prompts.forEach(p => expandedPromptIds.add(p.id));
+          btnToggleAllPrompts.innerText = '🔼 Recolher Prompts';
+          showToast('👁️ Todos os prompts expandidos para visualização completa.', 'info');
+        } else {
+          expandedPromptIds.clear();
+          btnToggleAllPrompts.innerText = '👁️ Expandir Prompts';
+          showToast('🔼 Lista de prompts recolhida.', 'info');
+        }
+        renderPromptsList();
       });
     }
 
@@ -3601,8 +3622,132 @@
       });
     }
 
+    let editingPromptId = null;
+    const expandedPromptIds = new Set();
+    let allPromptsExpanded = false;
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
     /**
-     * Renderiza a lista de prompts e slides com títulos, balões e botões de repetição
+     * Abre a caixa de edição inline do prompt selecionado
+     */
+    function openPromptEditor(row, p) {
+      editingPromptId = p.id;
+      const previewEl = row.querySelector('.fd-prompt-preview');
+      if (!previewEl) return;
+
+      const currentText = p.imagePrompt || p.fullText || '';
+      const currentBalloon = p.ptDialogue || '';
+      const hasBalloon = p.ptDialogue !== undefined && p.ptDialogue !== null;
+
+      previewEl.innerHTML = `
+        <div class="fd-prompt-edit-box">
+          <div class="fd-prompt-edit-header">
+            <span style="font-size: 11px; font-weight: 700; color: #38bdf8;">✏️ Editando: ${escapeHtml(p.title || `Prompt #${p.globalIndex || p.index}`)}</span>
+            <span style="font-size: 10px; color: var(--fd-text-muted);">Ctrl+Enter salva • Esc cancela</span>
+          </div>
+          ${hasBalloon ? `
+            <div style="margin: 4px 0;">
+              <label style="display: block; font-size: 10px; color: #94a3b8; margin-bottom: 2px;">💬 Texto do Balão de Fala (PT):</label>
+              <input type="text" class="fd-edit-balloon-input" value="${escapeHtml(currentBalloon)}" placeholder="Texto do balão..." style="width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.5); border: 1px solid var(--fd-border); border-radius: 6px; padding: 6px 8px; color: #fff; font-size: 11px;">
+            </div>
+          ` : ''}
+          <div style="margin: 4px 0;">
+            <label style="display: block; font-size: 10px; color: #94a3b8; margin-bottom: 2px;">🎨 Prompt de Imagem (Descrição visual para o FLOW):</label>
+            <textarea class="fd-edit-prompt-textarea" rows="4" placeholder="Descrição visual detalhada para o FLOW...">${escapeHtml(currentText)}</textarea>
+          </div>
+          <div class="fd-prompt-edit-actions">
+            <button type="button" class="fd-modal-btn-cancel fd-btn-cancel-edit" style="padding: 5px 12px; font-size: 11px;">❌ Cancelar</button>
+            <button type="button" class="fd-modal-btn-confirm fd-btn-save-edit" style="padding: 5px 14px; font-size: 11px; background: linear-gradient(135deg, #10b981, #059669); font-weight: 600;">💾 Salvar Prompt</button>
+          </div>
+        </div>
+      `;
+
+      const textarea = previewEl.querySelector('.fd-edit-prompt-textarea');
+      const balloonInput = previewEl.querySelector('.fd-edit-balloon-input');
+      const btnSave = previewEl.querySelector('.fd-btn-save-edit');
+      const btnCancel = previewEl.querySelector('.fd-btn-cancel-edit');
+
+      if (textarea) {
+        textarea.focus();
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+        textarea.style.height = 'auto';
+        textarea.style.height = Math.max(85, textarea.scrollHeight) + 'px';
+        textarea.addEventListener('input', () => {
+          textarea.style.height = 'auto';
+          textarea.style.height = Math.max(85, textarea.scrollHeight) + 'px';
+        });
+      }
+
+      const saveAction = () => {
+        const newText = textarea ? textarea.value.trim() : '';
+        if (!newText) {
+          showToast('⚠️ O prompt não pode ficar vazio!', 'warning');
+          return;
+        }
+
+        const updates = {
+          imagePrompt: newText,
+          fullText: newText
+        };
+
+        if (balloonInput) {
+          const newBalloon = balloonInput.value.trim();
+          updates.ptDialogue = newBalloon;
+          if (newBalloon) {
+            updates.fullText = `Texto nos balões:\nPT: "${newBalloon}"\n\nPrompt de Imagem (Midjourney / Dall-E):\n${newText}`;
+          }
+        }
+
+        engine.updatePrompt(p.id, updates);
+        editingPromptId = null;
+        showToast('✅ Prompt atualizado e salvo permanentemente!', 'success');
+        renderPromptsList();
+      };
+
+      const cancelAction = () => {
+        editingPromptId = null;
+        renderPromptsList();
+      };
+
+      if (btnSave) {
+        btnSave.addEventListener('click', (e) => {
+          e.stopPropagation();
+          saveAction();
+        });
+      }
+
+      if (btnCancel) {
+        btnCancel.addEventListener('click', (e) => {
+          e.stopPropagation();
+          cancelAction();
+        });
+      }
+
+      const handleKeydown = (e) => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          saveAction();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          cancelAction();
+        }
+      };
+
+      if (textarea) textarea.addEventListener('keydown', handleKeydown);
+      if (balloonInput) balloonInput.addEventListener('keydown', handleKeydown);
+    }
+
+    /**
+     * Renderiza a lista de prompts e slides com títulos, balões, edição e botões de repetição
      */
     function renderPromptsList() {
       const container = macroModalElement.querySelector('#fd-prompts-list');
@@ -3622,6 +3767,30 @@
         ? engine.prompts
         : engine.prompts.filter(p => p.carouselIndex === parseInt(engine.selectedCarouselId.replace('carousel_', ''), 10) || p.enabled !== false);
 
+      // Se o usuário está editando ativamente um prompt, apenas atualiza badges/status para não perder digitação ou foco
+      if (editingPromptId) {
+        displayPrompts.forEach((p) => {
+          const row = container.querySelector(`.fd-prompt-row[data-id="${p.id}"]`);
+          if (row) {
+            row.className = `fd-prompt-row ${p.status}`;
+            const badge = row.querySelector('.fd-prompt-status-badge');
+            if (badge) {
+              const repeats = p.repeatCount || 1;
+              const comp = p.completedRepeats || 0;
+              let statusBadgeText = p.status;
+              if (p.status === 'running') {
+                statusBadgeText = `Gerando (${comp + 1}/${repeats})`;
+              } else if (p.status === 'completed') {
+                statusBadgeText = `Concluído (${repeats}x)`;
+              }
+              badge.className = `fd-prompt-status-badge ${p.status}`;
+              badge.innerText = statusBadgeText;
+            }
+          }
+        });
+        return;
+      }
+
       let html = '';
       let currentCarouselHeader = '';
 
@@ -3640,20 +3809,31 @@
           currentCarouselHeader = p.carouselTitle;
           html += `
             <div class="fd-carousel-group-header">
-              <span>📚 ${currentCarouselHeader}</span>
+              <span>📚 ${escapeHtml(currentCarouselHeader)}</span>
               <span style="font-size: 11px; opacity: 0.85; font-weight: 600;">5 Slides</span>
             </div>
           `;
         }
+
+        const isExpanded = allPromptsExpanded || expandedPromptIds.has(p.id);
+        const promptText = p.imagePrompt || p.fullText || '';
+        const isLongText = promptText.length > 90 || promptText.includes('\n');
 
         html += `
           <div class="fd-prompt-row ${p.status}" data-id="${p.id}">
             <input type="checkbox" class="fd-prompt-toggle" name="fd_chk_prompt_${p.id}" ${p.enabled !== false ? 'checked' : ''} style="cursor: pointer;" autocomplete="off">
             <span class="fd-prompt-index">#${p.globalIndex || p.index}</span>
             <div class="fd-prompt-preview">
-              <div class="fd-prompt-preview-title">${p.title}</div>
-              ${p.ptDialogue ? `<div style="font-size: 11px; color: #38bdf8; margin: 2px 0;">💬 <strong>Balão:</strong> "${p.ptDialogue}"</div>` : ''}
-              <div class="fd-prompt-preview-text">${p.fullText || p.imagePrompt}</div>
+              <div class="fd-prompt-preview-title">
+                <span>${escapeHtml(p.title || `Slide #${p.globalIndex || p.index}`)}</span>
+              </div>
+              ${p.ptDialogue ? `<div class="fd-prompt-balloon-preview" style="font-size: 11px; color: #38bdf8; margin: 2px 0;">💬 <strong>Balão:</strong> "${escapeHtml(p.ptDialogue)}"</div>` : ''}
+              <div class="fd-prompt-preview-text ${isExpanded ? 'expanded' : ''}" data-id="${p.id}" title="Clique para expandir/recolher o texto">${escapeHtml(promptText)}</div>
+              ${isLongText ? `
+                <button type="button" class="fd-prompt-expand-btn" data-id="${p.id}">
+                  ${isExpanded ? '🔼 Recolher prompt' : '🔽 Ver prompt completo'}
+                </button>
+              ` : ''}
             </div>
             <div class="fd-repeat-control" title="Quantas vezes este prompt específico será inserido">
               <span>🔁</span>
@@ -3661,6 +3841,12 @@
               <span>x</span>
             </div>
             <span class="fd-prompt-status-badge ${p.status}">${statusBadgeText}</span>
+            <button class="fd-btn-icon fd-btn-edit-prompt" title="Editar texto do prompt" style="color: #60a5fa;" data-id="${p.id}">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+              </svg>
+            </button>
             <button class="fd-btn-icon fd-btn-run-single" title="Executar este prompt agora" style="color: #10b981;">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
@@ -3681,10 +3867,14 @@
       // Associa eventos de clique e inputs nas linhas de prompt
       container.querySelectorAll('.fd-prompt-row').forEach(row => {
         const id = row.getAttribute('data-id');
+        const p = engine.prompts.find(item => item.id === id);
         const chk = row.querySelector('.fd-prompt-toggle');
         const repeatInp = row.querySelector('.fd-repeat-input');
+        const btnEdit = row.querySelector('.fd-btn-edit-prompt');
         const btnRun = row.querySelector('.fd-btn-run-single');
         const btnDel = row.querySelector('.fd-btn-delete-single');
+        const textPreview = row.querySelector('.fd-prompt-preview-text');
+        const expandBtn = row.querySelector('.fd-prompt-expand-btn');
 
         chk.addEventListener('change', (e) => engine.updatePrompt(id, { enabled: e.target.checked }));
         if (repeatInp) {
@@ -3698,6 +3888,41 @@
           engine.removePrompt(id);
           renderPromptsList();
         });
+
+        // Alternar visualização completa/recolhida
+        const toggleExpand = () => {
+          if (expandedPromptIds.has(id)) {
+            expandedPromptIds.delete(id);
+            if (textPreview) textPreview.classList.remove('expanded');
+            if (expandBtn) expandBtn.innerText = '🔽 Ver prompt completo';
+          } else {
+            expandedPromptIds.add(id);
+            if (textPreview) textPreview.classList.add('expanded');
+            if (expandBtn) expandBtn.innerText = '🔼 Recolher prompt';
+          }
+        };
+
+        if (expandBtn) {
+          expandBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleExpand();
+          });
+        }
+
+        if (textPreview) {
+          textPreview.addEventListener('click', (e) => {
+            if (window.getSelection && window.getSelection().toString().length > 0) return;
+            toggleExpand();
+          });
+        }
+
+        // Abrir editor inline de prompt
+        if (btnEdit && p) {
+          btnEdit.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openPromptEditor(row, p);
+          });
+        }
       });
     }
 

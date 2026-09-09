@@ -183,6 +183,24 @@ class FlowMacroEngine {
 
     // Fallback de Segurança: Backup no localStorage
     try {
+      if ((!this.prompts || this.prompts.length === 0) && typeof localStorage !== 'undefined') {
+        const backupPrompts = localStorage.getItem('flow_macro_prompts_backup');
+        if (backupPrompts) {
+          const parsed = JSON.parse(backupPrompts);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            this.prompts = parsed;
+          }
+        }
+      }
+      if ((!this.carousels || this.carousels.length === 0) && typeof localStorage !== 'undefined') {
+        const backupCarousels = localStorage.getItem('flow_macro_carousels_backup');
+        if (backupCarousels) {
+          const parsed = JSON.parse(backupCarousels);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            this.carousels = parsed;
+          }
+        }
+      }
       if ((!this.characters || this.characters.length === 0) && typeof localStorage !== 'undefined') {
         const backupChars = localStorage.getItem('flow_macro_characters_backup');
         if (backupChars) {
@@ -244,6 +262,8 @@ class FlowMacroEngine {
     // Dual Storage Fallback: Mirror essential items to localStorage
     try {
       if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('flow_macro_prompts_backup', JSON.stringify(this.prompts || []));
+        localStorage.setItem('flow_macro_carousels_backup', JSON.stringify(this.carousels || []));
         localStorage.setItem('flow_macro_characters_backup', JSON.stringify(this.characters || []));
         localStorage.setItem('flow_macro_ai_keys_pool_backup', JSON.stringify(this.aiKeysPool || []));
         localStorage.setItem('flow_macro_learned_selectors_backup', JSON.stringify(this.learnedSelectors || {}));
@@ -1064,6 +1084,7 @@ class FlowMacroEngine {
       });
     }
     this.saveState();
+    this.notify();
   }
 
   removePrompt(id) {
@@ -1078,14 +1099,21 @@ class FlowMacroEngine {
       });
     }
     this.saveState();
+    this.notify();
   }
 
   clearPrompts() {
     this.prompts = [];
+    this.carousels = [];
     this.currentIndex = -1;
     this.state = 'idle';
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('flow_macro_prompts_backup', JSON.stringify([]));
+      localStorage.setItem('flow_macro_carousels_backup', JSON.stringify([]));
+    }
     this.addLog('Fila de prompts limpa.', 'info');
     this.saveState();
+    this.notify();
   }
 
   resetPromptStatuses() {
