@@ -1972,91 +1972,107 @@ class FlowMacroEngine {
       if (el.closest && el.closest('[id*="fd-"], [class*="fd-"]')) return true;
       if (el.closest && el.closest('[role="dialog"], [role="presentation"], .cdk-overlay-pane, [class*="modal" i]')) return true;
       if (el.closest && el.closest('[class*="canvas" i], [data-testid="virtuoso-item-list"], [data-testid="virtuoso-scroller"]')) return true;
+      if (el.closest && el.closest('header, [class*="header" i], [class*="navbar" i], [class*="profile" i]')) return true;
       return false;
     };
 
-    const targetEditable = (promptInput.getAttribute && promptInput.getAttribute('contenteditable') === 'true')
-      ? promptInput
-      : (promptInput.querySelector('[contenteditable="true"]') || promptInput);
+    const promptContainer = this.getPromptContainer();
+    const chipsFound = [];
 
-    // 1. Verifica chips reais no Fiber do Slate editor
-    try {
-      const editor = this.getSlateEditor(targetEditable);
-      if (editor && editor.children && Array.isArray(editor.children)) {
-        // NUNCA aceita parágrafos ou blocos de texto como chips!
-        const slateChips = editor.children.filter(n => {
-          if (!n) return false;
-          if (n.type === 'paragraph' || n.type === 'line' || n.type === 'text') return false;
-          if (n.children && n.children.length === 1 && typeof n.children[0]?.text === 'string' && !n.url && !n.src && !n.assetId && !n.type) {
+    // 1. Busca imagens de chips/miniaturas diretamente no promptContainer e containers adjacentes
+    const containersToSearch = [];
+    if (promptContainer && !isExcluded(promptContainer)) {
+      containersToSearch.push(promptContainer);
+    }
+
+    if (promptInput && promptInput.parentElement) {
+      let p = promptInput.parentElement;
+      for (let i = 0; i < 5 && p && p !== document.body; i++) {
+        if (!containersToSearch.includes(p) && !isExcluded(p)) {
+          containersToSearch.push(p);
+        }
+        p = p.parentElement;
+      }
+    }
+
+    for (const container of containersToSearch) {
+      const imgs = Array.from(container.querySelectorAll('img')).filter(img => {
+        if (!FlowMacroEngine.isElementVisible(img) || isExcluded(img)) return false;
+
+        // Dimensões características dos chips de prompt no FLOW (14px a 140px)
+        const rect = img.getBoundingClientRect();
+        if (rect.width < 14 || rect.width > 140 || rect.height < 14 || rect.height > 140) return false;
+
+        // Ignora imagens de avatar de perfil do Google
+        const src = (img.src || img.getAttribute('src') || '').toLowerCase();
+        if (src.includes('googleusercontent.com/a/') || src.includes('accounts.google.com')) return false;
+
+        // Ignora botões de configuração (modelos Banana/Imagen, agente, x4, etc.)
+        const parentBtn = img.closest('button, [role="button"], div[class*="pill" i]');
+        if (parentBtn) {
+          const btnText = (parentBtn.textContent || '').toLowerCase();
+          if (btnText.includes('banana') || btnText.includes('imagen') || btnText.includes('pro') ||
+              btnText.includes('fast') || btnText.includes('ultra') || btnText.includes('agente') ||
+              btnText.includes('agent')) {
             return false;
           }
-          return n.type === 'image' || n.type === 'attachment' || n.type === 'asset' || n.type === 'media' || n.type === 'chip' || Boolean(n.url || n.src || n.assetId);
-        });
-        if (slateChips.length > 0) {
-          return slateChips;
+        }
+
+        // Ignora chips residuais do Canvas com rótulo "Baixar"
+        const parentCard = img.closest('div, span');
+        if (parentCard) {
+          const cardText = (parentCard.textContent || '').toLowerCase();
+          if (cardText.includes('baixar') || cardText.includes('download')) return false;
+        }
+
+        return true;
+      });
+
+      for (const img of imgs) {
+        const chipWrapper = img.closest('[role="button"], div[tabindex="0"]') || img.parentElement || img;
+        if (!chipsFound.some(c => c === chipWrapper || c === img || c.contains(img) || img.contains(c))) {
+          chipsFound.push(chipWrapper);
         }
       }
-    } catch (e) {}
+    }
 
-    const promptContainer = this.getPromptContainer();
-    if (!promptContainer || isExcluded(promptContainer)) return [];
+    // 2. Fallback: Varredura na metade inferior da viewport para dock adjacente
+    if (chipsFound.length === 0) {
+      const allDockImgs = Array.from(document.querySelectorAll('img')).filter(img => {
+        if (!FlowMacroEngine.isElementVisible(img) || isExcluded(img)) return false;
 
-    // 2. Busca elementos no DOM do editor com data-slate-node que contenham imagem
-    const slateElements = Array.from(promptContainer.querySelectorAll('[data-slate-node="element"]:has(img)')).filter(el => {
-      return FlowMacroEngine.isElementVisible(el) && !isExcluded(el);
-    });
-    if (slateElements.length > 0) return slateElements;
+        const rect = img.getBoundingClientRect();
+        if (rect.top < window.innerHeight * 0.40) return false;
+        if (rect.width < 14 || rect.width > 140 || rect.height < 14 || rect.height > 140) return false;
 
-    // 3. Busca chips/miniaturas reais no container do prompt e no dock de anexos
-    // No FLOW, as imagens anexadas aparecem em um dock acima do input ou ao lado dele
-    const chipCandidates = Array.from(document.querySelectorAll('div, span')).filter(el => {
-      if (!FlowMacroEngine.isElementVisible(el) || isExcluded(el)) return false;
-      if (el === promptContainer || el === promptInput || el.contains(promptInput)) return false;
+        const src = (img.src || '').toLowerCase();
+        if (src.includes('googleusercontent.com/a/')) return false;
 
-      // Restringe à região inferior da tela onde fica a barra de prompt (últimos 350px)
-      const rect = el.getBoundingClientRect();
-      if (rect.bottom < window.innerHeight - 350) return false;
+        const parentBtn = img.closest('button, [role="button"]');
+        if (parentBtn) {
+          const btnText = (parentBtn.textContent || '').toLowerCase();
+          if (btnText.includes('banana') || btnText.includes('imagen') || btnText.includes('pro') ||
+              btnText.includes('agente') || btnText.includes('agent')) {
+            return false;
+          }
+        }
 
-      const img = el.querySelector('img');
-      if (!img || !FlowMacroEngine.isElementVisible(img)) return false;
+        return true;
+      });
 
-      const imgRect = img.getBoundingClientRect();
-      if (imgRect.width < 14 || imgRect.width > 150 || imgRect.height < 14 || imgRect.height > 150) return false;
-
-      const fullText = (el.textContent || '').toLowerCase();
-      // Ignora botões de modelo ou proporção
-      if (fullText.includes('banana') || fullText.includes('imagen') || fullText.includes('pro') || fullText.includes('fast') || fullText.includes('ultra')) {
-        return false;
-      }
-      // Ignora o botão/pill de "Agente"
-      if (fullText.includes('agente') || fullText.includes('agent')) {
-        return false;
-      }
-      // Ignora chips residuais do Canvas com rótulo "Baixar"
-      if (fullText.includes('baixar') || fullText.includes('download')) {
-        return false;
-      }
-
-      const parentBtn = el.closest('button, [role="button"]');
-      if (parentBtn) {
-        const btnText = (parentBtn.textContent || '').toLowerCase();
-        if (btnText.includes('banana') || btnText.includes('imagen') || btnText.includes('pro') || btnText.includes('fast') || btnText.includes('ultra') || btnText.includes('agente') || btnText.includes('agent')) {
-          return false;
+      for (const img of allDockImgs) {
+        const chipWrapper = img.closest('[role="button"], div[tabindex="0"]') || img.parentElement || img;
+        if (!chipsFound.some(c => c === chipWrapper || c === img || c.contains(img) || img.contains(c))) {
+          chipsFound.push(chipWrapper);
         }
       }
+    }
 
-      const hasRemoveBtn = el.querySelector('button, [role="button"], svg, [class*="remove" i], [class*="close" i], [aria-label*="remover" i], [aria-label*="remove" i]');
-      const isChipClass = (el.className || '').toString().match(/chip|pill|asset|ingredient|thumb|dock/i);
-      return hasRemoveBtn || isChipClass;
-    });
-
-    const uniqueChips = chipCandidates.filter((c, i) => !chipCandidates.some((other, oi) => oi !== i && other.contains(c)));
-    return uniqueChips;
+    return chipsFound;
   }
 
   /**
    * Verifica com precisão se os chips/miniaturas dos personagens já estão anexados à barra de comando
-   * (Escopo estrito à barra de prompt, nunca confundindo com imagens do Canvas)
    * @returns {boolean}
    */
   hasCharacterChipsAttached() {
@@ -2987,17 +3003,55 @@ class FlowMacroEngine {
   }
 
   /**
-   * Localiza o botão "Incluir no comando" no FLOW
+   * Localiza o botão "Incluir no comando" / "Adicionar ao comando" no FLOW
    * @returns {HTMLElement|null}
    */
   findIncludeInCommandButton() {
-    // 1. Seletores CSS exatos do botão "Incluir no comando" (gravados no DevTools)
+    // 1. Busca primeiro dentro dos containers de modal ativos (prioridade máxima)
+    const modalContainers = [this.getLibraryContainer()].filter(Boolean);
+    if (modalContainers.length === 0) {
+      modalContainers.push(...Array.from(document.querySelectorAll('.cdk-overlay-pane, div[role="dialog"], div[role="presentation"]')).filter(el => {
+        return FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]');
+      }));
+    }
+
+    const isMatch = (el) => {
+      if (!FlowMacroEngine.isElementVisible(el)) return false;
+      if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+
+      // Restringe dimensões para evitar pegar containers grandes
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 380 || rect.height > 80 || rect.width < 25 || rect.height < 15) return false;
+
+      const t = (el.textContent || el.innerText || '').toLowerCase().trim();
+      const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+
+      return (
+        t === 'adicionar ao comando' || t === 'incluir no comando' ||
+        t === 'adicionar ao prompt' || t === 'incluir no prompt' ||
+        aria === 'adicionar ao comando' || aria === 'incluir no comando' ||
+        aria === 'adicionar ao prompt' || aria === 'incluir no prompt' ||
+        t === 'adicionar' || t === 'incluir' ||
+        (t.length < 35 && (t.includes('adicionar ao') || t.includes('incluir no')) && (t.includes('comando') || t.includes('prompt')))
+      );
+    };
+
+    // 1.1 Procura no modal
+    for (const modal of modalContainers) {
+      const candidates = Array.from(modal.querySelectorAll('button, [role="button"], div[tabindex="0"], div, a, span')).filter(isMatch);
+      if (candidates.length > 0) {
+        const btn = candidates.find(c => c.tagName === 'BUTTON' || c.getAttribute('role') === 'button');
+        return btn || candidates[candidates.length - 1];
+      }
+    }
+
+    // 1.2 Seletores diretos gravados no DevTools
     const exactSelectors = [
-      'div.sc-4da33547-5 button',
-      'button[aria-label*="incluir no comando" i]',
-      'button[aria-label*="incluir no prompt" i]',
       'button[aria-label*="adicionar ao comando" i]',
-      'button[aria-label*="add to prompt" i]'
+      'button[aria-label*="incluir no comando" i]',
+      'button[aria-label*="adicionar ao prompt" i]',
+      'button[aria-label*="incluir no prompt" i]',
+      'div.sc-4da33547-5 button'
     ];
 
     for (const sel of exactSelectors) {
@@ -3007,51 +3061,11 @@ class FlowMacroEngine {
       }
     }
 
-    // 2. Busca textual em todos os botões visíveis na página
-    const allButtons = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
-      if (!FlowMacroEngine.isElementVisible(b)) return false;
-      if (b.closest('[id*="fd-"], [class*="fd-"]')) return false;
-      return true;
-    });
-
-    const textMatchBtn = allButtons.find(b => {
-      // Usa textContent limpo do botão
-      const t = (b.textContent || b.innerText || '').toLowerCase().trim();
-      const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-
-      // O botão de inclusão tem texto exato ou muito curto contendo "incluir" ou "adicionar"
-      return (
-        t === 'incluir no comando' || aria.includes('incluir no comando') ||
-        t === 'incluir no prompt' || aria.includes('incluir no prompt') ||
-        t === 'incluir' ||
-        t === 'adicionar ao comando' || aria.includes('adicionar ao comando') ||
-        t === 'adicionar ao prompt' || aria.includes('adicionar ao prompt') ||
-        t === 'usar imagem' ||
-        t === 'use image' ||
-        (t.length < 40 && t.includes('incluir') && (t.includes('comando') || t.includes('prompt'))) ||
-        (t.length < 40 && t.includes('adicionar') && (t.includes('comando') || t.includes('prompt')))
-      );
-    });
-
-    if (textMatchBtn) return textMatchBtn;
-
-    // 3. Busca especificamente dentro do modal centralizado de recursos (dialog/presentation/cdk-overlay)
-    const modalContainers = [this.getLibraryContainer()].filter(Boolean);
-    if (modalContainers.length === 0) {
-      modalContainers.push(...Array.from(document.querySelectorAll('.cdk-overlay-pane, div[role="dialog"], div[role="presentation"]')).filter(el => FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"], [class*="fd-"]')));
-    }
-    for (const modal of modalContainers) {
-      if (!FlowMacroEngine.isElementVisible(modal) || modal.closest('[id*="fd-"], [class*="fd-"]')) continue;
-      const modalBtns = Array.from(modal.querySelectorAll('button, [role="button"], div[tabindex="0"]')).filter(b => {
-        if (!FlowMacroEngine.isElementVisible(b) || b.closest('[id*="fd-"], [class*="fd-"]')) return false;
-        const t = (b.textContent || b.innerText || '').toLowerCase().trim();
-        return (
-          t.includes('adicionar ao comando') || t.includes('incluir no comando') ||
-          t.includes('adicionar ao prompt') || t.includes('incluir no prompt') ||
-          t === 'adicionar' || t === 'incluir'
-        );
-      });
-      if (modalBtns.length > 0) return modalBtns[0];
+    // 1.3 Busca em todos os elementos clicáveis da página
+    const allCandidates = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"], div, a, span')).filter(isMatch);
+    if (allCandidates.length > 0) {
+      const btn = allCandidates.find(c => c.tagName === 'BUTTON' || c.getAttribute('role') === 'button');
+      return btn || allCandidates[allCandidates.length - 1];
     }
 
     return null;
@@ -3191,6 +3205,23 @@ class FlowMacroEngine {
       const submitBtn = this.findSubmitButton();
       const plusBtn = this.findPlusButton();
 
+      // 1. Hover sobre os chips para garantir que botões de fechar/remover fiquem visíveis no DOM
+      const chips = this.getPromptAttachedChips();
+      for (const chip of chips) {
+        try {
+          chip.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+          chip.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+        } catch (e) {}
+      }
+
+      // 2. Busca botões de fechar dentro de cada chip ou dentro do promptContainer
+      for (const chip of chips) {
+        const closeBtn = chip.querySelector('button, [role="button"], svg, [class*="remove" i], [class*="close" i], [aria-label*="remover" i], [aria-label*="remove" i]') || chip;
+        if (closeBtn && FlowMacroEngine.isSafeToClick(closeBtn)) {
+          this.clickElementWithOverlay(closeBtn);
+        }
+      }
+
       const removeBtns = Array.from(promptContainer.querySelectorAll('button, [role="button"], svg, div[tabindex="0"]')).filter(b => {
         if (!FlowMacroEngine.isElementVisible(b) || b.closest('[id*="fd-"], [class*="fd-"]')) return false;
         if (b === submitBtn || b === plusBtn || (submitBtn && submitBtn.contains(b)) || (plusBtn && plusBtn.contains(b))) return false;
@@ -3269,8 +3300,13 @@ class FlowMacroEngine {
       return true; // Nenhum personagem configurado, avança imediatamente
     }
 
-    // Se todos os personagens já estiverem anexados à barra de comando, não precisa reenviar
-    if (this.hasCharacterChipsAttached()) {
+    // 0.2 Verifica chips existentes na barra de prompt
+    const existingChips = this.getPromptAttachedChips();
+    if (existingChips.length > activeChars.length) {
+      this.addLog(`🧹 Detectados ${existingChips.length} chips no prompt (esperado: ${activeChars.length}). Removendo chips duplicados...`, 'info');
+      await this.clearAllPromptChips();
+      await new Promise(r => setTimeout(r, 600));
+    } else if (existingChips.length === activeChars.length) {
       this.addLog(`ℹ️ Todos os ${activeChars.length} personagens já anexados na barra de prompt.`, 'info');
       await this.closeResourceModal();
       return true;
@@ -3544,7 +3580,7 @@ class FlowMacroEngine {
 
         // Passo 4.3: Localiza e clica no botão "Adicionar ao comando" / "Incluir no comando"
         let includeBtn = null;
-        for (let bWait = 0; bWait < 37; bWait++) {
+        for (let bWait = 0; bWait < 55; bWait++) {
           const btn = this.findIncludeInCommandButton();
           if (btn) {
             const isDisabled = btn.disabled || btn.getAttribute('aria-disabled') === 'true';
@@ -3552,12 +3588,12 @@ class FlowMacroEngine {
               includeBtn = btn;
               break;
             } else if (bWait % 5 === 0) {
-              this.addLog(`⏳ [Passo 4] Botão "Adicionar ao comando" encontrado mas desabilitado. Aguardando...`, 'info');
+              this.addLog(`⏳ [Passo 4] Botão "Adicionar ao comando" localizado. Aguardando habilitação no FLOW...`, 'info');
             }
           }
 
           // Re-seleção segura: nunca usa img, usa o container do card
-          if ((bWait === 7 || bWait === 15 || bWait === 25) && targetCard) {
+          if ((bWait === 10 || bWait === 25 || bWait === 40) && targetCard) {
             this.addLog(`🔄 [Passo 4] Re-selecionando card de [${char.name}]...`, 'info');
             const roleBtn = targetCard.querySelector('[role="button"]:not(img), div[tabindex="0"]:not(img), [data-type="button-overlay"]');
             const reClick = roleBtn || targetCard;
@@ -3580,13 +3616,13 @@ class FlowMacroEngine {
           this.addLog(`⚠️ [Passo 4] Botão "Adicionar ao comando" não encontrado para [${char.name}].`, 'warning');
         }
 
-        // Passo 4.4: Validação do chip
+        // Passo 4.4: Validação do chip anexado na barra de prompt
         this.addLog(`⏳ [Passo 4] Validando anexo do personagem [${char.name}] na barra de comando...`, 'info');
         let chipAttached = false;
 
         for (let chk = 0; chk < 25; chk++) {
-          const promptChips = this.getPromptAttachedChips();
-          if (promptChips.length >= (cIdx + 1)) {
+          const isValid = await this.validateCharacterChipAttached(char, cIdx);
+          if (isValid) {
             chipAttached = true;
             break;
           }
@@ -3594,7 +3630,7 @@ class FlowMacroEngine {
         }
 
         if (!chipAttached && includeBtn) {
-          // Re-verifica com delay adicional antes de dar como válido — não assume apenas pelo clique
+          // Re-verifica com delay adicional e verificação direta de contagem
           await new Promise(r => setTimeout(r, 800));
           const recheckChips = this.getPromptAttachedChips();
           if (recheckChips.length >= (cIdx + 1)) {
