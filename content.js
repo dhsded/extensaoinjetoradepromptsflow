@@ -3763,9 +3763,10 @@
       }
 
       // Filtra prompts se um carrossel individual estiver selecionado
+      const targetCarouselIdx = parseInt(engine.selectedCarouselId.replace('carousel_', ''), 10);
       const displayPrompts = engine.selectedCarouselId === 'all'
         ? engine.prompts
-        : engine.prompts.filter(p => p.carouselIndex === parseInt(engine.selectedCarouselId.replace('carousel_', ''), 10) || p.enabled !== false);
+        : engine.prompts.filter(p => p.carouselIndex === targetCarouselIdx);
 
       // Se o usuário está editando ativamente um prompt, apenas atualiza badges/status para não perder digitação ou foco
       if (editingPromptId) {
@@ -3807,10 +3808,12 @@
         // Renderiza divisores agrupadores quando houver múltiplos carrosséis
         if (p.carouselTitle && p.carouselTitle !== currentCarouselHeader && engine.carousels && engine.carousels.length > 1) {
           currentCarouselHeader = p.carouselTitle;
+          const targetCarousel = engine.carousels.find(c => c.title === currentCarouselHeader || c.index === p.carouselIndex);
+          const slidesCountStr = targetCarousel && targetCarousel.slides ? `${targetCarousel.slides.length} Slides` : '';
           html += `
             <div class="fd-carousel-group-header">
               <span>📚 ${escapeHtml(currentCarouselHeader)}</span>
-              <span style="font-size: 11px; opacity: 0.85; font-weight: 600;">5 Slides</span>
+              ${slidesCountStr ? `<span style="font-size: 11px; opacity: 0.85; font-weight: 600;">${slidesCountStr}</span>` : ''}
             </div>
           `;
         }

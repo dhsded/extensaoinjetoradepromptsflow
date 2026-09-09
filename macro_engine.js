@@ -5547,6 +5547,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       });
     });
     this.saveState();
+    this.notify();
   }
 
   selectCarouselFilter(filterId) {

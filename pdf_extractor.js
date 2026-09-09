@@ -288,17 +288,36 @@
    */
   static parseCarouselsFromScript(rawText, pages = []) {
     if (!rawText || !rawText.trim()) return [];
-    const text = rawText.replace(/\r\n/g, '\n').trim();
+    let text = rawText.replace(/\r\n/g, '\n').trim();
 
-    // 1. Detecta cabeçalhos de múltiplos carrosséis
-    const carouselHeaderRegex = /(?:^|\n)(?=(?:CARROSSEL|CAROUSEL|LOTE|POST)\s*#?\s*\d+)/i;
+    // 1. Remove footers de páginas do PDF (ex: "Página 1 de 30 • PostForge AI Carousel Generator")
+    text = text.replace(/(?:Página|Pagina|Page)\s*\d+\s*(?:de|\/|of)\s*\d+[^\n]*/gi, '');
+    text = text.replace(/PostForge\s+AI\s+Carousel\s+Generator[^\n]*/gi, '');
+
+    // 2. Remove cabeçalhos de lote repetidos no topo das páginas (ex: "POSTFORGE LOTE DE 15 CARROSSÉIS")
+    text = text.replace(/POSTFORGE\s+LOTE\s+DE\s+\d+\s+CARROSS[EÉ]IS[^\n]*/gi, '');
+
+    // 3. Localiza o primeiro carrossel e remove qualquer preâmbulo anterior
+    const firstCarouselIdx = text.search(/(?:^|\n)(?:CARROSSEL|CAROUSEL)\s*#?\s*\d+/i);
+    if (firstCarouselIdx !== -1) {
+      text = text.substring(firstCarouselIdx).trim();
+    }
+
+    // 4. Divide o texto em blocos de carrosséis individuais
+    const carouselHeaderRegex = /(?:^|\n)(?=(?:CARROSSEL|CAROUSEL)\s*#?\s*\d+)/i;
     const hasMultipleCarousels = carouselHeaderRegex.test(text);
 
     let rawCarousels = [];
     if (hasMultipleCarousels) {
       rawCarousels = text.split(carouselHeaderRegex).map(c => c.trim()).filter(c => c.length > 20);
     } else {
-      rawCarousels = [text];
+      // Fallback para outros padrões de lote caso não use a palavra "CARROSSEL"
+      const altHeaderRegex = /(?:^|\n)(?=(?:LOTE|POST)\s*#?\s*\d+(?!\s+DE\s+\d+))/i;
+      if (altHeaderRegex.test(text)) {
+        rawCarousels = text.split(altHeaderRegex).map(c => c.trim()).filter(c => c.length > 20);
+      } else {
+        rawCarousels = [text];
+      }
     }
 
     const carousels = [];
@@ -308,37 +327,39 @@
       let styleInfo = '';
       let caption = '';
 
-      // Extrai título do carrossel
+      // Extrai título do carrossel (ex: "CARROSSEL 1: VULNERABILIDADE E CURA")
       const cTitleMatch = cText.match(/^(?:CARROSSEL|CAROUSEL|LOTE|POST)\s*#?\s*\d+[^\n]*/i);
       if (cTitleMatch) {
         title = cTitleMatch[0].trim();
       }
 
-      // Extrai informações de Estilo / Nicho
-      const styleMatch = cText.match(/(?:Estilo|Style|Nicho|Niche)\s*:\s*[^\n]+/i);
+      // Extrai informações de Estilo / Nicho / Idioma
+      const styleMatch = cText.match(/(?:Nicho|Niche|Estilo|Style|Idioma)\s*:\s*[^\n]+/i);
       if (styleMatch) {
-        styleInfo = styleMatch[0].trim();
+        const fullMetaLine = cText.match(/^(?:Nicho[^\n]+|Estilo[^\n]+)/im);
+        styleInfo = fullMetaLine ? fullMetaLine[0].trim() : styleMatch[0].trim();
       }
 
-      // Extrai Legenda do Instagram
-      const captionMatch = cText.match(/(?:LEGENDA\s+DO\s+INSTAGRAM|LEGENDA|CAPTION)\s*[\:\n]([\s\S]*?)(?=(?:#|$))/i);
+      // Extrai Legenda do Instagram completa (incluindo hashtags até o fim do carrossel)
+      const captionMatch = cText.match(/(?:LEGENDA\s+DO\s+INSTAGRAM|LEGENDA\s+INSTAGRAM|LEGENDA|CAPTION)\s*[\:\n]([\s\S]*?)(?=(?:\n\s*(?:CARROSSEL|CAROUSEL)\s*#?\s*\d+|$))/i);
       if (captionMatch) {
         caption = captionMatch[1].trim();
       }
 
-      // Isola o conteúdo dos slides removendo os cabeçalhos
+      // Isola o corpo dos slides removendo cabeçalhos e legenda do carrossel
       let slidesBody = cText;
       if (cTitleMatch) slidesBody = slidesBody.replace(cTitleMatch[0], '');
-      if (styleMatch) slidesBody = slidesBody.replace(styleMatch[0], '');
+      if (styleInfo) slidesBody = slidesBody.replace(styleInfo, '');
       if (captionMatch) slidesBody = slidesBody.replace(captionMatch[0], '');
 
-      // Divide os slides dentro deste carrossel
-      const slideSplitRegex = /(?:^|\n)(?=(?:SLIDE|CENA|SCENE|QUADRO|PAINEL|PÁGINA|PAGE)\s*#?\s*\d+)/i;
+      // Divide os slides dentro deste carrossel (apenas SLIDE, CENA, SCENE, QUADRO, PAINEL)
+      // NOTA: PÁGINA e PAGE NÃO são slides e foram removidos do regex!
+      const slideSplitRegex = /(?:^|\n)(?=(?:SLIDE|CENA|SCENE|QUADRO|PAINEL)\s*#?\s*\d+)/i;
       let slideBlocks = [];
       if (slideSplitRegex.test(slidesBody)) {
         slideBlocks = slidesBody.split(slideSplitRegex).map(s => s.trim()).filter(s => s.length > 15);
       } else {
-        const balloonSplitRegex = /(?:^|\n)(?=(?:Texto\s+(?:nos?\s+)?Bal(?:ão|ões)|Bal(?:ão|ões)|Diálogo|Dialogue)\s*[\:\n])/i;
+        const balloonSplitRegex = /(?:^|\n)(?=(?:Texto\s+(?:nos?\s+)?Bal(?:ão|ões)|Bal(?:ão|ões)|Diálogo|Dialogue|FALA\s+NO\s+BALÃO)\s*[\:\n])/i;
         if (balloonSplitRegex.test(slidesBody)) {
           slideBlocks = slidesBody.split(balloonSplitRegex).map(s => s.trim()).filter(s => s.length > 15);
         } else {
@@ -349,13 +370,15 @@
       // Constrói os objetos de cada slide
       const slides = slideBlocks.map((block, sIdx) => {
         let slideTitle = `Slide ${sIdx + 1}`;
-        const titleMatch = block.match(/^(?:(?:SLIDE|CENA|SCENE|QUADRO|PAINEL|PÁGINA|PAGE)\s*#?\s*\d+[^\n]*)/i);
-        if (titleMatch) slideTitle = titleMatch[0].trim();
+        const titleMatch = block.match(/^(?:(?:SLIDE|CENA|SCENE|QUADRO|PAINEL)\s*#?\s*\d+[^\n]*)/i);
+        if (titleMatch) {
+          slideTitle = titleMatch[0].replace(/\s*Slide\s+Completo\b/i, '').trim();
+        }
 
         // Extrai texto dos balões em Português
         let ptDialogue = '';
         let balloonText = '';
-        const balloonMatch = block.match(/(?:Texto\s+(?:nos?\s+)?Bal(?:ão|ões)|Bal(?:ão|ões)|Diálogo|Dialogue)\s*[\:\n]([\s\S]*?)(?=(?:Prompt\s+de\s+Imagem|Image\s+Prompt|Visual\s+Prompt|$))/i);
+        const balloonMatch = block.match(/(?:FALA\s+NO\s+BALÃO\s+DE\s+DIÁLOGO|Texto\s+(?:nos?\s+)?Bal(?:ão|ões)|Bal(?:ão|ões)|Diálogo|Dialogue)\s*[\:\n]([\s\S]*?)(?=(?:PROMPT\s+DE\s+IMAGEM|Prompt\s+de\s+Imagem|Image\s+Prompt|Visual\s+Prompt|$))/i);
         if (balloonMatch) {
           balloonText = balloonMatch[1].trim();
           const ptMatch = balloonText.match(/PT\s*:\s*["“]?([^"”\n\r]+)["”]?/i) || balloonText.match(/["“]([^"”]+)["”]/);
@@ -367,13 +390,17 @@
           ptDialogue = ptDialogue.replace(/^["“'”]+|["“'”]+$/g, '').trim();
         }
 
-        // Extrai prompt de imagem
+        // Extrai prompt de imagem (descrição visual)
         let imagePrompt = '';
-        const promptMatch = block.match(/(?:Prompt\s+de\s+Imagem[^\n\:]*|Image\s+Prompt|Visual\s+Prompt)\s*[\:\n]\s*([\s\S]*?)(?=(?:LEGENDA|$))/i);
+        const promptMatch = block.match(/(?:PROMPT\s+DE\s+IMAGEM[^\n\:]*|Prompt\s+de\s+Imagem[^\n\:]*|Image\s+Prompt|Visual\s+Prompt)\s*[\:\n]\s*([\s\S]*?)(?=(?:LEGENDA|$))/i);
         if (promptMatch) {
           imagePrompt = promptMatch[1].trim();
         } else {
-          imagePrompt = block.replace(titleMatch ? titleMatch[0] : '').replace(balloonMatch ? balloonMatch[0] : '').trim();
+          imagePrompt = block
+            .replace(titleMatch ? titleMatch[0] : '', '')
+            .replace(balloonMatch ? balloonMatch[0] : '', '')
+            .replace(/CONTEÚDO\s+DO\s+SLIDE[^\n]*\n?/gi, '')
+            .trim();
         }
 
         // Limpa espaços no prompt de imagem
@@ -405,7 +432,7 @@
           status: 'pending',
           errorMsg: ''
         };
-      });
+      }).filter(s => (s.imagePrompt && s.imagePrompt.length > 10) || (s.ptDialogue && s.ptDialogue.length > 3));
 
       carousels.push({
         id: `carousel_${cIdx + 1}`,
@@ -461,13 +488,13 @@
     let rawCleaned = blockText.trim();
 
     // 1. Extrai título do slide ou cena (ex: "Slide 1", "Cena 2")
-    const titleMatch = rawCleaned.match(/^(?:(?:Slide|Cena|Scene|Quadro|Painel|Página|Page|Prompt|Item)\s*#?\s*\d+[^\n]*)/i);
+    const titleMatch = rawCleaned.match(/^(?:(?:Slide|Cena|Scene|Quadro|Painel|Prompt|Item)\s*#?\s*\d+[^\n]*)/i);
     if (titleMatch) {
-      title = titleMatch[0].trim();
+      title = titleMatch[0].replace(/\s*Slide\s+Completo\b/i, '').trim();
     }
 
     // 2. Extrai texto dos balões
-    const balloonHeaderRegex = /(?:Texto\s+(?:nos?\s+)?Bal(?:ão|ões)|Bal(?:ão|ões)|Diálogo|Dialogue)\s*[\:\n]([\s\S]*?)(?=(?:Prompt\s+de\s+Imagem[^\n\:]*|Image\s+Prompt|Visual\s+Prompt|Prompt\s*[\:\n]|$))/i;
+    const balloonHeaderRegex = /(?:FALA\s+NO\s+BALÃO\s+DE\s+DIÁLOGO|Texto\s+(?:nos?\s+)?Bal(?:ão|ões)|Bal(?:ão|ões)|Diálogo|Dialogue)\s*[\:\n]([\s\S]*?)(?=(?:PROMPT\s+DE\s+IMAGEM|Prompt\s+de\s+Imagem[^\n\:]*|Image\s+Prompt|Visual\s+Prompt|Prompt\s*[\:\n]|$))/i;
     const balloonMatch = rawCleaned.match(balloonHeaderRegex);
     if (balloonMatch) {
       balloonText = balloonMatch[1].trim();
