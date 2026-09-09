@@ -104,7 +104,7 @@ class FlowMacroEngine {
       downloadFolder: 'FLOW_Downloads', // Pasta base de downloads
       // Notificações ao Vivo no Telegram
       telegramEnabled: false,          // Ativa envio de relatórios e progresso no Telegram
-      telegramBotToken: '',            // Token do Bot (@BotFather)
+      telegramBotToken: '8680557957:AAGsOQ9pC49uWXktu4ZCJfnI1IRsNC9sbyk', // Token do Bot (@BotFather)
       telegramChatId: '',              // Chat ID do usuário ou grupo
       // Integração com Inteligência Artificial para Auto-Diagnóstico em Tempo Real
       aiProvider: 'gemini',            // Provedor de I.A: 'gemini' | 'groq' | 'openrouter'
@@ -1046,6 +1046,42 @@ class FlowMacroEngine {
       this.addLog(`⚠️ Erro de conexão com Telegram: ${e.message}`, 'warning');
       return false;
     }
+  }
+
+  /**
+   * Tenta detectar automaticamente o Chat ID lendo as atualizações do bot
+   * @param {string} [customToken] - Token opcional para teste
+   * @returns {Promise<{ chatId: string, firstName: string, username: string }>}
+   */
+  async detectTelegramChatId(customToken) {
+    const token = (customToken || this.config.telegramBotToken || '').trim();
+    if (!token) throw new Error('Insira o Bot Token primeiro.');
+
+    const res = await fetch(`https://api.telegram.org/bot${token}/getUpdates`);
+    const data = await res.json();
+
+    if (!data.ok) {
+      throw new Error(data.description || 'Erro ao conectar à API do Telegram');
+    }
+
+    if (!data.result || data.result.length === 0) {
+      throw new Error('Nenhuma mensagem encontrada! Abra o bot no seu Telegram (@Gerador_posts_bot), clique em "Começar" (ou envie uma mensagem) e tente novamente.');
+    }
+
+    // Procura a mensagem mais recente que tenha chat.id
+    for (let i = data.result.length - 1; i >= 0; i--) {
+      const u = data.result[i];
+      const msg = u.message || u.channel_post || u.edited_message || (u.callback_query && u.callback_query.message);
+      if (msg && msg.chat && msg.chat.id) {
+        return {
+          chatId: String(msg.chat.id),
+          firstName: msg.chat.first_name || msg.chat.title || '',
+          username: msg.chat.username || ''
+        };
+      }
+    }
+
+    throw new Error('Não foi possível identificar o Chat ID nas mensagens recebidas.');
   }
 
   // =========================================================================

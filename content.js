@@ -1744,15 +1744,21 @@
                   <div style="display: flex; flex-direction: column; gap: 8px;">
                     <div>
                       <label style="display: block; font-size: 10px; color: #94a3b8; margin-bottom: 2px;">🤖 Bot Token (@BotFather):</label>
-                      <input type="password" id="fd-input-telegram-token" value="${escapeHtml(engine.config.telegramBotToken || '')}" placeholder="Ex: 7123456789:AAHq_Abc123..." class="fd-modal-input" style="width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.4); border: 1px solid var(--fd-border); border-radius: 6px; padding: 6px 8px; color: #fff; font-size: 11px;">
+                      <input type="password" id="fd-input-telegram-token" value="${escapeHtml(engine.config.telegramBotToken || '')}" placeholder="Ex: 8680557957:AAGsOQ9pC49uWXktu4ZCJfnI1IRsNC9sbyk..." class="fd-modal-input" style="width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.4); border: 1px solid var(--fd-border); border-radius: 6px; padding: 6px 8px; color: #fff; font-size: 11px;">
                     </div>
                     <div>
-                      <label style="display: block; font-size: 10px; color: #94a3b8; margin-bottom: 2px;">💬 Chat ID (@userinfobot):</label>
+                      <label style="display: block; font-size: 10px; color: #94a3b8; margin-bottom: 2px;">💬 Chat ID do seu Telegram:</label>
                       <div style="display: flex; gap: 6px;">
-                        <input type="text" id="fd-input-telegram-chatid" value="${escapeHtml(engine.config.telegramChatId || '')}" placeholder="Ex: 123456789 ou -100..." class="fd-modal-input" style="flex: 1; box-sizing: border-box; background: rgba(0,0,0,0.4); border: 1px solid var(--fd-border); border-radius: 6px; padding: 6px 8px; color: #fff; font-size: 11px;">
-                        <button type="button" id="fd-btn-test-telegram" style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.4); color: #38bdf8; border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s;">
-                          📲 Testar Notificação
+                        <input type="text" id="fd-input-telegram-chatid" value="${escapeHtml(engine.config.telegramChatId || '')}" placeholder="Ex: 123456789..." class="fd-modal-input" style="flex: 1; box-sizing: border-box; background: rgba(0,0,0,0.4); border: 1px solid var(--fd-border); border-radius: 6px; padding: 6px 8px; color: #fff; font-size: 11px;">
+                        <button type="button" id="fd-btn-detect-telegram" title="Detecta seu Chat ID automaticamente" style="background: rgba(168, 85, 247, 0.15); border: 1px solid rgba(168, 85, 247, 0.4); color: #c084fc; border-radius: 6px; padding: 6px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s;">
+                          🔍 Auto-Detectar
                         </button>
+                        <button type="button" id="fd-btn-test-telegram" title="Envia uma mensagem de teste para o Telegram" style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.4); color: #38bdf8; border-radius: 6px; padding: 6px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s;">
+                          📲 Testar
+                        </button>
+                      </div>
+                      <div style="font-size: 9.5px; color: #94a3b8; margin-top: 4px; line-height: 1.35;">
+                        💡 <b>Como obter o Chat ID em 2 cliques:</b> Abra <a href="https://t.me/Gerador_posts_bot" target="_blank" style="color: #38bdf8; text-decoration: underline; font-weight: 600;">@Gerador_posts_bot</a> no Telegram, clique em <b>Começar</b> (ou envie qualquer mensagem) e depois clique no botão <b>🔍 Auto-Detectar</b> acima!
                       </div>
                     </div>
                   </div>
@@ -2396,6 +2402,43 @@
     if (inputTelegramChatId) {
       inputTelegramChatId.addEventListener('input', (e) => {
         engine.updateConfig({ telegramChatId: e.target.value.trim() });
+      });
+    }
+
+    const btnDetectTelegram = macroModalElement.querySelector('#fd-btn-detect-telegram');
+    if (btnDetectTelegram) {
+      btnDetectTelegram.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const token = inputTelegramToken ? inputTelegramToken.value.trim() : '';
+        if (!token) {
+          showToast('⚠️ Preencha o Bot Token primeiro!', 'warning');
+          return;
+        }
+
+        btnDetectTelegram.disabled = true;
+        btnDetectTelegram.textContent = '⏳ Buscando...';
+
+        try {
+          const info = await engine.detectTelegramChatId(token);
+          if (inputTelegramChatId) {
+            inputTelegramChatId.value = info.chatId;
+          }
+          engine.updateConfig({
+            telegramBotToken: token,
+            telegramChatId: info.chatId,
+            telegramEnabled: true
+          });
+          const toggleTelegram = macroModalElement.querySelector('#fd-toggle-telegram-enabled');
+          if (toggleTelegram) toggleTelegram.checked = true;
+
+          const nomeUsuario = info.firstName || info.username || 'Usuário';
+          showToast(`🎉 Chat ID detectado: ${info.chatId} (${nomeUsuario})!`, 'success');
+        } catch (err) {
+          showToast(`⚠️ ${err.message}`, 'warning');
+        } finally {
+          btnDetectTelegram.disabled = false;
+          btnDetectTelegram.textContent = '🔍 Auto-Detectar';
+        }
       });
     }
 
