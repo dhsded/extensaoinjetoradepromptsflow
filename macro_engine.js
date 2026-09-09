@@ -3364,7 +3364,26 @@ class FlowMacroEngine {
         // Passo 3: Se o card NÃO foi encontrado na biblioteca e temos imagem de avatar:
         // Realiza o upload no primeiro slide do projeto via file input silencioso e drop event
         // =========================================================================
-        if (!targetCard) {
+        const alreadyUploaded = this.uploadedAvatarsInFlow && this.uploadedAvatarsInFlow.has(char.name);
+
+        // Se já foi enviado antes mas não encontrou, espera mais tempo (card pode estar carregando)
+        if (!targetCard && alreadyUploaded) {
+          this.addLog(`🔄 [Passo 3] [${char.name}] já foi enviado antes. Aguardando card aparecer na biblioteca...`, 'info');
+          await this.selectLibraryModalTab('Carregamentos');
+          for (let extraWait = 0; extraWait < 20; extraWait++) {
+            targetCard = await this.findCharacterCardInLibrary(char, cIdx);
+            if (targetCard) break;
+            await new Promise(r => setTimeout(r, 500));
+          }
+          if (!targetCard) {
+            this.addLog(`⚠️ [Passo 3] Card de [${char.name}] não apareceu após espera extra. Verificando aba Personagens...`, 'warning');
+            await this.selectLibraryModalTab('Personagens');
+            await new Promise(r => setTimeout(r, 600));
+            targetCard = await this.findCharacterCardInLibrary(char, cIdx);
+          }
+        }
+
+        if (!targetCard && !alreadyUploaded) {
           if (avatarData) {
             this.addLog(`📤 [Passo 3] Card para [${char.name}] não encontrado na biblioteca. Fazendo upload do avatar (${Math.round(avatarData.length / 1024)} KB) para o FLOW...`, 'info');
 
@@ -3482,12 +3501,17 @@ class FlowMacroEngine {
         if (targetCard) {
           this.addLog(`🎯 [Passo 4] Clicando no card de [${char.name}] (${cIdx + 1}/${activeChars.length})...`, 'info');
 
-          let elToClick = targetCard;
-          const cardClickable = targetCard.querySelector('[role="button"], div[tabindex="0"], [data-type="button-overlay"]') || targetCard.querySelector('img') || targetCard;
-          if (cardClickable) {
-            elToClick = cardClickable;
-          }
-          this.clickElementWithOverlay(elToClick);
+          // NUNCA clicar direto na <img> — isso abre o lightbox/expandido.
+          // Prefere o container com role=button, ou o próprio card, mas nunca a img isolada.
+          const safeCardClick = (card) => {
+            const roleBtn = card.querySelector('[role="button"]:not(img), div[tabindex="0"]:not(img), [data-type="button-overlay"]');
+            const target = roleBtn || card;
+            target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+            target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+            this.clickElementWithOverlay(target);
+          };
+
+          safeCardClick(targetCard);
           await new Promise(r => setTimeout(r, 800));
 
           if (this.isImageExpanded()) {
@@ -3502,7 +3526,7 @@ class FlowMacroEngine {
                 this.addLog('🔄 [Passo 4] Tentando selecionar card pelo label de texto...', 'info');
                 this.clickElementWithOverlay(textLabel);
               } else {
-                this.clickElementWithOverlay(targetCard);
+                safeCardClick(targetCard);
               }
               await new Promise(r => setTimeout(r, 800));
 
@@ -3532,9 +3556,13 @@ class FlowMacroEngine {
             }
           }
 
+          // Re-seleção segura: nunca usa img, usa o container do card
           if ((bWait === 7 || bWait === 15 || bWait === 25) && targetCard) {
             this.addLog(`🔄 [Passo 4] Re-selecionando card de [${char.name}]...`, 'info');
-            const reClick = targetCard.querySelector('img') || targetCard.querySelector('div.sc-b0e5-14') || targetCard;
+            const roleBtn = targetCard.querySelector('[role="button"]:not(img), div[tabindex="0"]:not(img), [data-type="button-overlay"]');
+            const reClick = roleBtn || targetCard;
+            reClick.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+            reClick.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
             this.clickElementWithOverlay(reClick);
           }
 
