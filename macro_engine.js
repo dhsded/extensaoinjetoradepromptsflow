@@ -777,6 +777,88 @@ class FlowMacroEngine {
   }
 
   /**
+   * Mantém a aba ativa em segundo plano sem throttling do Google Chrome
+   * Utiliza AudioContext com ganho inaudível e Web Worker com heartbeat
+   */
+  startBackgroundKeepAlive() {
+    try {
+      if (this._keepAliveActive) return;
+      this._keepAliveActive = true;
+
+      // 1. Silent Web Audio: Sinaliza ao Chrome prioridade de reprodução de mídia,
+      // isentando a aba de congelamento (Memory Saver) e throttling de temporizadores (1ms de precisão)
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) {
+        if (!this._audioCtx || this._audioCtx.state === 'closed') {
+          this._audioCtx = new AudioCtx();
+        }
+        if (this._audioCtx.state === 'suspended') {
+          this._audioCtx.resume().catch(() => {});
+        }
+        const osc = this._audioCtx.createOscillator();
+        const gain = this._audioCtx.createGain();
+        gain.gain.value = 0.00001; // Inaudível para o usuário, mas registra atividade de áudio no Chrome
+        osc.connect(gain);
+        gain.connect(this._audioCtx.destination);
+        osc.start();
+        this._audioOsc = osc;
+        this._audioGain = gain;
+      }
+
+      // 2. Web Worker Heartbeat: O Chrome nunca reduz a prioridade de temporizadores dentro de Web Workers
+      try {
+        const workerScript = `
+          let id = null;
+          self.onmessage = function(e) {
+            if (e.data === 'start') {
+              id = setInterval(() => self.postMessage('ping'), 1000);
+            } else if (e.data === 'stop' && id) {
+              clearInterval(id);
+            }
+          };
+        `;
+        const blob = new Blob([workerScript], { type: 'application/javascript' });
+        this._keepAliveWorker = new Worker(URL.createObjectURL(blob));
+        this._keepAliveWorker.onmessage = () => {
+          if (this.state === 'running' && this.startTime > 0) {
+            this.elapsedSeconds = Math.floor((Date.now() - this.startTime) / 1000);
+          }
+        };
+        this._keepAliveWorker.postMessage('start');
+      } catch (wErr) {}
+
+      console.log('[FLOW Macro] Keep-Alive de segundo plano ATIVADO (AudioContext + Worker).');
+    } catch (e) {
+      console.warn('[FLOW Macro] Aviso ao iniciar Keep-Alive:', e);
+    }
+  }
+
+  /**
+   * Desativa os recursos de Keep-Alive ao pausar ou parar a macro
+   */
+  stopBackgroundKeepAlive() {
+    try {
+      this._keepAliveActive = false;
+      if (this._audioOsc) {
+        try { this._audioOsc.stop(); } catch (e) {}
+        this._audioOsc = null;
+      }
+      if (this._audioCtx && this._audioCtx.state !== 'closed') {
+        try { this._audioCtx.close(); } catch (e) {}
+        this._audioCtx = null;
+      }
+      if (this._keepAliveWorker) {
+        try {
+          this._keepAliveWorker.postMessage('stop');
+          this._keepAliveWorker.terminate();
+        } catch (e) {}
+        this._keepAliveWorker = null;
+      }
+      console.log('[FLOW Macro] Keep-Alive de segundo plano DESATIVADO.');
+    } catch (e) {}
+  }
+
+  /**
    * Micro-delay de segurança entre ações atômicas dentro do FLOW
    * Permite que o DOM e os hooks do React processem as mudanças visuais
    * @param {number|null} customMs - Milissegundos customizados (opcional, padrão: actionDelayMs)
@@ -5328,7 +5410,8 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       this.startTime = Date.now();
     }
     this.startTicker();
-    this.addLog('▶️ Macro iniciada com controle de tempo e delays ativos.', 'success');
+    this.startBackgroundKeepAlive();
+    this.addLog('▶️ Macro iniciada com controle de tempo e Keep-Alive de segundo plano ativos.', 'success');
     this.notify();
 
     // Inicia a partir do primeiro slide pendente se não estiver retomando
@@ -5358,6 +5441,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       this.timer = null;
     }
     this.stopTicker();
+    this.stopBackgroundKeepAlive();
     this.countdown = { remaining: 0, total: 0, label: '' };
     this.currentAction = 'Pausado';
     this.addLog('⏸️ Macro pausada pelo usuário.', 'warning');
@@ -5384,6 +5468,7 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       this.timer = null;
     }
     this.stopTicker();
+    this.stopBackgroundKeepAlive();
     this.startTime = 0;
     this.elapsedSeconds = 0;
     this.countdown = { remaining: 0, total: 0, label: '' };
@@ -6030,10 +6115,16 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       const hasFailedSlides = carousel.slides.some(s => s.status === 'error' || (s.enabled !== false && (s.completedRepeats || 0) === 0));
       if (hasFailedSlides) {
         carousel.status = 'failed';
-        this.addLog(`⚠️ [Carrossel ${cIdx + 1}/${carouselsToRun.length}] Finalizado com erro(s) ou incompleto.`, 'warning');
+        this.addLog(`\n================================================================\n⚠️ [CARROSSEL FINALIZADO COM ALERTAS]\n• Carrossel ${cIdx + 1}/${carouselsToRun.length}: "${carousel.title}"\n• Alguns slides apresentaram pendências.\n================================================================\n`, 'warning');
+        if (typeof window !== 'undefined' && typeof window.flowShowToast === 'function') {
+          window.flowShowToast(`⚠️ Carrossel ${cIdx + 1}/${carouselsToRun.length} ("${carousel.title}") finalizado com alertas`, 'info');
+        }
       } else {
         carousel.status = 'completed';
-        this.addLog(`✅ [Carrossel ${cIdx + 1}/${carouselsToRun.length}] Concluído com sucesso!`, 'success');
+        this.addLog(`\n================================================================\n🎉 [CARROSSEL FINALIZADO COM SUCESSO!]\n• Carrossel ${cIdx + 1}/${carouselsToRun.length}: "${carousel.title}"\n• Total de slides gerados: ${activeSlides.length}\n================================================================\n`, 'success');
+        if (typeof window !== 'undefined' && typeof window.flowShowToast === 'function') {
+          window.flowShowToast(`🎉 Carrossel ${cIdx + 1}/${carouselsToRun.length} ("${carousel.title}") concluído com sucesso!`, 'success');
+        }
       }
       this.saveState();
 
@@ -6048,16 +6139,52 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
     if (!this.isStopped && this.state === 'running') {
       this.state = 'idle';
       this.stopTicker();
+      this.stopBackgroundKeepAlive();
       this.countdown = { remaining: 0, total: 0, label: '' };
       this.currentAction = 'Concluído';
       const totalElapsed = FlowMacroEngine.formatDuration(this.elapsedSeconds);
       const anyCarouselFailed = carouselsToRun.some(c => c.status === 'failed');
+
       if (anyCarouselFailed) {
-        this.addLog(`⚠️ Execução finalizada com alertas ou falhas. Tempo total: ${totalElapsed}`, 'warning');
+        this.addLog(`\n================================================================\n⚠️ [FLUXO FINALIZADO COM ALERTAS]\n• Duração total: ${totalElapsed}\n• Verifique os logs para detalhes sobre eventuais slides pendentes.\n================================================================\n`, 'warning');
+        if (typeof window !== 'undefined' && typeof window.flowShowToast === 'function') {
+          window.flowShowToast(`⚠️ Execução finalizada com alertas. Tempo total: ${totalElapsed}`, 'info');
+        }
       } else {
-        this.addLog(`🎉 Todos os carrosséis e slides foram gerados com sucesso! Tempo total: ${totalElapsed}`, 'success');
+        this.addLog(`\n================================================================\n🏆 [FLUXO 100% FINALIZADO COM SUCESSO!]\n• Todos os ${carouselsToRun.length} carrosséis e slides foram gerados no FLOW!\n• Duração total da execução: ${totalElapsed}\n================================================================\n`, 'success');
+        if (typeof window !== 'undefined' && typeof window.flowShowToast === 'function') {
+          window.flowShowToast(`🏆 Fluxo 100% Concluído! Todos os prompts gerados (${totalElapsed})!`, 'success');
+        }
       }
       this.saveState();
+
+      // =======================================================================
+      // Gatilho de Download Automático em Lote ao Concluir Tudo
+      // =======================================================================
+      const shouldAutoDownload = Boolean(
+        this.config.autoDownloadResults ||
+        (typeof window !== 'undefined' && window.flowSettings && window.flowSettings.autoDownload)
+      );
+
+      if (shouldAutoDownload && typeof window !== 'undefined' && typeof window.flowStartBatchDownload === 'function') {
+        this.addLog(`\n📥 [Download Automático Ativo] Todos os prompts foram gerados! Rolando o Canvas até o topo e baixando todas as imagens geradas...`, 'info');
+        if (typeof window.flowShowToast === 'function') {
+          window.flowShowToast('📥 Rolando Canvas e baixando todas as imagens em lote...', 'info');
+        }
+
+        // Aguarda estabilização final do Canvas do FLOW
+        await new Promise(r => setTimeout(r, 1500));
+        await this.scrollCanvasToTop();
+        await new Promise(r => setTimeout(r, 1000));
+
+        const targetFolder = this.config.downloadFolder || (window.flowSettings && window.flowSettings.downloadFolder) || 'FLOW_Downloads';
+        try {
+          await window.flowStartBatchDownload(targetFolder);
+        } catch (dlErr) {
+          console.error('[FLOW Macro] Erro no download automático ao concluir:', dlErr);
+          this.addLog(`⚠️ Erro ao disparar download automático: ${dlErr.message}`, 'warning');
+        }
+      }
     }
   }
 
@@ -6432,6 +6559,11 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         // Geração concluída com sucesso!
         item.completedRepeats = rep + 1;
         this.saveState();
+
+        this.addLog(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n✅ [SLIDE CONCLUÍDO COM SUCESSO!]\n• Slide ${slideNum}/${totalSlides}: "${item.title || ('Slide ' + slideNum)}"\n• Carrossel: "${carouselTitle}"${targetRepeats > 1 ? `\n• Repetição: ${rep + 1}/${targetRepeats}` : ''}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`, 'success');
+        if (typeof window !== 'undefined' && typeof window.flowShowToast === 'function') {
+          window.flowShowToast(`✅ Slide ${slideNum}/${totalSlides} concluído!`, 'success');
+        }
 
         // Se houver repetições configuradas para o mesmo slide, aguarda delay pré-configurado
         if (rep + 1 < targetRepeats && !this.isStopped && this.state === 'running') {

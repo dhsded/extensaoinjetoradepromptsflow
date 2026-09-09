@@ -1563,6 +1563,17 @@
                   </label>
                 </div>
 
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                  <div style="display: flex; flex-direction: column;">
+                    <span style="font-size: 12px; font-weight: 600; color: #fff;">📥 Baixar Todas as Imagens ao Concluir:</span>
+                    <span style="font-size: 10px; color: var(--fd-text-muted);">Ao finalizar todos os prompts, sobe o Canvas, varre e baixa todas as imagens em lote</span>
+                  </div>
+                  <label class="fd-switch">
+                    <input type="checkbox" id="fd-toggle-auto-download-results" name="fd_toggle_auto_download_results" ${engine.config.autoDownloadResults === true || settings.autoDownload === true ? 'checked' : ''} autocomplete="off">
+                    <span class="fd-slider"></span>
+                  </label>
+                </div>
+
                 <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 10px; border-top: 1px dashed rgba(255,255,255,0.08); margin-top: 6px;">
                   <div style="display: flex; flex-direction: column;">
                     <span style="font-size: 12px; font-weight: 600; color: #fff;">🧭 Detecção de Página do FLOW:</span>
@@ -2137,6 +2148,17 @@
       toggleNewProj.addEventListener('change', (e) => {
         engine.updateConfig({ autoCreateNewProjectPerCarousel: e.target.checked });
         showToast(e.target.checked ? '📁 Criação de novo projeto por carrossel ativada!' : 'Projetos mantidos no mesmo espaço.', 'info');
+      });
+    }
+
+    // Toggle de download automático de todas as imagens ao concluir
+    const toggleAutoDownloadResults = macroModalElement.querySelector('#fd-toggle-auto-download-results');
+    if (toggleAutoDownloadResults) {
+      toggleAutoDownloadResults.addEventListener('change', (e) => {
+        engine.updateConfig({ autoDownloadResults: e.target.checked });
+        settings.autoDownload = e.target.checked;
+        chrome.storage.local.set({ autoDownload: e.target.checked });
+        showToast(e.target.checked ? '📥 Download automático de todas as imagens ao concluir ATIVADO!' : 'Download automático ao concluir desativado.', 'info');
       });
     }
 
@@ -3867,6 +3889,11 @@
       renderLogs();
       renderInspectorTab();
     });
+
+    // Exporta utilitários globais para integração com o motor de macro
+    window.flowShowToast = showToast;
+    window.flowStartBatchDownload = startScrollAndBatchDownload;
+    window.flowSettings = settings;
   }
 })();
 
