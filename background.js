@@ -62,11 +62,26 @@ function sanitizeFilename(name) {
 }
 
 /**
+ * Sanitiza o caminho de pastas permitindo subpastas (separadas por "/") com segurança
+ * @param {string} folderPath - Caminho ou nome da pasta
+ * @returns {string} - Caminho relativo limpo (ex: "FLOW_Downloads/Carrossel_01_Titulo")
+ */
+function sanitizeFolderPath(folderPath) {
+  if (!folderPath || typeof folderPath !== 'string') return 'FLOW_Downloads';
+  return folderPath
+    .replace(/\\/g, '/')
+    .split('/')
+    .map(seg => sanitizeFilename(seg).replace(/^_+|_+$/g, ''))
+    .filter(Boolean)
+    .join('/');
+}
+
+/**
  * Monta o caminho completo relativo de download incluindo a pasta de destino e extensão
  * @param {string} rawName - Nome base do arquivo
  * @param {string} folder - Pasta de destino
  * @param {string} ext - Extensão do arquivo ('png', 'jpg', 'webp')
- * @returns {string} - Caminho final formatado (ex: "FLOW_Downloads/meu_prompt.png")
+ * @returns {string} - Caminho final formatado (ex: "FLOW_Downloads/Carrossel_01/meu_prompt.png")
  */
 function formatFilename(rawName, folder, ext = 'png') {
   const dateStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -81,8 +96,8 @@ function formatFilename(rawName, folder, ext = 'png') {
   cleanName = cleanName.replace(/\.(png|jpg|jpeg|webp|mp4)$/i, '');
   const fileName = `${cleanName}.${finalExt}`;
   
-  // Limpa o nome da pasta de destino
-  const cleanFolder = sanitizeFilename(folder || 'FLOW_Downloads').replace(/^_+|_+$/g, '');
+  // Limpa o caminho da pasta de destino preservando subpastas
+  const cleanFolder = sanitizeFolderPath(folder || 'FLOW_Downloads');
   return cleanFolder ? `${cleanFolder}/${fileName}` : fileName;
 }
 

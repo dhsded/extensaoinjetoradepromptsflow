@@ -100,6 +100,8 @@ class FlowMacroEngine {
       reusePreviousCommand: true,      // Se verdadeiro, usa o Passo 7 (reutilizar comando anterior) nos slides 2+
       autoCreateNewProjectPerCarousel: false, // Cria novo projeto automaticamente a cada carrossel
       autoDownloadResults: false,      // Baixa as imagens automaticamente após a geração
+      carouselFolderMode: 'individual', // 'individual' (subpastas por carrossel) | 'single' (pasta única)
+      downloadFolder: 'FLOW_Downloads', // Pasta base de downloads
       // Integração com Inteligência Artificial para Auto-Diagnóstico em Tempo Real
       aiProvider: 'gemini',            // Provedor de I.A: 'gemini' | 'groq' | 'openrouter'
       aiApiKey: '',                    // Chave ativa de I.A
@@ -1235,7 +1237,7 @@ class FlowMacroEngine {
   }
 
   /**
-   * Limpa e normaliza strings de prompt para o FLOW (preserva quebras de parágrafo)
+   * Limpa e normaliza strings de prompt para o FLOW (preserva quebras de parágrafo e converte PT isolado para PT-BR)
    * @param {string} text - Texto bruto do prompt
    * @returns {string} - Texto normalizado
    */
@@ -1246,11 +1248,26 @@ class FlowMacroEngine {
       .replace(/\r/g, '\n')
       .replace(/[\u2018\u2019]/g, "'")
       .replace(/[\u201C\u201D]/g, '"')
+      .replace(/\bPT\b(?!\s*[-_]?\s*BR\b)/gi, 'PT-BR') // Substitui PT isolado por PT-BR sem duplicar
       .split('\n')
       .map(line => line.trim())
       .join('\n')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+  }
+
+  /**
+   * Sanitiza nomes para subpastas de carrosséis
+   * @param {string} name - Nome bruto
+   * @returns {string} - Nome de pasta seguro
+   */
+  static sanitizeFolderName(name) {
+    if (!name || typeof name !== 'string') return 'Carrossel';
+    return name
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .substring(0, 80);
   }
 
   /**
@@ -6156,6 +6173,37 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         }
       }
       this.saveState();
+
+      // =======================================================================
+      // Gatilho de Download Automático por Carrossel (Individual ou Pasta Única)
+      // Executa ANTES de transicionar ou navegar para novo projeto do FLOW
+      // =======================================================================
+      const shouldAutoDownload = Boolean(
+        this.config.autoDownloadResults ||
+        (typeof window !== 'undefined' && window.flowSettings && window.flowSettings.autoDownload)
+      );
+
+      if (shouldAutoDownload && !this.isStopped && typeof window !== 'undefined' && typeof window.flowStartBatchDownload === 'function') {
+        const baseFolder = this.config.downloadFolder || (window.flowSettings && window.flowSettings.downloadFolder) || 'FLOW_Downloads';
+        let targetFolder = baseFolder;
+
+        if (this.config.carouselFolderMode !== 'single') {
+          // Modo Pastas Individuais por Carrossel
+          const cleanCTitle = FlowMacroEngine.sanitizeFolderName(carousel.title || `Carrossel_${cIdx + 1}`);
+          targetFolder = `${baseFolder}/${cleanCTitle}`;
+        }
+
+        this.addLog(`📥 [Download do Carrossel ${cIdx + 1}/${carouselsToRun.length}] Baixando imagens geradas em "${targetFolder}"...`, 'info');
+        try {
+          await new Promise(r => setTimeout(r, 1200));
+          await this.scrollCanvasToTop();
+          await new Promise(r => setTimeout(r, 800));
+          await window.flowStartBatchDownload(targetFolder, { onlyNew: true });
+        } catch (dlErr) {
+          console.error('[FLOW Macro] Erro no download automático do carrossel:', dlErr);
+          this.addLog(`⚠️ Alerta no download automático do carrossel: ${dlErr.message}`, 'warning');
+        }
+      }
 
       // Intervalo entre o fim de um carrossel e o início do próximo (Padrão: 25s)
       if (cIdx + 1 < carouselsToRun.length && !this.isStopped && this.state === 'running') {

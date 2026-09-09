@@ -88,6 +88,7 @@
     autoDownload: false, // Download automático (padrão desligado para segurança)
     quality: '1k', // '1k', '2k', '4k', 'direct'
     downloadFolder: 'FLOW_Downloads',
+    carouselFolderMode: 'individual', // 'individual' (subpastas por carrossel) | 'single' (pasta única)
     nameWithPrompt: true,
     showOverlayButtons: true,
     showFloatingHud: true,
@@ -337,7 +338,96 @@
   // ==========================================================================
 
   /**
-   * Varre o documento e retorna todos os itens de imagens geradas válidas
+   * Valida com rigor se o elemento é uma imagem legítima gerada pelo FLOW no Canvas
+   * Rejeita estritamente:
+   * - Elementos da interface da extensão (HUD, modal do Macro Studio, avatares da lista)
+   * - Chips ou miniaturas anexadas na barra de prompt/comandos
+   * - Personagens de referência configurados no Macro Studio (Cer_Verde, avatares, etc.)
+   * - Cards de uploads dentro do modal/gaveta da biblioteca ("Carregamentos", etc.)
+   * - Cabeçalhos, menus laterais e avatares de perfis do Google
+   * @param {HTMLImageElement} img - Elemento de imagem
+   * @returns {boolean}
+   */
+  function isGeneratedFlowImage(img) {
+    if (!img) return false;
+
+    // 1. Exclusão estrita da própria extensão
+    if (img.closest('[id*="fd-"], [class*="fd-"], #flow-macro-panel, #flow-downloader-hud-container, .fd-character-item')) {
+      return false;
+    }
+
+    // 2. Exclusão de Modais, Gavetas e Bibliotecas de Mídia (Aba "Carregamentos", Uploads, etc.)
+    if (img.closest('[role="dialog"], [role="presentation"], [aria-modal="true"], .cdk-overlay-pane, [class*="modal" i], [class*="drawer" i], [class*="dialog" i], [class*="sidebar" i], aside')) {
+      return false;
+    }
+
+    // 3. Exclusão da Barra de Prompt, Campos de Entrada e Chips de Personagens Anexados
+    if (img.closest('form, [role="form"], [class*="prompt" i], [class*="input" i], [class*="chip" i], [class*="pill" i], [class*="attachment" i]')) {
+      return false;
+    }
+
+    const promptInput = document.querySelector('textarea, [contenteditable="true"], input[placeholder*="mudar"], input[placeholder*="prompt"], input[placeholder*="descrever"]');
+    if (promptInput) {
+      const promptContainer = promptInput.closest('form, [role="form"]') || (promptInput.parentElement ? promptInput.parentElement.parentElement : null);
+      if (promptContainer && (img === promptContainer || promptContainer.contains(img))) {
+        return false;
+      }
+    }
+
+    // 4. Exclusão de Cabeçalhos, Barra Superior e Perfis do Google
+    if (img.closest('header, [role="banner"], nav, [class*="header" i], [class*="navbar" i], [class*="profile" i]')) {
+      return false;
+    }
+
+    // 5. Exclusão de Mídias de Personagens Cadastrados no Macro Studio
+    const knownChars = (window.flowMacroInstance && window.flowMacroInstance.characters) || [];
+    const rawSrc = (img.currentSrc || img.src || img.dataset.src || '').toLowerCase();
+    const altText = (img.alt || '').toLowerCase();
+    const titleText = (img.title || '').toLowerCase();
+    const cardEl = img.closest('[role="article"], [role="group"], .card, button, [role="button"]') || img.parentElement;
+    const cardText = cardEl ? (cardEl.innerText || cardEl.textContent || '').toLowerCase() : '';
+
+    for (const char of knownChars) {
+      const cName = (char.name || '').toLowerCase().trim();
+      if (cName.length >= 2) {
+        if (altText.includes(cName) || titleText.includes(cName) || rawSrc.includes(cName) || cardText.includes(cName)) {
+          return false;
+        }
+      }
+      if (char.avatarUrl && (rawSrc.includes(char.avatarUrl.toLowerCase()) || img.src === char.avatarUrl)) {
+        return false;
+      }
+      if (char.uploadedUrl && (rawSrc.includes(char.uploadedUrl.toLowerCase()) || img.src === char.uploadedUrl)) {
+        return false;
+      }
+    }
+
+    // 6. Ignora SVGs, ícones pequenos e fotos de perfil
+    if (
+      !rawSrc ||
+      rawSrc.startsWith('data:image/svg') ||
+      rawSrc.includes('avatar') ||
+      rawSrc.includes('logo') ||
+      rawSrc.includes('icon') ||
+      rawSrc.includes('profile') ||
+      rawSrc.includes('/a/ACg8oc') ||
+      (img.naturalWidth > 0 && img.naturalWidth < 60) ||
+      (img.width > 0 && img.width < 60 && img.height > 0 && img.height < 60)
+    ) {
+      return false;
+    }
+
+    // 7. O elemento DEVE pertencer ao Canvas principal ou Feed de Geração do FLOW
+    const isInsideCanvas = img.closest('main, [role="main"], [role="feed"], [class*="canvas" i], [data-testid*="virtuoso"], section');
+    if (!isInsideCanvas) {
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Varre o documento e retorna todos os itens de imagens geradas válidas no Canvas
    * @returns {Array<Object>} - Lista de objetos de imagem
    */
   function findFlowImages() {
@@ -348,23 +438,11 @@
 
     for (let i = 0; i < images.length; i++) {
       const img = images[i];
-      const rawSrc = img.currentSrc || img.src || img.dataset.src || '';
-
-      // Ignora SVGs, ícones pequenos e fotos de perfil
-      if (
-        !rawSrc ||
-        rawSrc.startsWith('data:image/svg') ||
-        rawSrc.includes('avatar') ||
-        rawSrc.includes('logo') ||
-        rawSrc.includes('icon') ||
-        rawSrc.includes('profile') ||
-        rawSrc.includes('/a/ACg8oc') ||
-        (img.naturalWidth > 0 && img.naturalWidth < 45) ||
-        (img.width > 0 && img.width < 45 && img.height > 0 && img.height < 45)
-      ) {
+      if (!isGeneratedFlowImage(img)) {
         continue;
       }
 
+      const rawSrc = img.currentSrc || img.src || img.dataset.src || '';
       const fullUrl = normalizeImageUrl(rawSrc);
       if (!fullUrl || seenUrls.has(fullUrl)) continue;
       seenUrls.add(fullUrl);
@@ -592,8 +670,9 @@
   /**
    * Rola a página progressivamente até o fim e envia todas as imagens em lote
    * @param {string|null} customFolder - Pasta personalizada
+   * @param {Object} options - Opções adicionais (ex: { onlyNew: true })
    */
-  async function startScrollAndBatchDownload(customFolder = null) {
+  async function startScrollAndBatchDownload(customFolder = null, options = {}) {
     if (isScrollingAndDownloading) {
       showToast('⚠️ Processo de download já em andamento...', 'info');
       return;
@@ -654,6 +733,9 @@
     function collectAllVisible() {
       const items = findFlowImages();
       for (const item of items) {
+        if (options && options.onlyNew && processedImageIds.has(item.url)) {
+          continue;
+        }
         if (!collectedMap.has(item.url)) {
           collectedMap.set(item.url, item);
         }
@@ -739,7 +821,11 @@
     const totalFound = allDiscovered.length;
 
     if (totalFound === 0) {
-      showToast('❌ Nenhuma imagem do FLOW encontrada para baixar.', 'info');
+      if (options && options.onlyNew) {
+        console.log('[FLOW Downloader] Nenhuma nova imagem gerada pendente para baixar.');
+      } else {
+        showToast('❌ Nenhuma imagem gerada do FLOW encontrada para baixar.', 'info');
+      }
       resetHudButtons();
       isScrollingAndDownloading = false;
       return;
@@ -1577,6 +1663,17 @@
                   </label>
                 </div>
 
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                  <div style="display: flex; flex-direction: column;">
+                    <span style="font-size: 12px; font-weight: 600; color: #fff;">📂 Organização das Pastas de Download:</span>
+                    <span style="font-size: 10px; color: var(--fd-text-muted);">Pastas individuais para cada carrossel/projeto ou pasta única com todas as imagens</span>
+                  </div>
+                  <select id="fd-select-carousel-folder-mode" class="fd-select" style="max-width: 220px; padding: 4px 8px; font-size: 11px; background: rgba(0,0,0,0.4); color: #38bdf8; border: 1px solid var(--fd-border); border-radius: 6px; font-weight: 600;">
+                    <option value="individual" ${engine.config.carouselFolderMode !== 'single' ? 'selected' : ''}>📁 Pastas Individuais por Carrossel</option>
+                    <option value="single" ${engine.config.carouselFolderMode === 'single' ? 'selected' : ''}>📦 Pasta Única (Todas Juntas)</option>
+                  </select>
+                </div>
+
                 <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 10px; border-top: 1px dashed rgba(255,255,255,0.08); margin-top: 6px;">
                   <div style="display: flex; flex-direction: column;">
                     <span style="font-size: 12px; font-weight: 600; color: #fff;">🧭 Detecção de Página do FLOW:</span>
@@ -2180,6 +2277,18 @@
         settings.autoDownload = e.target.checked;
         chrome.storage.local.set({ autoDownload: e.target.checked });
         showToast(e.target.checked ? '📥 Download automático de todas as imagens ao concluir ATIVADO!' : 'Download automático ao concluir desativado.', 'info');
+      });
+    }
+
+    // Seletor de modo de organização das pastas de download (Pastas Individuais vs Pasta Única)
+    const selectCarouselFolderMode = macroModalElement.querySelector('#fd-select-carousel-folder-mode');
+    if (selectCarouselFolderMode) {
+      selectCarouselFolderMode.addEventListener('change', (e) => {
+        const mode = e.target.value;
+        engine.updateConfig({ carouselFolderMode: mode });
+        settings.carouselFolderMode = mode;
+        chrome.storage.local.set({ carouselFolderMode: mode });
+        showToast(mode === 'individual' ? '📁 Pastas individuais por carrossel ATIVADAS!' : '📦 Pasta única consolidada ATIVADA!', 'info');
       });
     }
 
@@ -3656,7 +3765,7 @@
           </div>
           ${hasBalloon ? `
             <div style="margin: 4px 0;">
-              <label style="display: block; font-size: 10px; color: #94a3b8; margin-bottom: 2px;">💬 Texto do Balão de Fala (PT):</label>
+              <label style="display: block; font-size: 10px; color: #94a3b8; margin-bottom: 2px;">💬 Texto do Balão de Fala (PT-BR):</label>
               <input type="text" class="fd-edit-balloon-input" value="${escapeHtml(currentBalloon)}" placeholder="Texto do balão..." style="width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.5); border: 1px solid var(--fd-border); border-radius: 6px; padding: 6px 8px; color: #fff; font-size: 11px;">
             </div>
           ` : ''}
@@ -3694,16 +3803,18 @@
           return;
         }
 
+        const cleanImageText = newText.replace(/\bPT\b(?!\s*[-_]?\s*BR\b)/gi, 'PT-BR');
         const updates = {
-          imagePrompt: newText,
-          fullText: newText
+          imagePrompt: cleanImageText,
+          fullText: cleanImageText
         };
 
         if (balloonInput) {
           const newBalloon = balloonInput.value.trim();
-          updates.ptDialogue = newBalloon;
-          if (newBalloon) {
-            updates.fullText = `Texto nos balões:\nPT: "${newBalloon}"\n\nPrompt de Imagem (Midjourney / Dall-E):\n${newText}`;
+          const cleanBalloon = newBalloon.replace(/\bPT\b(?!\s*[-_]?\s*BR\b)/gi, 'PT-BR');
+          updates.ptDialogue = cleanBalloon;
+          if (cleanBalloon) {
+            updates.fullText = `Texto nos balões:\nPT-BR: "${cleanBalloon}"\n\nPrompt de Imagem (Midjourney / Dall-E):\n${cleanImageText}`;
           }
         }
 
@@ -3830,7 +3941,7 @@
               <div class="fd-prompt-preview-title">
                 <span>${escapeHtml(p.title || `Slide #${p.globalIndex || p.index}`)}</span>
               </div>
-              ${p.ptDialogue ? `<div class="fd-prompt-balloon-preview" style="font-size: 11px; color: #38bdf8; margin: 2px 0;">💬 <strong>Balão:</strong> "${escapeHtml(p.ptDialogue)}"</div>` : ''}
+              ${p.ptDialogue ? `<div class="fd-prompt-balloon-preview" style="font-size: 11px; color: #38bdf8; margin: 2px 0;">💬 <strong>Balão (PT-BR):</strong> "${escapeHtml(p.ptDialogue)}"</div>` : ''}
               <div class="fd-prompt-preview-text ${isExpanded ? 'expanded' : ''}" data-id="${p.id}" title="Clique para expandir/recolher o texto">${escapeHtml(promptText)}</div>
               ${isLongText ? `
                 <button type="button" class="fd-prompt-expand-btn" data-id="${p.id}">

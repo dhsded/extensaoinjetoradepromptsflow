@@ -276,6 +276,16 @@
   }
 
   /**
+   * Converte ocorrências isoladas de PT para PT-BR nos prompts e balões, preservando quando já for PT-BR, pt-br ou ptbr
+   * @param {string} str - Texto a normalizar
+   * @returns {string} - Texto com PT-BR
+   */
+  static normalizeLanguageTags(str) {
+    if (!str || typeof str !== 'string') return '';
+    return str.replace(/\bPT\b(?!\s*[-_]?\s*BR\b)/gi, 'PT-BR');
+  }
+
+  /**
    * Analisa um roteiro completo e o divide estruturadamente em Carrosséis (Lotes) com seus respectivos Slides
    * Suporta:
    * - Identificação de "CARROSSEL 1", "CARROSSEL 2", "LOTE 1", "POST 1"
@@ -403,15 +413,18 @@
             .trim();
         }
 
-        // Limpa espaços no prompt de imagem
-        imagePrompt = FlowPdfExtractor.cleanPrompt(imagePrompt);
+        // Limpa espaços no prompt de imagem e normaliza tags de idioma
+        imagePrompt = FlowPdfExtractor.normalizeLanguageTags(FlowPdfExtractor.cleanPrompt(imagePrompt));
+        if (ptDialogue) {
+          ptDialogue = FlowPdfExtractor.normalizeLanguageTags(ptDialogue);
+        }
 
-        // Formata o prompt completo correspondendo à estrutura padrão do FLOW
+        // Formata o prompt completo correspondendo à estrutura padrão do FLOW com PT-BR
         let fullFormattedText = '';
         if (ptDialogue) {
-          fullFormattedText = `Texto nos balões:\nPT: "${ptDialogue}"\n\nPrompt de Imagem (Midjourney / Dall-E):\n${imagePrompt}`;
+          fullFormattedText = `Texto nos balões:\nPT-BR: "${ptDialogue}"\n\nPrompt de Imagem (Midjourney / Dall-E):\n${imagePrompt}`;
         } else {
-          fullFormattedText = imagePrompt || block;
+          fullFormattedText = FlowPdfExtractor.normalizeLanguageTags(imagePrompt || block);
         }
 
         return {
@@ -525,14 +538,14 @@
     }
 
     // 5. Monta o prompt composto completo
-    imagePrompt = FlowPdfExtractor.cleanPrompt(imagePrompt);
+    imagePrompt = FlowPdfExtractor.normalizeLanguageTags(FlowPdfExtractor.cleanPrompt(imagePrompt));
 
     let fullFormattedText = '';
     if (ptDialogue) {
-      ptDialogue = ptDialogue.replace(/^["“'”]+|["“'”]+$/g, '').trim();
-      fullFormattedText = `Texto nos balões:\nPT: "${ptDialogue}"\n\nPrompt de Imagem (Midjourney / Dall-E):\n${imagePrompt}`;
+      ptDialogue = FlowPdfExtractor.normalizeLanguageTags(ptDialogue.replace(/^["“'”]+|["“'”]+$/g, '').trim());
+      fullFormattedText = `Texto nos balões:\nPT-BR: "${ptDialogue}"\n\nPrompt de Imagem (Midjourney / Dall-E):\n${imagePrompt}`;
     } else {
-      fullFormattedText = imagePrompt || rawCleaned;
+      fullFormattedText = FlowPdfExtractor.normalizeLanguageTags(imagePrompt || rawCleaned);
     }
 
     if (title === `Slide #${index}` && ptDialogue) {
