@@ -378,3 +378,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return true; // Mantém o canal de mensagens aberto para resposta assíncrona
 });
+
+// ============================================================================
+// Conexão de Porta Keep-Alive (Mantém o Service Worker ativo durante execuções)
+// ============================================================================
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'flow-keepalive') {
+    port.onDisconnect.addListener(() => {
+      // Porta desconectada ao pausar ou concluir a macro
+    });
+  }
+});

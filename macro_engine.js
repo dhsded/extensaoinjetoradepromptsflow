@@ -834,29 +834,20 @@ class FlowMacroEngine {
         this._audioGain = gain;
       }
 
-      // 2. Web Worker Heartbeat: O Chrome nunca reduz a prioridade de temporizadores dentro de Web Workers
+      // 2. Extension Port Keep-Alive: Mantém o canal de comunicação ativo com o Service Worker da extensão
+      // sem violar as regras de CSP (Content Security Policy) do Google FLOW
       try {
-        const workerScript = `
-          let id = null;
-          self.onmessage = function(e) {
-            if (e.data === 'start') {
-              id = setInterval(() => self.postMessage('ping'), 1000);
-            } else if (e.data === 'stop' && id) {
-              clearInterval(id);
-            }
-          };
-        `;
-        const blob = new Blob([workerScript], { type: 'application/javascript' });
-        this._keepAliveWorker = new Worker(URL.createObjectURL(blob));
-        this._keepAliveWorker.onmessage = () => {
-          if (this.state === 'running' && this.startTime > 0) {
-            this.elapsedSeconds = Math.floor((Date.now() - this.startTime) / 1000);
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.connect) {
+          if (!this._keepAlivePort) {
+            this._keepAlivePort = chrome.runtime.connect({ name: 'flow-keepalive' });
+            this._keepAlivePort.onDisconnect.addListener(() => {
+              this._keepAlivePort = null;
+            });
           }
-        };
-        this._keepAliveWorker.postMessage('start');
-      } catch (wErr) {}
+        }
+      } catch (pErr) {}
 
-      console.log('[FLOW Macro] Keep-Alive de segundo plano ATIVADO (AudioContext + Worker).');
+      console.log('[FLOW Macro] Keep-Alive de segundo plano ATIVADO (AudioContext + Extension Port).');
     } catch (e) {
       console.warn('[FLOW Macro] Aviso ao iniciar Keep-Alive:', e);
     }
@@ -876,12 +867,9 @@ class FlowMacroEngine {
         try { this._audioCtx.close(); } catch (e) {}
         this._audioCtx = null;
       }
-      if (this._keepAliveWorker) {
-        try {
-          this._keepAliveWorker.postMessage('stop');
-          this._keepAliveWorker.terminate();
-        } catch (e) {}
-        this._keepAliveWorker = null;
+      if (this._keepAlivePort) {
+        try { this._keepAlivePort.disconnect(); } catch (e) {}
+        this._keepAlivePort = null;
       }
       console.log('[FLOW Macro] Keep-Alive de segundo plano DESATIVADO.');
     } catch (e) {}
