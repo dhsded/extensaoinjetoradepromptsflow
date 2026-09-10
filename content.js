@@ -2965,16 +2965,87 @@
                 </button>
               </div>
 
-              <!-- Model Selector Dropdown -->
+              <!-- Seletor de Modo de Imagem FLOW (Nano Banana Pro, Nano Banana 2, Nano Banana 2 Lite) -->
               <div class="fd-model-select-wrapper">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                  <span style="font-size: 11px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px;">Modo de Imagem FLOW:</span>
+                  <span id="fd-model-status-tag" style="font-size: 10px; padding: 2px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); font-weight: 600;">
+                    ${engine.config.model || 'Nano Banana 2'}
+                  </span>
+                </div>
+
+                <!-- 3 Botões de Seleção Direta dos Modos do FLOW -->
+                <div class="fd-model-buttons-grid">
+                  <button type="button" class="fd-model-btn-card ${(engine.config.model || 'Nano Banana 2') === 'Nano Banana Pro' ? 'active' : ''}" data-model="Nano Banana Pro">
+                    <div style="display: flex; align-items: center; gap: 6px; justify-content: center;">
+                      <span>🍌</span>
+                      <span style="font-weight: 700; font-size: 12px;">Nano Banana Pro</span>
+                    </div>
+                    <span style="font-size: 10px; color: #94a3b8; display: block; margin-top: 3px;">Alta Qualidade</span>
+                  </button>
+
+                  <button type="button" class="fd-model-btn-card ${(engine.config.model || 'Nano Banana 2') === 'Nano Banana 2' ? 'active' : ''}" data-model="Nano Banana 2">
+                    <div style="display: flex; align-items: center; gap: 6px; justify-content: center;">
+                      <span>🍌</span>
+                      <span style="font-weight: 700; font-size: 12px;">Nano Banana 2</span>
+                    </div>
+                    <span style="font-size: 10px; color: #38bdf8; display: block; margin-top: 3px;">Padrão FLOW</span>
+                  </button>
+
+                  <button type="button" class="fd-model-btn-card ${(engine.config.model || 'Nano Banana 2') === 'Nano Banana 2 Lite' ? 'active' : ''}" data-model="Nano Banana 2 Lite">
+                    <div style="display: flex; align-items: center; gap: 6px; justify-content: center;">
+                      <span>🍌</span>
+                      <span style="font-weight: 700; font-size: 12px;">Nano Banana 2 Lite</span>
+                    </div>
+                    <span style="font-size: 10px; color: #94a3b8; display: block; margin-top: 3px;">Ultra-Rápido</span>
+                  </button>
+                </div>
+
+                <!-- Dropdown Trigger alternativo com menu popup idêntico ao FLOW -->
                 <div class="fd-model-btn" id="fd-model-dropdown-trigger">
                   <div style="display: flex; align-items: center; gap: 8px;">
-                    <span>⚡</span>
-                    <span id="fd-selected-model-text">${engine.config.model || 'Nano Banana Pro'}</span>
+                    <span>🍌</span>
+                    <span id="fd-selected-model-text">${engine.config.model || 'Nano Banana 2'}</span>
                   </div>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <svg id="fd-model-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="transition: transform 0.2s;">
                     <polyline points="6 9 12 15 18 9"></polyline>
                   </svg>
+                </div>
+
+                <!-- Dropdown Menu de Modelos -->
+                <div class="fd-model-dropdown-menu" id="fd-model-dropdown-menu">
+                  <div class="fd-model-option ${(engine.config.model || 'Nano Banana 2') === 'Nano Banana Pro' ? 'active' : ''}" data-model="Nano Banana Pro">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                      <span>🍌</span>
+                      <div style="display: flex; flex-direction: column;">
+                        <span style="font-weight: 700; color: #fff; font-size: 13px;">Nano Banana Pro</span>
+                        <span style="font-size: 10px; color: #94a3b8;">Máxima fidelidade e riqueza de detalhes</span>
+                      </div>
+                    </div>
+                    <span class="fd-model-check">${(engine.config.model || 'Nano Banana 2') === 'Nano Banana Pro' ? '✓' : ''}</span>
+                  </div>
+
+                  <div class="fd-model-option ${(engine.config.model || 'Nano Banana 2') === 'Nano Banana 2' ? 'active' : ''}" data-model="Nano Banana 2">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                      <span>🍌</span>
+                      <div style="display: flex; flex-direction: column;">
+                        <span style="font-weight: 700; color: #fff; font-size: 13px;">Nano Banana 2</span>
+                        <span style="font-size: 10px; color: #38bdf8;">Modelo padrão de alta velocidade e consistência</span>
+                      </div>
+                    </div>
+                    <span class="fd-model-check">${(engine.config.model || 'Nano Banana 2') === 'Nano Banana 2' ? '✓' : ''}</span>
+                  </div>
+
+                  <div class="fd-model-option ${(engine.config.model || 'Nano Banana 2') === 'Nano Banana 2 Lite' ? 'active' : ''}" data-model="Nano Banana 2 Lite">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                      <span>🍌</span>
+                      <div style="display: flex; flex-direction: column;">
+                        <span style="font-weight: 700; color: #fff; font-size: 13px;">Nano Banana 2 Lite</span>
+                        <span style="font-size: 10px; color: #94a3b8;">Geração ultra-rápida e leve</span>
+                      </div>
+                    </div>
+                    <span class="fd-model-check">${(engine.config.model || 'Nano Banana 2') === 'Nano Banana 2 Lite' ? '✓' : ''}</span>
+                  </div>
                 </div>
               </div>
 
@@ -3698,6 +3769,86 @@
         showToast(`🔢 Quantidade por prompt: x${qty}`, 'info');
       });
     });
+
+    // =========================================================================
+    // Seleção de Modo de Imagem FLOW (Nano Banana Pro, Nano Banana 2, Nano Banana 2 Lite)
+    // =========================================================================
+    const modelCards = macroModalElement.querySelectorAll('.fd-model-btn-card');
+    const modelDropdownTrigger = macroModalElement.querySelector('#fd-model-dropdown-trigger');
+    const modelDropdownMenu = macroModalElement.querySelector('#fd-model-dropdown-menu');
+    const modelDropdownChevron = macroModalElement.querySelector('#fd-model-chevron');
+    const modelStatusTag = macroModalElement.querySelector('#fd-model-status-tag');
+    const selectedModelText = macroModalElement.querySelector('#fd-selected-model-text');
+    const modelOptions = macroModalElement.querySelectorAll('.fd-model-option');
+
+    const updateModelUI = (newModel) => {
+      if (!newModel) return;
+
+      // 1. Atualiza botões do grid
+      modelCards.forEach(card => {
+        if (card.getAttribute('data-model') === newModel) {
+          card.classList.add('active');
+        } else {
+          card.classList.remove('active');
+        }
+      });
+
+      // 2. Atualiza dropdown trigger e status tag
+      if (selectedModelText) selectedModelText.textContent = newModel;
+      if (modelStatusTag) modelStatusTag.textContent = newModel;
+
+      // 3. Atualiza opções do dropdown
+      modelOptions.forEach(opt => {
+        const isMatch = opt.getAttribute('data-model') === newModel;
+        opt.classList.toggle('active', isMatch);
+        const check = opt.querySelector('.fd-model-check');
+        if (check) check.textContent = isMatch ? '✓' : '';
+      });
+
+      // 4. Salva no motor e storage
+      engine.updateConfig({ model: newModel });
+      showToast(`🍌 Modo de imagem configurado: ${newModel}`, 'info');
+    };
+
+    // Cliques nos botões rápidos do grid (3 modos)
+    modelCards.forEach(card => {
+      card.addEventListener('click', () => {
+        const model = card.getAttribute('data-model');
+        if (model) updateModelUI(model);
+      });
+    });
+
+    // Toggle do menu dropdown
+    if (modelDropdownTrigger && modelDropdownMenu) {
+      modelDropdownTrigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isOpen = modelDropdownMenu.style.display === 'flex';
+        modelDropdownMenu.style.display = isOpen ? 'none' : 'flex';
+        modelDropdownMenu.style.flexDirection = 'column';
+        if (modelDropdownChevron) {
+          modelDropdownChevron.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(180deg)';
+        }
+      });
+
+      // Clique fora para fechar o menu dropdown
+      document.addEventListener('click', (e) => {
+        if (!e.target.closest('.fd-model-select-wrapper')) {
+          modelDropdownMenu.style.display = 'none';
+          if (modelDropdownChevron) modelDropdownChevron.style.transform = 'rotate(0deg)';
+        }
+      });
+
+      // Cliques nas opções do dropdown
+      modelOptions.forEach(opt => {
+        opt.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const model = opt.getAttribute('data-model');
+          if (model) updateModelUI(model);
+          modelDropdownMenu.style.display = 'none';
+          if (modelDropdownChevron) modelDropdownChevron.style.transform = 'rotate(0deg)';
+        });
+      });
+    }
 
     // Intervalo entre slides (padrão: 15s)
     const inputDelay = macroModalElement.querySelector('#fd-config-delay');

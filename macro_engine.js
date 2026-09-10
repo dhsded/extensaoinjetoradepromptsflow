@@ -88,7 +88,7 @@ class FlowMacroEngine {
     this.config = {
       mediaType: 'image',              // Tipo de mídia a ser gerada: 'image' (imagem) ou 'video' (vídeo)
       aspectRatio: '9:16',             // Proporção: '16:9' | '4:3' | '1:1' | '3:4' | '9:16'
-      model: 'Nano Banana Pro',        // Modelo de I.A no FLOW
+      model: 'Nano Banana 2',          // Modelo de I.A no FLOW: 'Nano Banana Pro' | 'Nano Banana 2' | 'Nano Banana 2 Lite'
       quantity: 4,                     // Quantidade de variações geradas por prompt: 1 | 2 | 3 | 4
       repeatPerPrompt: 1,              // Número de repetições para o mesmo prompt
       repeatDelaySeconds: 10,          // Intervalo pré-configurado de 10s entre repetições do mesmo prompt
@@ -5310,7 +5310,8 @@ class FlowMacroEngine {
     try {
       this.dismissFlowOnboardingBanners();
 
-      const targetRatio = this.config.aspectRatio || '1:1';
+      const targetRatio = this.config.aspectRatio || '9:16';
+      const targetModel = this.config.model || 'Nano Banana 2';
       const targetQuantity = `x${this.config.quantity || 4}`;
 
       const promptInput = this.findPromptInput();
@@ -5467,23 +5468,172 @@ class FlowMacroEngine {
         }
 
         // 4. Seleciona a Proporção desejada (ex: 1:1) com algoritmo de nós-folha e hit-testing físico
+        // 4. Seleciona o Modelo de I.A (Nano Banana Pro / Nano Banana 2 / Nano Banana 2 Lite)
+        await this.selectModelInPopover(popover, targetModel);
+
+        // 5. Seleciona a Proporção desejada (ex: 9:16)
         await this.selectAspectRatioInPopover(popover, targetRatio);
 
-        // 5. Quantidade de Imagens (ex: x4)
+        // 6. Quantidade de Imagens (ex: x4)
         await this.selectQuantityInPopover(popover, targetQuantity);
 
-        // 6. Fecha o popover com segurança
+        // 7. Fecha o popover com segurança
         await this.closeSettingsPopover(ratioTrigger, popover);
       } else {
         this.addLog('ℹ️ [Passo 1] Configurações já aplicadas ou menu não necessário.', 'info');
       }
 
+      // Se existir botão dedicado de modelo no dock (ex: botão "🍌 Nano Banana 2") e ainda não estiver no modelo alvo
+      const promptContainerCurrent = this.getPromptContainer();
+      if (promptContainerCurrent) {
+        const promptClickablesFresh = Array.from(promptContainerCurrent.querySelectorAll('button, [role="button"], div[tabindex="0"], div[class*="pill" i], span[role="button"]')).filter(el => FlowMacroEngine.isElementVisible(el) && !el.closest('[id*="fd-"]'));
+        const modelBtn = promptClickablesFresh.find(b => {
+          const t = (b.textContent || '').toLowerCase();
+          return t.includes('banana') || t.includes('nano');
+        });
+
+        if (modelBtn) {
+          const normModelTarget = targetModel.trim().toLowerCase();
+          const mText = (modelBtn.textContent || '').toLowerCase();
+          const matches = normModelTarget.includes('lite') ? mText.includes('lite') :
+                          normModelTarget.includes('pro') ? mText.includes('pro') :
+                          (mText.includes('2') || mText.includes('banana 2')) && !mText.includes('lite') && !mText.includes('pro');
+
+          if (!matches) {
+            this.addLog(`⚙️ [Passo 1] Abrindo seletor de modelo ("${targetModel}") no FLOW...`, 'info');
+            this.clickElementWithOverlay(modelBtn);
+            await new Promise(r => setTimeout(r, 600));
+            const modelPopover = await this.findOpenPopover();
+            if (modelPopover) {
+              await this.selectModelInPopover(modelPopover, targetModel);
+              await this.selectQuantityInPopover(modelPopover, targetQuantity);
+              await this.closeSettingsPopover(modelBtn, modelPopover);
+            }
+          }
+        }
+      }
+
       this.settingsConfiguredForProject = true;
       this.lastConfiguredProjectId = currentProjectId || FlowMacroEngine.getCurrentProjectId();
-      this.addLog(`✨ [Passo 1 Concluído] Modo: Imagem | Proporção: ${targetRatio} | Quantidade: ${targetQuantity}`, 'success');
+      this.addLog(`✨ [Passo 1 Concluído] Modo: Imagem | Modelo: ${targetModel} | Proporção: ${targetRatio} | Quantidade: ${targetQuantity}`, 'success');
       return true;
     } catch (e) {
       console.warn('[FLOW Macro] applyFlowSettings warning:', e);
+      return false;
+    }
+  }
+
+  /**
+   * Localiza qualquer popover/menu atualmente aberto na tela do FLOW
+   * @returns {Promise<HTMLElement|null>}
+   */
+  async findOpenPopover() {
+    for (let w = 0; w < 10; w++) {
+      const allCandidates = Array.from(document.querySelectorAll(
+        '[role="dialog"], [role="menu"], [role="listbox"], [class*="popover" i], [class*="menu" i], [class*="dropdown" i], [data-radix-popper-content-wrapper], [data-radix-popper-content], [data-side]'
+      )).filter(el => {
+        if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+        if (el.id === 'fd-macro-studio-modal' || el.querySelector('#fd-macro-studio-modal')) return false;
+        const t = (el.textContent || '').toLowerCase();
+        return t.includes('banana') || t.includes('nano') || t.includes('1:1') || t.includes('9:16') || t.includes('16:9') || t.includes('x4') || t.includes('x1');
+      });
+
+      if (allCandidates.length > 0) {
+        return allCandidates[0];
+      }
+      await new Promise(r => setTimeout(r, 150));
+    }
+    return null;
+  }
+
+  /**
+   * Localiza e seleciona o modelo de imagem desejado (Nano Banana Pro, Nano Banana 2, Nano Banana 2 Lite)
+   * dentro do popover do FLOW
+   * @param {HTMLElement} popover - O elemento do popover
+   * @param {string} targetModel - O modelo desejado ('Nano Banana Pro', 'Nano Banana 2', 'Nano Banana 2 Lite')
+   * @returns {Promise<boolean>}
+   */
+  async selectModelInPopover(popover, targetModel = 'Nano Banana 2') {
+    if (!popover || !FlowMacroEngine.isElementVisible(popover)) return false;
+
+    const normTarget = (targetModel || 'Nano Banana 2').trim().toLowerCase();
+
+    // Função auxiliar para testar se um texto corresponde especificamente ao modelo alvo
+    const matchesModel = (text, target) => {
+      const t = text.toLowerCase();
+      if (target.includes('lite')) {
+        return t.includes('lite');
+      }
+      if (target.includes('pro')) {
+        return t.includes('pro');
+      }
+      // 'Nano Banana 2' (sem lite e sem pro)
+      return (t.includes(' 2') || t.includes('banana 2')) && !t.includes('lite') && !t.includes('pro');
+    };
+
+    // 1. Procura o gatilho do dropdown de modelos no popover (ex: "🍌 Nano Banana 2 ▼")
+    const candidateTriggers = Array.from(popover.querySelectorAll(
+      'button, [role="button"], [role="combobox"], div[tabindex="0"], div[class*="select" i], div[class*="dropdown" i]'
+    )).filter(el => {
+      if (!FlowMacroEngine.isElementVisible(el) || el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const t = (el.textContent || '').toLowerCase();
+      return t.includes('banana') || t.includes('nano');
+    });
+
+    const modelTrigger = candidateTriggers[0];
+    if (!modelTrigger) {
+      return false;
+    }
+
+    const currentTriggerText = (modelTrigger.textContent || '').trim().toLowerCase();
+
+    // Se o gatilho já exibe exatamente o modelo desejado, não precisa abrir o dropdown
+    if (matchesModel(currentTriggerText, normTarget)) {
+      this.addLog(`🍌 [Passo 1] Modo de imagem "${targetModel}" já está ativo no FLOW.`, 'info');
+      return true;
+    }
+
+    this.addLog(`⚙️ [Passo 1] Alterando modo de imagem para "${targetModel}"...`, 'info');
+
+    // 2. Clica no gatilho do dropdown para abrir a lista suspensa com as 3 opções
+    this.clickElementWithOverlay(modelTrigger);
+    await new Promise(r => setTimeout(r, 450));
+
+    // 3. Procura as opções de modelo abertas na tela (role="menu", role="listbox", floating popper)
+    let optionFound = null;
+    const optionSelectors = [
+      '[role="menuitem"]',
+      '[role="option"]',
+      '[role="menuitemradio"]',
+      '[data-radix-collection-item]',
+      'button',
+      '[role="button"]',
+      'div[tabindex]'
+    ].join(', ');
+
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const candidates = Array.from(document.querySelectorAll(optionSelectors)).filter(el => {
+        if (!FlowMacroEngine.isElementVisible(el) || el.closest('#fd-macro-studio-modal, [id*="fd-"]')) return false;
+        const t = (el.textContent || '').toLowerCase();
+        return (t.includes('nano banana') || t.includes('banana')) && matchesModel(t, normTarget);
+      });
+
+      if (candidates.length > 0) {
+        optionFound = candidates.find(c => !candidates.some(other => other !== c && c.contains(other))) || candidates[0];
+        break;
+      }
+      await new Promise(r => setTimeout(r, 150));
+    }
+
+    if (optionFound) {
+      this.clickElementWithOverlay(optionFound);
+      await new Promise(r => setTimeout(r, 350));
+      this.addLog(`🍌 [Passo 1] Modo de imagem "${targetModel}" selecionado com sucesso.`, 'success');
+      return true;
+    } else {
+      console.warn(`[FLOW Macro] Opção "${targetModel}" não encontrada na lista suspensa.`);
+      try { modelTrigger.click(); } catch (e) {}
+      await new Promise(r => setTimeout(r, 200));
       return false;
     }
   }

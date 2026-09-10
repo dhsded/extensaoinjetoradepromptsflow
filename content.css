@@ -1208,9 +1208,46 @@ input:checked + .fd-slider:before {
   font-weight: 700;
 }
 
-/* Model Selector */
+/* Model Selector (3 Modos FLOW: Nano Banana Pro, Nano Banana 2, Nano Banana 2 Lite) */
 .fd-model-select-wrapper {
   margin-bottom: 18px;
+  position: relative;
+}
+
+.fd-model-buttons-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.fd-model-btn-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  outline: none;
+}
+
+.fd-model-btn-card:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(56, 189, 248, 0.35);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.fd-model-btn-card.active {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: #38bdf8;
+  color: #fff;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.25);
 }
 
 .fd-model-btn {
@@ -1226,6 +1263,53 @@ input:checked + .fd-slider:before {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+  transition: all 0.2s;
+}
+
+.fd-model-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
+.fd-model-dropdown-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  background: rgba(18, 20, 29, 0.98);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 12px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.8), 0 0 20px rgba(56, 189, 248, 0.15);
+  backdrop-filter: blur(12px);
+  padding: 6px;
+  gap: 4px;
+}
+
+.fd-model-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.fd-model-option:hover {
+  background: rgba(56, 189, 248, 0.15);
+}
+
+.fd-model-option.active {
+  background: rgba(56, 189, 248, 0.22);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.fd-model-check {
+  font-weight: 900;
+  color: #38bdf8;
+  font-size: 14px;
 }
 
 /* Quantity Buttons (x1, x2, x3, x4) */
