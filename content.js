@@ -553,93 +553,194 @@
   // ==========================================================================
 
   /**
-   * Encontra todos os containers roláveis (feed principal, virtuoso, janela, listas)
-   * @returns {Array<Object>} - Lista de scrollers manipuláveis
+   * Detecta com precisão cirúrgica o container REAL de rolagem do Canvas do Google FLOW.
+   * Não depende de nomes de classes estáticas (sc-xxx), pois o Google FLOW altera hashes de estilização.
+   * Em vez disso, utiliza heurística baseada na árvore DOM real das imagens e elementos de feed:
+   * 1. Varre os ancestrais das imagens geradas válidas na tela em direção à raiz do DOM.
+   * 2. Identifica qual ancestral possui overflow-y: auto/scroll ativo e scrollHeight > clientHeight.
+   * 3. Se múltiplos forem encontrados, seleciona aquele que contém o maior número de imagens e maior curso de rolagem.
+   * 4. Fallback para scroller do React Virtuoso ou qualquer container com rolagem ativa no documento.
+   * @returns {HTMLElement|Window}
    */
-  function findScrollContainers() {
-    const containers = [];
+  function getPrimaryCanvasScroller() {
+    // 1. Heurística a partir de imagens geradas do FLOW
+    const flowImgs = Array.from(document.querySelectorAll('img')).filter(img => isGeneratedFlowImage(img));
+    const ancestorScores = new Map();
+
+    for (const img of flowImgs) {
+      let curr = img.parentElement;
+      while (curr && curr !== document.body && curr !== document.documentElement) {
+        if (curr.closest && curr.closest('[id*="fd-"], [class*="fd-"], #flow-macro-panel')) break;
+        try {
+          const style = window.getComputedStyle(curr);
+          const overflowY = style.overflowY || '';
+          const overflow = style.overflow || '';
+          const hasScrollStyle = /(auto|scroll|overlay)/i.test(overflowY) || /(auto|scroll|overlay)/i.test(overflow);
+
+          if (curr.clientHeight > 180 && curr.clientWidth > 250) {
+            const diff = curr.scrollHeight - curr.clientHeight;
+            if (hasScrollStyle || diff > 20) {
+              const prevData = ancestorScores.get(curr) || { count: 0, diff: diff, el: curr };
+              prevData.count++;
+              prevData.diff = Math.max(prevData.diff, diff);
+              ancestorScores.set(curr, prevData);
+            }
+          }
+        } catch (e) {}
+        curr = curr.parentElement;
+      }
+    }
+
+    if (ancestorScores.size > 0) {
+      // Prioriza o container que agrupa mais imagens e possui capacidade de rolagem
+      const sorted = Array.from(ancestorScores.values()).sort((a, b) => {
+        const scoreA = (a.count * 10000) + a.diff;
+        const scoreB = (b.count * 10000) + b.diff;
+        return scoreB - scoreA;
+      });
+      if (sorted[0] && sorted[0].el) {
+        return sorted[0].el;
+      }
+    }
+
+    // 2. React Virtuoso dedicado
+    const virtuoso = document.querySelector('[data-testid="virtuoso-scroller"], [data-virtuoso-scroller="true"]');
+    if (virtuoso && virtuoso.clientHeight > 180) return virtuoso;
+
+    const virtuosoList = document.querySelector('[data-testid="virtuoso-item-list"]');
+    if (virtuosoList && virtuosoList.parentElement && virtuosoList.parentElement.clientHeight > 180) {
+      return virtuosoList.parentElement;
+    }
+
+    // 3. Varredura ampla de elementos estruturais
+    const structuralCandidates = document.querySelectorAll('main, [role="main"], [role="feed"], #main-content, section, div');
+    let bestEl = null;
+    let maxDiff = 0;
+
+    for (const el of structuralCandidates) {
+      if (el.closest && el.closest('[id*="fd-"], [class*="fd-"], #flow-macro-panel')) continue;
+      if (el.clientHeight > 220 && el.clientWidth > 300) {
+        const diff = el.scrollHeight - el.clientHeight;
+        if (diff > 40 && diff > maxDiff) {
+          try {
+            const style = window.getComputedStyle(el);
+            if (/(auto|scroll|overlay)/i.test(style.overflowY) || /(auto|scroll|overlay)/i.test(style.overflow)) {
+              maxDiff = diff;
+              bestEl = el;
+            }
+          } catch (e) {}
+        }
+      }
+    }
+    if (bestEl) return bestEl;
+
+    // 4. Se o documento tiver rolagem de página tradicional
+    if (document.documentElement.scrollHeight > window.innerHeight + 50 || document.body.scrollHeight > window.innerHeight + 50) {
+      return window;
+    }
+
+    return document.documentElement || window;
+  }
+
+  /**
+   * Envolve um elemento em um manipulador unificado de rolagem
+   * @param {HTMLElement|Window} el
+   * @returns {Object}
+   */
+  function wrapScroller(el) {
+    if (!el) return null;
+    const isWin = (el === window || el === document.documentElement || el === document.body);
     const docElem = document.documentElement;
     const body = document.body;
 
-    // 1. Scrollers dedicados do Virtuoso do Google FLOW
-    const virtuosoScrollers = document.querySelectorAll('[data-testid="virtuoso-scroller"], [data-virtuoso-scroller="true"]');
-    for (const el of virtuosoScrollers) {
-      if (el.closest('[id*="fd-"], [class*="fd-"]')) continue;
-      containers.push({
-        element: el,
-        isWindow: false,
-        getScrollTop: () => el.scrollTop,
-        getScrollHeight: () => el.scrollHeight,
-        getClientHeight: () => el.clientHeight,
-        scrollBy: (val) => {
-          el.scrollTop += val;
-          try { el.scrollBy({ top: val, behavior: 'instant' }); } catch (e) {}
-          el.dispatchEvent(new Event('scroll', { bubbles: true }));
-          el.dispatchEvent(new WheelEvent('wheel', { deltaY: val, bubbles: true, cancelable: true }));
-        },
-        scrollTo: (top) => {
+    return {
+      element: el,
+      isWindow: isWin,
+      getScrollTop: () => {
+        if (isWin) return window.scrollY || (docElem ? docElem.scrollTop : 0) || (body ? body.scrollTop : 0) || 0;
+        return el.scrollTop || 0;
+      },
+      getScrollHeight: () => {
+        if (isWin) return Math.max(docElem ? docElem.scrollHeight : 0, body ? body.scrollHeight : 0, window.innerHeight);
+        return el.scrollHeight || 0;
+      },
+      getClientHeight: () => {
+        if (isWin) return window.innerHeight || 0;
+        return el.clientHeight || 0;
+      },
+      scrollTo: (top) => {
+        if (isWin) {
+          window.scrollTo({ top: top, behavior: 'instant' });
+          if (docElem) docElem.scrollTop = top;
+          if (body) body.scrollTop = top;
+          window.dispatchEvent(new WheelEvent('wheel', { deltaY: top > 0 ? 300 : -300, bubbles: true, cancelable: true }));
+        } else {
           el.scrollTop = top;
           try { el.scrollTo({ top: top, behavior: 'instant' }); } catch (e) {}
           el.dispatchEvent(new Event('scroll', { bubbles: true }));
           el.dispatchEvent(new WheelEvent('wheel', { deltaY: top > 0 ? 300 : -300, bubbles: true, cancelable: true }));
         }
-      });
-    }
-
-    // 2. Rolagem de divs e seções internas do Canvas do FLOW com overflow ativo
-    const allDivs = document.querySelectorAll('main, [role="main"], [role="feed"], #main-content, section, div[class*="canvas" i], div[class*="scroller" i], div[class*="feed" i], div[class*="grid" i], [data-testid="virtuoso-item-list"]');
-    for (const rawEl of allDivs) {
-      const el = (rawEl.matches && rawEl.matches('[data-testid="virtuoso-item-list"]') && rawEl.parentElement) ? rawEl.parentElement : rawEl;
-      if (el.closest('[id*="fd-"], [class*="fd-"]')) continue;
-      if (el.scrollHeight > el.clientHeight + 40 && el.clientHeight > 120) {
-        containers.push({
-          element: el,
-          isWindow: false,
-          getScrollTop: () => el.scrollTop,
-          getScrollHeight: () => el.scrollHeight,
-          getClientHeight: () => el.clientHeight,
-          scrollBy: (val) => {
-            el.scrollTop += val;
-            try { el.scrollBy({ top: val, behavior: 'instant' }); } catch (e) {}
-            el.dispatchEvent(new Event('scroll', { bubbles: true }));
-            el.dispatchEvent(new WheelEvent('wheel', { deltaY: val, bubbles: true, cancelable: true }));
-          },
-          scrollTo: (top) => {
-            el.scrollTop = top;
-            try { el.scrollTo({ top: top, behavior: 'instant' }); } catch (e) {}
-            el.dispatchEvent(new Event('scroll', { bubbles: true }));
-            el.dispatchEvent(new WheelEvent('wheel', { deltaY: top > 0 ? 300 : -300, bubbles: true, cancelable: true }));
-          }
-        });
-      }
-    }
-
-    // 3. Rolagem da janela/documento
-    containers.push({
-      element: window,
-      isWindow: true,
-      getScrollTop: () => window.scrollY || docElem.scrollTop || body.scrollTop,
-      getScrollHeight: () => Math.max(docElem.scrollHeight, body.scrollHeight),
-      getClientHeight: () => window.innerHeight,
-      scrollBy: (val) => {
-        window.scrollBy({ top: val, behavior: 'instant' });
-        document.documentElement.scrollTop += val;
-        document.body.scrollTop += val;
-        window.dispatchEvent(new WheelEvent('wheel', { deltaY: val, bubbles: true, cancelable: true }));
       },
-      scrollTo: (top) => {
-        window.scrollTo({ top, behavior: 'instant' });
-        document.documentElement.scrollTop = top;
-        document.body.scrollTop = top;
+      scrollBy: (val) => {
+        if (isWin) {
+          window.scrollBy({ top: val, behavior: 'instant' });
+          if (docElem) docElem.scrollTop += val;
+          if (body) body.scrollTop += val;
+          window.dispatchEvent(new WheelEvent('wheel', { deltaY: val, bubbles: true, cancelable: true }));
+        } else {
+          el.scrollTop += val;
+          try { el.scrollBy({ top: val, behavior: 'instant' }); } catch (e) {}
+          el.dispatchEvent(new Event('scroll', { bubbles: true }));
+          el.dispatchEvent(new WheelEvent('wheel', { deltaY: val, bubbles: true, cancelable: true }));
+        }
       }
-    });
+    };
+  }
 
-    // Ordena priorizando containers que realmente possuem rolagem ativa (maior diferença scrollHeight - clientHeight)
-    containers.sort((a, b) => {
-      const scrollA = a.getScrollHeight() - a.getClientHeight();
-      const scrollB = b.getScrollHeight() - b.getClientHeight();
-      return scrollB - scrollA;
-    });
+  /**
+   * Encontra todos os containers roláveis (feed principal com prioridade #1, virtuoso, janela, listas)
+   * @returns {Array<Object>} - Lista de scrollers manipuláveis
+   */
+  function findScrollContainers() {
+    const containers = [];
+    const seenElements = new Set();
+
+    // 1. Container primário do Canvas do FLOW (Prioridade Absoluta #1)
+    const primaryEl = getPrimaryCanvasScroller();
+    if (primaryEl) {
+      containers.push(wrapScroller(primaryEl));
+      seenElements.add(primaryEl);
+    }
+
+    // 2. Outros scrollers Virtuoso ou com scrollHeight > clientHeight
+    const virtuosoScrollers = document.querySelectorAll('[data-testid="virtuoso-scroller"], [data-virtuoso-scroller="true"]');
+    for (const el of virtuosoScrollers) {
+      if (el.closest('[id*="fd-"], [class*="fd-"], #flow-macro-panel')) continue;
+      if (!seenElements.has(el)) {
+        seenElements.add(el);
+        containers.push(wrapScroller(el));
+      }
+    }
+
+    const allDivs = document.querySelectorAll('main, [role="main"], [role="feed"], #main-content, section, div');
+    for (const el of allDivs) {
+      if (el.closest('[id*="fd-"], [class*="fd-"], #flow-macro-panel')) continue;
+      if (seenElements.has(el)) continue;
+      if (el.scrollHeight > el.clientHeight + 40 && el.clientHeight > 180) {
+        try {
+          const style = window.getComputedStyle(el);
+          if (/(auto|scroll|overlay)/i.test(style.overflowY) || /(auto|scroll|overlay)/i.test(style.overflow)) {
+            seenElements.add(el);
+            containers.push(wrapScroller(el));
+          }
+        } catch (e) {}
+      }
+    }
+
+    // 3. Janela / Documento (sempre disponível como apoio)
+    if (!seenElements.has(window)) {
+      containers.push(wrapScroller(window));
+    }
 
     return containers;
   }
@@ -651,13 +752,13 @@
    * 2. Rolagem da window e documentElement
    * 3. Chamada de scrollIntoView no último filho do [data-testid="virtuoso-item-list"]
    * 4. Chamada de scrollIntoView na última imagem / bloco de geração renderizado
-   * 5. Disparo de WheelEvent com deltaY e Event('scroll')
+   * 5. Disparo de WheelEvent com deltaY e Event('scroll') diretamente no container ativo
    * 6. Simulação de tecla PageDown para acionar listeners de teclado do canvas
    * @param {number} distance - Quantidade de pixels a avançar
    * @param {Array<Object>} scrollers - Lista de scrollers
    */
   function performActiveScrollDown(distance = 500, scrollers = []) {
-    // 1. Rola todos os containers scrollers identificados
+    // 1. Rola todos os containers scrollers identificados (prioritariamente o primaryScroller)
     if (Array.isArray(scrollers)) {
       for (const s of scrollers) {
         try {
@@ -666,7 +767,7 @@
       }
     }
 
-    // 2. Rola window e documentElement
+    // 2. Rola window e documentElement se houver overflow
     try {
       window.scrollBy({ top: distance, behavior: 'instant' });
       if (document.documentElement) document.documentElement.scrollTop += distance;
@@ -690,21 +791,24 @@
       }
     } catch (e) {}
 
-    // 5. Dispara eventos de Wheel e Scroll com deltaY para simular interação real do usuário
+    // 5. Dispara eventos de Wheel e Scroll com deltaY para simular interação física do usuário
     try {
       const wheelEv = new WheelEvent('wheel', { deltaY: distance, deltaMode: 0, bubbles: true, cancelable: true });
       window.dispatchEvent(wheelEv);
       document.dispatchEvent(wheelEv);
-      const scrollerEl = document.querySelector('[data-testid="virtuoso-scroller"], [data-virtuoso-scroller="true"]');
-      if (scrollerEl) {
-        scrollerEl.dispatchEvent(wheelEv);
-        scrollerEl.dispatchEvent(new Event('scroll', { bubbles: true }));
+      if (scrollers && scrollers[0] && scrollers[0].element && scrollers[0].element.dispatchEvent) {
+        scrollers[0].element.dispatchEvent(wheelEv);
+        scrollers[0].element.dispatchEvent(new Event('scroll', { bubbles: true }));
       }
     } catch (e) {}
 
     // 6. Simula PageDown no teclado
     try {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', code: 'PageDown', keyCode: 34, which: 34, bubbles: true }));
+      const pageDownEv = new KeyboardEvent('keydown', { key: 'PageDown', code: 'PageDown', keyCode: 34, which: 34, bubbles: true });
+      window.dispatchEvent(pageDownEv);
+      if (scrollers && scrollers[0] && scrollers[0].element && scrollers[0].element.dispatchEvent) {
+        scrollers[0].element.dispatchEvent(pageDownEv);
+      }
     } catch (e) {}
   }
 
@@ -1297,9 +1401,14 @@
           showToast(`📜 Percorrendo página (${step}/${maxSteps}): ${currentCount} imagens detectadas...`, 'info');
         }
 
-        // Verifica se alcançou o fim físico da rolagem em qualquer dos scrollers ou documento
-        const isAtBottom = scrollers.some(s => s.getScrollTop() + s.getClientHeight() >= s.getScrollHeight() - 60) ||
-                           (window.scrollY + window.innerHeight >= Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) - 60);
+        // Verifica se alcançou o fim físico da rolagem no container primário do Canvas
+        const pScrollTop = primaryScroller.getScrollTop();
+        const pClientHeight = primaryScroller.getClientHeight();
+        const pScrollHeight = primaryScroller.getScrollHeight();
+        const isPrimaryScrollable = pScrollHeight > pClientHeight + 30;
+        const isAtBottom = isPrimaryScrollable
+          ? (pScrollTop + pClientHeight >= pScrollHeight - 50)
+          : false;
 
         if (currentHeight > lastHeight + 15 || currentCount > lastImageCount) {
           bottomConfirmationCount = 0;
@@ -1308,13 +1417,21 @@
         } else if (isAtBottom) {
           bottomConfirmationCount++;
           // Força impulsos extras no fundo para dar tempo de carregar novos chunks do Virtuoso
-          performActiveScrollDown(600, scrollers);
+          performActiveScrollDown(650, scrollers);
           await new Promise(r => setTimeout(r, 1100));
           collectAllVisible();
 
-          // Confirma 6 verificações consecutivas no fundo absoluto da página (~8 a 9 segundos de pausa)
-          if (bottomConfirmationCount >= 6) {
-            console.log('[FLOW Downloader] Fim definitivo da página verificado com sucesso após 6 confirmações.');
+          const newH = primaryScroller.getScrollHeight();
+          const newC = collectedMap.size;
+          if (newH > lastHeight + 15 || newC > lastImageCount) {
+            bottomConfirmationCount = 0;
+            lastHeight = newH;
+            lastImageCount = newC;
+          }
+
+          // Confirma 8 verificações consecutivas no fundo absoluto da página (~10 a 12 segundos de confirmação)
+          if (bottomConfirmationCount >= 8) {
+            console.log('[FLOW Downloader] Fim definitivo da página verificado com sucesso após 8 confirmações.');
             break;
           }
         }
@@ -1545,7 +1662,7 @@
         const dialogue = slide.ptDialogue || slide.balloonText || '';
         const normDialogue = normalizeTextForMatching(dialogue);
         if (normDialogue.length >= 8) {
-          if (normExtracted.includes(normDialogue)) {
+          if (normExtracted.includes(normDialogue) || (normExtracted.length >= 10 && normDialogue.includes(normExtracted))) {
             score = 100;
             matchReason = `Diálogo exato ("${dialogue.slice(0, 30)}...")`;
           } else {
@@ -1553,7 +1670,7 @@
             if (diagWords.length > 0) {
               const matchedDiagWords = diagWords.filter(w => extractedWordSet.has(w));
               const diagRatio = matchedDiagWords.length / diagWords.length;
-              if (diagRatio >= 0.60) {
+              if (diagRatio >= 0.50) {
                 const diagScore = Math.round(diagRatio * 95);
                 if (diagScore > score) {
                   score = diagScore;
@@ -1567,13 +1684,14 @@
         // 2. Prompt de Imagem em Inglês
         const imgPrompt = slide.imagePrompt || '';
         const normImgPrompt = normalizeTextForMatching(imgPrompt);
-        if (normImgPrompt.length >= 15) {
-          // 2a. Início idêntico do prompt (primeiros 45 caracteres)
-          const promptHead = normImgPrompt.slice(0, 45);
-          if (normExtracted.includes(promptHead)) {
-            if (score < 90) {
-              score = 90;
-              matchReason = 'Início do Prompt de Imagem idêntico';
+        if (normImgPrompt.length >= 12) {
+          // 2a. Início do prompt (primeiros 40 caracteres, bidirecional)
+          const promptHead = normImgPrompt.slice(0, 40);
+          const extractedHead = normExtracted.slice(0, 40);
+          if (normExtracted.includes(promptHead) || normImgPrompt.includes(extractedHead)) {
+            if (score < 92) {
+              score = 92;
+              matchReason = 'Início do Prompt de Imagem correspondente';
             }
           }
 
@@ -1587,7 +1705,7 @@
             }
           }
 
-          if (slideTrigrams.size > 0 && matchedTrigrams >= 2) {
+          if (slideTrigrams.size > 0 && matchedTrigrams >= 1) {
             const triRatio = matchedTrigrams / slideTrigrams.size;
             const triScore = Math.min(96, Math.round(75 + (triRatio * 25)));
             if (triScore > score) {
@@ -1598,10 +1716,10 @@
 
           // 2c. Palavras distintivas exclusivas (removendo stop words genéricas de prompt)
           const significantSlideWords = slideWords.filter(w => w.length >= 3 && !GENERIC_PROMPT_STOPWORDS.has(w));
-          if (significantSlideWords.length >= 3) {
+          if (significantSlideWords.length >= 2) {
             const matchedSigWords = significantSlideWords.filter(w => extractedWordSet.has(w));
             const sigRatio = matchedSigWords.length / significantSlideWords.length;
-            if (sigRatio >= 0.25) {
+            if (sigRatio >= 0.20) {
               const wordScore = Math.min(94, Math.round(45 + (sigRatio * 50)));
               if (wordScore > score) {
                 score = wordScore;
@@ -1611,10 +1729,23 @@
           }
         }
 
-        // 3. Título do Slide
+        // 3. Prompt completo formatado (fullText)
+        const fullText = slide.fullText || '';
+        const normFullText = normalizeTextForMatching(fullText);
+        if (normFullText.length >= 20) {
+          const fullHead = normFullText.slice(0, 45);
+          if (normExtracted.includes(fullHead) || (normExtracted.length >= 20 && normFullText.includes(normExtracted.slice(0, 45)))) {
+            if (score < 93) {
+              score = 93;
+              matchReason = 'Texto completo formatado correspondente';
+            }
+          }
+        }
+
+        // 4. Título do Slide
         const slideTitle = slide.slideTitle || '';
         const normTitle = normalizeTextForMatching(slideTitle);
-        if (normTitle.length >= 6 && normExtracted.includes(normTitle)) {
+        if (normTitle.length >= 5 && normExtracted.includes(normTitle)) {
           if (score < 60) {
             score = 60;
             matchReason = `Título do slide ("${slideTitle}")`;
@@ -1636,8 +1767,8 @@
       }
     }
 
-    // Aceita correspondências com pontuação mínima de confiança (>= 30)
-    return (highestScore >= 30) ? bestMatch : null;
+    // Aceita correspondências com pontuação mínima de confiança (>= 20)
+    return (highestScore >= 20) ? bestMatch : null;
   }
 
   /**
@@ -1674,8 +1805,25 @@
           'div.sc-784d6f75-1',
           'section',
           'main > div > div',
-          '[class*="generation" i]'
+          '[class*="generation" i]',
+          '[class*="row" i]'
         ].join(', '));
+      }
+      // 1c. Heurística de subida: encontra o ancestral que contém tanto a imagem quanto texto descritivo (>35 chars)
+      if (!genBlock) {
+        let climb = startNode.parentElement;
+        while (climb && climb !== document.body && climb !== document.documentElement) {
+          if (climb.closest && climb.closest('[id*="fd-"], [class*="fd-"], #flow-macro-panel')) break;
+          const raw = (climb.innerText || '').trim();
+          if (raw.length > 35) {
+            const hasClues = /(?:reutilizar|reuse|prompt|bal[oõ]es|texto|comando|gerar|nano|banana|aspect|propor|pt\-br|pt\:)/i.test(raw);
+            if (hasClues || raw.length > 90) {
+              genBlock = climb;
+              break;
+            }
+          }
+          climb = climb.parentElement;
+        }
       }
     }
 
@@ -1683,22 +1831,22 @@
     if (genBlock) {
       const imgRect = (img || card).getBoundingClientRect();
 
-      const allTextNodes = Array.from(genBlock.querySelectorAll('div, p, span, section, [role="region"], aside, textarea, pre, code, [class*="prompt" i], [class*="text" i], [class*="detail" i], [class*="caption" i]')).filter(el => {
+      const allTextNodes = Array.from(genBlock.querySelectorAll('div, p, span, section, [role="region"], aside, textarea, pre, code, [class*="prompt" i], [class*="text" i], [class*="detail" i], [class*="caption" i], [class*="content" i]')).filter(el => {
         if (el.closest('#flow-macro-panel, #flow-downloader-hud-container, [id*="fd-"], button, svg')) return false;
         const raw = el.value || el.innerText || el.textContent || '';
         const t = raw.trim();
-        if (t.length < 20) return false;
+        if (t.length < 15) return false;
         if (img && el.contains(img)) return false;
         if (card && el.contains(card)) return false;
         return true;
       });
 
-      // Ordena priorizando nós que ficam geometricamente no canto direito do bloco
+      // Ordena priorizando nós que ficam geometricamente no canto direito do bloco e com maior extensão
       allTextNodes.sort((a, b) => {
         const rectA = a.getBoundingClientRect();
         const rectB = b.getBoundingClientRect();
-        const isRightA = rectA.left >= imgRect.right - 40;
-        const isRightB = rectB.left >= imgRect.right - 40;
+        const isRightA = rectA.left >= imgRect.right - 50;
+        const isRightB = rectB.left >= imgRect.right - 50;
         if (isRightA && !isRightB) return -1;
         if (!isRightA && isRightB) return 1;
         const lenA = (a.value || a.innerText || a.textContent || '').length;
@@ -1709,7 +1857,7 @@
       for (const node of allTextNodes) {
         const raw = node.value || node.innerText || node.textContent || '';
         const clean = cleanFlowPromptText(raw);
-        if (clean.length > 25) {
+        if (clean.length > 20) {
           candidates.push(clean);
         }
       }
@@ -2086,33 +2234,14 @@
           showToast(`📜 Percorrendo página (${step}/${maxSteps}): ${currentCount} imagens detectadas...`, 'info');
         }
 
-        // Verifica se TODOS os slides esperados de todos os carrosséis já foram detectados
-        if (totalExpectedSlides > 0) {
-          const matchedSlidesKeys = new Set();
-          for (const item of discoveredMap.values()) {
-            const pText = item.fullPromptText || item.prompt;
-            if (pText) {
-              const m = matchPromptToCarousels(pText, carousels);
-              if (m) {
-                matchedSlidesKeys.add(`${m.carouselIndex}_${m.slideIndex}`);
-              }
-            }
-          }
-          if (matchedSlidesKeys.size >= totalExpectedSlides) {
-            allSlidesMatchedRounds++;
-            // Confirma 3 passos adicionais para certificar que todas as variantes foram carregadas
-            if (allSlidesMatchedRounds >= 3) {
-              console.log(`[FLOW Organizar] Todos os ${totalExpectedSlides} slides dos carrosséis detectados com sucesso na tela!`);
-              break;
-            }
-          } else {
-            allSlidesMatchedRounds = 0;
-          }
-        }
-
-        // Verifica se alcançou o fundo da rolagem
-        const isAtBottom = scrollers.some(s => s.getScrollTop() + s.getClientHeight() >= s.getScrollHeight() - 60) ||
-                           (window.scrollY + window.innerHeight >= Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) - 60);
+        // Verifica se alcançou o fundo da rolagem no container primário do Canvas
+        const primaryScrollTop = primaryScroller.getScrollTop();
+        const primaryClientHeight = primaryScroller.getClientHeight();
+        const primaryScrollHeight = primaryScroller.getScrollHeight();
+        const isPrimaryScrollable = primaryScrollHeight > primaryClientHeight + 30;
+        const isAtBottom = isPrimaryScrollable
+          ? (primaryScrollTop + primaryClientHeight >= primaryScrollHeight - 50)
+          : false;
 
         if (currentHeight > lastHeight + 15 || currentCount > lastUrlCount) {
           bottomConfirmationCount = 0;
@@ -2125,9 +2254,17 @@
           await new Promise(r => setTimeout(r, 1100));
           collectCurrentImages();
 
-          // Confirma 6 verificações consecutivas no fundo absoluto (~8 a 9 segundos)
-          if (bottomConfirmationCount >= 6) {
-            console.log('[FLOW Organizar] Fim definitivo da página verificado com sucesso após 6 confirmações.');
+          const newH = primaryScroller.getScrollHeight();
+          const newC = discoveredMap.size;
+          if (newH > lastHeight + 15 || newC > lastUrlCount) {
+            bottomConfirmationCount = 0;
+            lastHeight = newH;
+            lastUrlCount = newC;
+          }
+
+          // Confirma 8 verificações consecutivas no fundo absoluto (~10 a 12 segundos)
+          if (bottomConfirmationCount >= 8) {
+            console.log('[FLOW Organizar] Fim definitivo da página verificado com sucesso após 8 confirmações.');
             break;
           }
         }
