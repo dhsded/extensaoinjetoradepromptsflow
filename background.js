@@ -99,7 +99,7 @@ function formatFilename(rawName, folder, ext = 'png') {
   }
   let cleanName = sanitizeFilename(rawName) || `media_${dateStr}`;
   // Remove extensões duplicadas caso já venham no nome
-  cleanName = cleanName.replace(/\.(png|jpg|jpeg|webp|mp4)$/i, '');
+  cleanName = cleanName.replace(/\.(png|jpg|jpeg|webp|mp4)$/i, '').slice(0, 60);
   const fileName = `${cleanName}.${finalExt}`;
   
   // Limpa o caminho da pasta de destino preservando subpastas
@@ -169,52 +169,72 @@ async function processQueue() {
  * @param {string} imageId - Identificador único da imagem no FLOW
  */
 async function executeDownload(url, fullPath, imageId) {
-  if (cancelRequested) return Promise.resolve(null);
+  if (cancelRequested) return null;
 
-  return new Promise((resolve, reject) => {
-    chrome.downloads.download(
-      {
-        url: url,
-        filename: fullPath,
-        saveAs: false,               // Salva direto sem abrir diálogo do Windows
-        conflictAction: 'uniquify'   // Se arquivo já existir, adiciona (1), (2) automaticamente
-      },
-      async (downloadId) => {
-        if (chrome.runtime.lastError || !downloadId) {
-          console.error('[FLOW Downloader] Falha no download:', chrome.runtime.lastError);
-          reject(chrome.runtime.lastError || new Error('ID de download inválido'));
-          return;
-        }
-
-        currentActiveDownloadId = downloadId;
-
-        // Se o cancelamento foi solicitado imediatamente após o disparo
-        if (cancelRequested) {
-          chrome.downloads.cancel(downloadId, () => {});
+  const startDownload = (destPath) => {
+    return new Promise((resolve, reject) => {
+      chrome.downloads.download(
+        {
+          url: url,
+          filename: destPath,
+          saveAs: false,               // Salva direto sem abrir diálogo do Windows
+          conflictAction: 'uniquify'   // Se arquivo já existir, adiciona (1), (2) automaticamente
+        },
+        (downloadId) => {
+          if (chrome.runtime.lastError || !downloadId) {
+            const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : 'ID de download inválido';
+            reject(new Error(err));
+            return;
+          }
           resolve(downloadId);
-          return;
         }
+      );
+    });
+  };
 
-        // Atualiza estatísticas e histórico de imagens baixadas
-        const data = await chrome.storage.local.get(['totalDownloadedCount', 'downloadedIds']);
-        const count = (data.totalDownloadedCount || 0) + 1;
-        const ids = data.downloadedIds || [];
-        
-        if (imageId && !ids.includes(imageId)) {
-          ids.push(imageId);
-          if (ids.length > 1000) ids.shift(); // Mantém no máximo 1000 IDs no histórico
-        }
+  let downloadId = null;
+  try {
+    downloadId = await startDownload(fullPath);
+  } catch (err) {
+    console.warn(`[FLOW Downloader] Falha ao salvar em '${fullPath}': ${err.message}. Tentando fallback na raiz de Downloads...`);
+    const baseOnly = fullPath.split('/').pop() || `flow_${Date.now()}.png`;
+    try {
+      downloadId = await startDownload(baseOnly);
+    } catch (fallbackErr) {
+      console.error('[FLOW Downloader] Falha fatal no download:', fallbackErr);
+      return null;
+    }
+  }
 
-        await chrome.storage.local.set({
-          totalDownloadedCount: count,
-          downloadedIds: ids
-        });
+  currentActiveDownloadId = downloadId;
 
-        console.log(`[FLOW Downloader] Imagem salva com sucesso: ${fullPath} (ID: ${downloadId})`);
-        resolve(downloadId);
-      }
-    );
-  });
+  // Se o cancelamento foi solicitado imediatamente após o disparo
+  if (cancelRequested) {
+    chrome.downloads.cancel(downloadId, () => {});
+    return downloadId;
+  }
+
+  // Atualiza estatísticas e histórico de imagens baixadas
+  try {
+    const data = await chrome.storage.local.get(['totalDownloadedCount', 'downloadedIds']);
+    const count = (data.totalDownloadedCount || 0) + 1;
+    const ids = data.downloadedIds || [];
+    
+    if (imageId && !ids.includes(imageId)) {
+      ids.push(imageId);
+      if (ids.length > 1000) ids.shift(); // Mantém no máximo 1000 IDs no histórico
+    }
+
+    await chrome.storage.local.set({
+      totalDownloadedCount: count,
+      downloadedIds: ids
+    });
+  } catch (storageErr) {
+    console.warn('[FLOW Downloader] Aviso ao salvar histórico de download:', storageErr);
+  }
+
+  console.log(`[FLOW Downloader] Imagem salva com sucesso: ${fullPath} (ID: ${downloadId})`);
+  return downloadId;
 }
 
 // ============================================================================
@@ -259,6 +279,61 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
           processQueue();
           sendResponse({ success: true, count: message.items.length });
+          break;
+        }
+
+        // Ação: Pré-criar pastas dos carrosséis no disco (Downloads)
+        case 'PREPARE_CAROUSEL_FOLDERS': {
+          const folders = Array.isArray(message.folders) ? message.folders : [];
+          const baseFolder = message.baseFolder || 'FLOW_Downloads';
+          const created = [];
+
+          for (const item of folders) {
+            const folderName = typeof item === 'string' ? item : item.folderName;
+            const title = (typeof item === 'object' && item.title) ? item.title : folderName;
+            const slidesCount = (typeof item === 'object' && item.slidesCount) ? item.slidesCount : '';
+
+            const cleanFolderPath = sanitizeFolderPath(
+              message.useBaseFolder === false ? folderName : `${baseFolder}/${folderName}`
+            );
+
+            const infoContent = [
+              `=========================================`,
+              `📁 Carrossel: ${title}`,
+              `🔢 Pasta: ${folderName}`,
+              slidesCount ? `📄 Slides: ${slidesCount}` : '',
+              `📅 Criado em: ${new Date().toLocaleString('pt-BR')}`,
+              `=========================================`,
+              `Pasta criada automaticamente pelo FLOW Studio Pro para armazenamento das imagens geradas.`
+            ].filter(Boolean).join('\r\n');
+
+            const dataUrl = 'data:text/plain;charset=utf-8,' + encodeURIComponent(infoContent);
+            const filePath = `${cleanFolderPath}/carrossel_info.txt`;
+
+            try {
+              await new Promise((resolve) => {
+                chrome.downloads.download(
+                  {
+                    url: dataUrl,
+                    filename: filePath,
+                    conflictAction: 'overwrite',
+                    saveAs: false
+                  },
+                  () => {
+                    if (chrome.runtime.lastError) {
+                      console.warn('[FLOW Downloader] Aviso ao criar pasta:', chrome.runtime.lastError);
+                    }
+                    resolve();
+                  }
+                );
+              });
+              created.push(cleanFolderPath);
+            } catch (err) {
+              console.warn('[FLOW Downloader] Erro ao criar pasta de carrossel:', err);
+            }
+          }
+
+          sendResponse({ success: true, created });
           break;
         }
 

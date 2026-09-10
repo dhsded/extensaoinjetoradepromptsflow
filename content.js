@@ -147,6 +147,72 @@
     }
   }
 
+  /**
+   * Salva configurações de forma segura e resiliente:
+   * 1. chrome.storage.local (se disponível)
+   * 2. localStorage (backup imediato)
+   * 3. Mensagem para o background worker (onde chrome.storage é 100% garantido)
+   */
+  function safeSetStorage(data, callback) {
+    if (!data || typeof data !== 'object') return;
+    let cbCalled = false;
+    const done = () => {
+      if (!cbCalled && typeof callback === 'function') {
+        cbCalled = true;
+        callback();
+      }
+    };
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set(data, () => {
+          done();
+        });
+      }
+    } catch (e) {
+      console.warn('[FLOW Content] safeSetStorage chrome.storage aviso:', e);
+    }
+    try {
+      if (typeof localStorage !== 'undefined') {
+        for (const [k, v] of Object.entries(data)) {
+          localStorage.setItem(`flow_${k}`, typeof v === 'string' ? v : JSON.stringify(v));
+        }
+      }
+    } catch (e) {}
+    safeSendMessage({
+      action: 'SAVE_SETTINGS',
+      settings: data
+    }, () => {
+      done();
+    });
+  }
+
+  /**
+   * Lê configurações do storage de forma segura
+   */
+  function safeGetStorage(keys, callback) {
+    let resolved = false;
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.get(keys, (res) => {
+          if (!resolved && typeof callback === 'function') {
+            resolved = true;
+            callback(res || {});
+          }
+        });
+        return;
+      }
+    } catch (e) {}
+
+    // Fallback lendo do background ou localStorage
+    safeSendMessage({ action: 'GET_SETTINGS' }, (res) => {
+      if (!resolved && typeof callback === 'function') {
+        resolved = true;
+        const result = res && res.settings ? res.settings : {};
+        callback(result);
+      }
+    });
+  }
+
   // Carrega configurações iniciais salvas no Chrome Storage
   safeSendMessage({ action: 'GET_SETTINGS' }, (response) => {
     if (response && response.settings) {
@@ -428,8 +494,27 @@
     }
 
     // 7. O elemento DEVE pertencer ao Canvas principal ou Feed de Geração do FLOW
-    const isInsideCanvas = img.closest('main, [role="main"], [role="feed"], [class*="canvas" i], [data-testid*="virtuoso"], section');
-    if (!isInsideCanvas) {
+    const isInsideCanvas = img.closest([
+      'main',
+      '[role="main"]',
+      '[role="feed"]',
+      '[role="article"]',
+      '[role="region"]',
+      'section',
+      '[class*="canvas" i]',
+      '[class*="workspace" i]',
+      '[class*="project" i]',
+      '[data-testid*="virtuoso"]',
+      '[class*="sc-" i]',
+      '[class*="grid" i]',
+      '[class*="feed" i]',
+      '[class*="stream" i]',
+      '[class*="generation" i]',
+      '[class*="card" i]'
+    ].join(', '));
+
+    const isGoogleMedia = rawSrc.includes('googleusercontent.com') || rawSrc.includes('blob:');
+    if (!isInsideCanvas && !isGoogleMedia) {
       return false;
     }
 
@@ -744,7 +829,7 @@
       settings.telegramSendDetailedPrompts = detailedPrompts;
       settings.telegramSendCharacterThumbnails = charThumbnails;
 
-      chrome.storage.local.set({
+      safeSetStorage({
         telegramEnabled: enabled,
         telegramBotToken: token,
         telegramChatId: chatId,
@@ -764,7 +849,7 @@
         });
       }
 
-      chrome.storage.local.get(['flow_macro_config'], (res) => {
+      safeGetStorage(['flow_macro_config'], (res) => {
         const cfg = res.flow_macro_config || {};
         cfg.telegramEnabled = enabled;
         cfg.telegramBotToken = token;
@@ -772,7 +857,7 @@
         cfg.telegramSendCoverPhoto = coverPhoto;
         cfg.telegramSendDetailedPrompts = detailedPrompts;
         cfg.telegramSendCharacterThumbnails = charThumbnails;
-        chrome.storage.local.set({ flow_macro_config: cfg });
+        safeSetStorage({ flow_macro_config: cfg });
       });
 
       if (notify) {
@@ -1007,7 +1092,7 @@
         return; // Cancelado pelo usuário
       }
       settings.downloadFolder = targetFolder;
-      chrome.storage.local.set({ downloadFolder: targetFolder });
+      safeSetStorage({ downloadFolder: targetFolder });
       safeSendMessage({
         action: 'SAVE_SETTINGS',
         settings: { downloadFolder: targetFolder }
@@ -1041,8 +1126,10 @@
       hudCancelBtn.style.display = 'flex';
     }
 
-    showToast(`📁 Pasta de destino: Downloads/${targetFolder}`, 'info');
-    showToast('⬆️ Subindo ao topo da página para carregar todas as imagens desde o início...', 'info');
+    if (!options || !options.quick) {
+      showToast(`📁 Pasta de destino: Downloads/${targetFolder}`, 'info');
+      showToast('⬆️ Subindo ao topo da página para carregar todas as imagens desde o início...', 'info');
+    }
 
     const scrollers = findScrollContainers();
     const primaryScroller = scrollers[0] || {
@@ -1061,8 +1148,8 @@
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
 
-    // Aguarda 1.2s para o Virtuoso do FLOW renderizar os cards iniciais do topo
-    await new Promise(r => setTimeout(r, 1200));
+    // Aguarda para o Virtuoso do FLOW renderizar os cards iniciais do topo
+    await new Promise(r => setTimeout(r, options && options.quick ? 600 : 1200));
 
     // Mapa para acumular imagens descobertas durante a rolagem (previne perdas em virtual lists)
     const collectedMap = new Map();
@@ -1083,82 +1170,88 @@
     // Coleta inicial no topo absoluto
     collectAllVisible();
 
-    showToast('📜 Descendo progressivamente até o final para capturar todas as imagens...', 'info');
+    if (options && options.quick) {
+      // Coleta rápida das imagens imediatamente visíveis no Canvas atual
+      await new Promise(r => setTimeout(r, 400));
+      collectAllVisible();
+    } else {
+      showToast('📜 Descendo progressivamente até o final para capturar todas as imagens...', 'info');
 
-    // PASSO 2: Loop de descida progressiva controlada em passos de 380px
-    let lastHeight = 0;
-    let lastImageCount = collectedMap.size;
-    let bottomConfirmationCount = 0;
-    const maxSteps = 60; // Suporta páginas longas com múltiplos carrosséis
+      // PASSO 2: Loop de descida progressiva controlada em passos de 380px
+      let lastHeight = 0;
+      let lastImageCount = collectedMap.size;
+      let bottomConfirmationCount = 0;
+      const maxSteps = 60; // Suporta páginas longas com múltiplos carrosséis
 
-    for (let step = 1; step <= maxSteps; step++) {
-      if (cancelRequested) {
-        showToast('🛑 Rolagem cancelada pelo usuário.', 'info');
-        resetHudButtons();
-        isScrollingAndDownloading = false;
-        return;
-      }
+      for (let step = 1; step <= maxSteps; step++) {
+        if (cancelRequested) {
+          showToast('🛑 Rolagem cancelada pelo usuário.', 'info');
+          resetHudButtons();
+          isScrollingAndDownloading = false;
+          return;
+        }
 
-      // Rola todos os containers ativos em passos graduais de 380px
-      for (const scroller of scrollers) {
-        scroller.scrollBy(380);
-      }
+        // Rola todos os containers ativos em passos graduais de 380px
+        for (const scroller of scrollers) {
+          scroller.scrollBy(380);
+        }
 
-      // Rola eventuais strips horizontais
-      const horizontalStrips = document.querySelectorAll('[style*="overflow-x"], div, section');
-      for (const el of horizontalStrips) {
-        if (el.scrollWidth > el.clientWidth + 50) {
-          el.scrollBy({ left: 350, behavior: 'smooth' });
+        // Rola eventuais strips horizontais
+        const horizontalStrips = document.querySelectorAll('[style*="overflow-x"], div, section');
+        for (const el of horizontalStrips) {
+          if (el.scrollWidth > el.clientWidth + 50) {
+            el.scrollBy({ left: 350, behavior: 'smooth' });
+          }
+        }
+
+        // Aguarda 750ms por passo para o DOM virtual e as requisições de imagem renderizarem
+        await new Promise(r => setTimeout(r, 750));
+
+        if (cancelRequested) {
+          resetHudButtons();
+          isScrollingAndDownloading = false;
+          return;
+        }
+
+        collectAllVisible();
+
+        const currentHeight = primaryScroller.getScrollHeight();
+        const currentScrollTop = primaryScroller.getScrollTop();
+        const clientH = primaryScroller.getClientHeight();
+        const currentCount = collectedMap.size;
+
+        // Verifica se alcançou o fim físico da rolagem
+        const isAtBottom = (currentScrollTop + clientH >= currentHeight - 35);
+
+        if (currentHeight > lastHeight + 10 || currentCount > lastImageCount) {
+          bottomConfirmationCount = 0;
+          lastHeight = currentHeight;
+          lastImageCount = currentCount;
+        } else if (isAtBottom) {
+          bottomConfirmationCount++;
+          // Confirma 3 verificações consecutivas no fundo absoluto da página
+          if (bottomConfirmationCount >= 3) {
+            console.log('[FLOW Downloader] Fim definitivo da página verificado com sucesso.');
+            break;
+          }
         }
       }
 
-      // Aguarda 750ms por passo para o DOM virtual e as requisições de imagem renderizarem
-      await new Promise(r => setTimeout(r, 750));
-
       if (cancelRequested) {
         resetHudButtons();
         isScrollingAndDownloading = false;
         return;
       }
 
+      // PASSO 3: Aguarda 800ms no fundo da página para carregamento das últimas imagens e coleta final
+      await new Promise(r => setTimeout(r, 800));
       collectAllVisible();
 
-      const currentHeight = primaryScroller.getScrollHeight();
-      const currentScrollTop = primaryScroller.getScrollTop();
-      const clientH = primaryScroller.getClientHeight();
-      const currentCount = collectedMap.size;
-
-      // Verifica se alcançou o fim físico da rolagem
-      const isAtBottom = (currentScrollTop + clientH >= currentHeight - 35);
-
-      if (currentHeight > lastHeight + 10 || currentCount > lastImageCount) {
-        bottomConfirmationCount = 0;
-        lastHeight = currentHeight;
-        lastImageCount = currentCount;
-      } else if (isAtBottom) {
-        bottomConfirmationCount++;
-        // Confirma 3 verificações consecutivas no fundo absoluto da página
-        if (bottomConfirmationCount >= 3) {
-          console.log('[FLOW Downloader] Fim definitivo da página verificado com sucesso.');
-          break;
-        }
-      }
+      // PASSO 4: Retorna a rolagem para o topo suavemente
+      primaryScroller.scrollTo(0);
+      window.scrollTo({ top: 0, behavior: 'instant' });
+      await new Promise(r => setTimeout(r, 400));
     }
-
-    if (cancelRequested) {
-      resetHudButtons();
-      isScrollingAndDownloading = false;
-      return;
-    }
-
-    // PASSO 3: Aguarda 800ms no fundo da página para carregamento das últimas imagens e coleta final
-    await new Promise(r => setTimeout(r, 800));
-    collectAllVisible();
-
-    // PASSO 4: Retorna a rolagem para o topo suavemente
-    primaryScroller.scrollTo(0);
-    window.scrollTo({ top: 0, behavior: 'instant' });
-    await new Promise(r => setTimeout(r, 400));
 
     // 3. Prepara a lista consolidada de todas as imagens encontradas
     const allDiscovered = Array.from(collectedMap.values());
@@ -1175,7 +1268,7 @@
       return;
     }
 
-    showToast(`⚡ Iniciando download de ${totalFound} imagens em resolução máxima...`, 'info');
+    showToast(`⚡ Iniciando download de ${totalFound} imagem(ns) em resolução máxima...`, 'info');
 
     if (hudBtn) {
       hudBtn.innerHTML = `
@@ -1189,7 +1282,7 @@
           <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line>
           <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line>
         </svg>
-        <span>Baixando ${totalFound} imagens...</span>
+        <span>Baixando ${totalFound} imagem(ns)...</span>
       `;
     }
 
@@ -1210,25 +1303,41 @@
       };
     });
 
-    // 5. Envia o lote completo para a fila de download no background worker
-    safeSendMessage(
-      {
-        action: 'DOWNLOAD_BATCH',
-        items: batchItems,
-        folder: targetFolder
-      },
-      (response) => {
-        // Marca visualmente os cards presentes na tela como salvos
-        for (const item of allDiscovered) {
-          if (item.card) markCardAsDownloaded(item.card);
-          processedImageIds.add(item.url);
-        }
+    // 5. Envia o lote completo para a fila de download no background worker com Promise e timeout de segurança
+    return new Promise((resolve) => {
+      safeSendMessage(
+        {
+          action: 'DOWNLOAD_BATCH',
+          items: batchItems,
+          folder: targetFolder
+        },
+        (response) => {
+          // Marca visualmente os cards presentes na tela como salvos
+          for (const item of allDiscovered) {
+            if (item.card) markCardAsDownloaded(item.card);
+            processedImageIds.add(item.url);
+          }
 
-        showToast(`🎉 ${totalFound} imagens enviadas para Downloads/${targetFolder}!`, 'success');
-        resetHudButtons();
-        isScrollingAndDownloading = false;
-      }
-    );
+          showToast(`🎉 ${totalFound} imagem(ns) enviada(s) para Downloads/${targetFolder}!`, 'success');
+          resetHudButtons();
+          isScrollingAndDownloading = false;
+          resolve(true);
+        }
+      );
+
+      // Timeout defensivo de 6s para destravar HUD e macro caso o worker demore a responder
+      setTimeout(() => {
+        if (isScrollingAndDownloading) {
+          for (const item of allDiscovered) {
+            if (item.card) markCardAsDownloaded(item.card);
+            processedImageIds.add(item.url);
+          }
+          resetHudButtons();
+          isScrollingAndDownloading = false;
+          resolve(true);
+        }
+      }, 6000);
+    });
   }
 
   /**
@@ -1252,6 +1361,519 @@
 
     if (cancelBtn) {
       cancelBtn.style.display = 'none';
+    }
+  }
+
+  // ==========================================================================
+  // Motor de Comparação Inteligente e Organização por Carrossel (Sob Demanda)
+  // ==========================================================================
+
+  /**
+   * Normaliza um texto para comparação tolerante a maiúsculas, acentos e pontuações
+   * @param {string} text
+   * @returns {string}
+   */
+  function normalizeTextForMatching(text) {
+    if (!text || typeof text !== 'string') return '';
+    return text
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // Remove acentos
+      .replace(/["'“”«»]/g, ' ')                        // Remove aspas
+      .replace(/[^\w\s]/g, ' ')                         // Remove pontuações
+      .replace(/\s+/g, ' ')                             // Colapsa espaços múltiplos
+      .trim();
+  }
+
+  /**
+   * Compara um texto de prompt extraído do Canvas do FLOW contra todos os slides de todos os carrosséis
+   * Retorna o carrossel vencedor, o slide correspondente e a pontuação de confiança
+   * @param {string} rawExtractedText - Texto lido no bloco de geração do FLOW (painel direito / legendas)
+   * @param {Array<Object>} carousels - Lista de carrosséis carregados no Macro Studio
+   * @returns {{ carousel: Object, slide: Object, carouselIndex: number, carouselTitle: string, slideIndex: number, score: number, matchReason: string }|null}
+   */
+  function matchPromptToCarousels(rawExtractedText, carousels) {
+    if (!rawExtractedText || !carousels || !Array.isArray(carousels) || carousels.length === 0) {
+      return null;
+    }
+
+    const normExtracted = normalizeTextForMatching(rawExtractedText);
+    if (normExtracted.length < 5) return null;
+
+    let bestMatch = null;
+    let highestScore = 0;
+
+    for (let cIdx = 0; cIdx < carousels.length; cIdx++) {
+      const carousel = carousels[cIdx];
+      const slides = carousel.slides || [];
+
+      for (let sIdx = 0; sIdx < slides.length; sIdx++) {
+        const slide = slides[sIdx];
+        let score = 0;
+        let matchReason = '';
+
+        // 1. Prioridade Máxima: Diálogo do Balão (ptDialogue / balloonText)
+        const dialogue = slide.ptDialogue || slide.balloonText || '';
+        const normDialogue = normalizeTextForMatching(dialogue);
+        if (normDialogue.length >= 8) {
+          if (normExtracted.includes(normDialogue)) {
+            score = 100;
+            matchReason = `Diálogo exato ("${dialogue.slice(0, 35)}...")`;
+          } else {
+            const diagWords = normDialogue.split(' ').filter(w => w.length >= 3);
+            if (diagWords.length > 0) {
+              const matchedWords = diagWords.filter(w => normExtracted.includes(w));
+              const diagRatio = matchedWords.length / diagWords.length;
+              if (diagRatio >= 0.70) {
+                score = Math.max(score, Math.round(diagRatio * 95));
+                matchReason = `Diálogo parcial (${Math.round(diagRatio * 100)}% das palavras)`;
+              }
+            }
+          }
+        }
+
+        // 2. Prioridade Média-Alta: Trecho característico do Prompt de Imagem
+        const imgPrompt = slide.imagePrompt || '';
+        const normImgPrompt = normalizeTextForMatching(imgPrompt);
+        if (normImgPrompt.length >= 20) {
+          const promptHead = normImgPrompt.slice(0, 50);
+          if (normExtracted.includes(promptHead)) {
+            if (score < 90) {
+              score = 90;
+              matchReason = 'Início do Prompt de Imagem idêntico';
+            }
+          } else {
+            const ignoredWords = new Set([
+              'detailed', 'sketched', 'illustration', 'style', 'art', 'scene',
+              'character', 'background', 'light', 'diffused', 'soft', 'prompt',
+              'image', 'dall', 'midjourney', 'texto', 'baloes', 'balao'
+            ]);
+            const pWords = normImgPrompt.split(' ').filter(w => w.length >= 4 && !ignoredWords.has(w));
+            if (pWords.length >= 4) {
+              const matchedPWords = pWords.filter(w => normExtracted.includes(w));
+              const pRatio = matchedPWords.length / pWords.length;
+              if (pRatio >= 0.35) {
+                const calculatedScore = Math.round(40 + (pRatio * 50));
+                if (calculatedScore > score) {
+                  score = calculatedScore;
+                  matchReason = `Sobreposição de palavras do prompt (${Math.round(pRatio * 100)}%)`;
+                }
+              }
+            }
+          }
+        }
+
+        // 3. Prioridade Título do Slide
+        const slideTitle = slide.slideTitle || '';
+        const normTitle = normalizeTextForMatching(slideTitle);
+        if (normTitle.length >= 8 && normExtracted.includes(normTitle)) {
+          if (score < 70) {
+            score = 70;
+            matchReason = `Título do slide ("${slideTitle}")`;
+          }
+        }
+
+        if (score > highestScore) {
+          highestScore = score;
+          bestMatch = {
+            carousel: carousel,
+            slide: slide,
+            carouselIndex: carousel.index || (cIdx + 1),
+            carouselTitle: carousel.title || `Carrossel ${cIdx + 1}`,
+            slideIndex: slide.index || (sIdx + 1),
+            score: score,
+            matchReason: matchReason
+          };
+        }
+      }
+    }
+
+    // Aceita apenas correspondências com pontuação mínima de confiança (>= 45)
+    return (highestScore >= 45) ? bestMatch : null;
+  }
+
+  /**
+   * Extrai o texto do prompt e diálogos de um bloco de geração no Canvas do FLOW
+   * Lê o painel no canto direito da tela (conforme interface do FLOW) e as legendas sob as imagens
+   * @param {HTMLElement} block - Elemento do bloco/linha no Canvas
+   * @returns {string}
+   */
+  function extractPromptFromGenerationBlock(block) {
+    if (!block) return '';
+
+    const textPieces = [];
+
+    // 1. Procura por nós que contêm tags estruturadas do prompt no painel direito
+    const candidateNodes = Array.from(block.querySelectorAll('div, p, span, section')).filter(el => {
+      if (el.children.length > 8) return false;
+      const t = (el.innerText || el.textContent || '').trim();
+      return (
+        t.length > 15 &&
+        (t.includes('Texto nos balões') || t.includes('Prompt de Imagem') || t.includes('PT-BR') || t.includes('Midjourney') || t.includes('Dall-E'))
+      );
+    });
+
+    if (candidateNodes.length > 0) {
+      candidateNodes.sort((a, b) => (b.innerText || '').length - (a.innerText || '').length);
+      textPieces.push(candidateNodes[0].innerText || candidateNodes[0].textContent || '');
+    }
+
+    // 2. Extrai legendas e badges sob as imagens (ex: Texto nos balões: PT-BR: "...")
+    const captions = Array.from(block.querySelectorAll('[class*="caption" i], [class*="subtitle" i], [class*="badge" i], span, div')).filter(el => {
+      const t = (el.innerText || el.textContent || '').trim();
+      return t.length > 10 && (t.includes('Texto nos balões') || t.includes('PT-BR') || t.includes('Prompt:'));
+    });
+
+    for (const cap of captions) {
+      textPieces.push(cap.innerText || cap.textContent || '');
+    }
+
+    // 3. Se nenhum bloco específico foi capturado, utiliza o texto visível completo do bloco
+    if (textPieces.length === 0) {
+      textPieces.push(block.innerText || block.textContent || '');
+    }
+
+    return textPieces.join('\n\n');
+  }
+
+  /**
+   * Localiza todos os blocos de geração de imagens renderizados no Virtuoso do FLOW
+   * @returns {Array<HTMLElement>}
+   */
+  function findGenerationBlocks() {
+    const isVisible = (el) => {
+      if (!el) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+
+    // 1. Filhos diretos da lista virtuoso ou containers styled-components do Canvas
+    const virtuosoItems = Array.from(document.querySelectorAll([
+      '[data-testid="virtuoso-item-list"] > div',
+      'div.sc-784d6f75-0',
+      'div.sc-784d6f75-1',
+      'div[class*="generation" i]'
+    ].join(', '))).filter(el => {
+      if (!isVisible(el)) return false;
+      if (el.closest('[id*="fd-"], [class*="fd-"]')) return false;
+      const imgs = Array.from(el.querySelectorAll('img')).filter(img => isGeneratedFlowImage(img));
+      return imgs.length > 0;
+    });
+
+    if (virtuosoItems.length > 0) {
+      return virtuosoItems;
+    }
+
+    // 2. Fallback: agrupamento por ancestral das imagens geradas válidas
+    const flowImgs = Array.from(document.querySelectorAll('img')).filter(img => isGeneratedFlowImage(img));
+    const blocksSet = new Set();
+    for (const img of flowImgs) {
+      const block = img.closest('[role="article"], [class*="card" i], [class*="feed" i], section, main > div') || img.parentElement.parentElement;
+      if (block && !block.closest('[id*="fd-"], [class*="fd-"]')) {
+        blocksSet.add(block);
+      }
+    }
+    return Array.from(blocksSet);
+  }
+
+  /**
+   * Função independente de comparação e organização inteligente por carrossel:
+   * 1. Lê o número de carrosséis e pré-cria as pastas correspondentes em Downloads (Carrossel_1, Carrossel_2, etc.)
+   * 2. Desce até o fim da página lendo os prompts no canto direito de cada bloco de geração
+   * 3. Compara com os carrosséis e salva as imagens (de 2 em 2, 3 em 3, 4 em 4) em suas respectivas pastas
+   * 4. Retorna a rolagem suavemente para o topo da página ao concluir
+   */
+  async function startOrganizedCarouselDownload() {
+    if (isScrollingAndDownloading) {
+      showToast('⚠️ Já existe um processo de download ou organização em andamento...', 'info');
+      return;
+    }
+
+    // 1. Recupera a lista de carrosséis configurados
+    let carousels = (window.flowMacroInstance && window.flowMacroInstance.carousels) || [];
+    if (!carousels || carousels.length === 0) {
+      try {
+        const bkp = localStorage.getItem('flow_macro_carousels_backup') || localStorage.getItem('flow_macro_carousels');
+        if (bkp) carousels = JSON.parse(bkp);
+      } catch (e) {}
+    }
+
+    if (!carousels || carousels.length === 0) {
+      showToast('⚠️ Nenhum carrossel/roteiro carregado! Abra o Macro Studio e carregue seu PDF ou roteiro antes de organizar.', 'warning');
+      openMacroStudioModal();
+      return;
+    }
+
+    const totalCarouselsCount = carousels.length;
+    showToast(`🚀 Iniciando organização para ${totalCarouselsCount} carrosséis detectados...`, 'info');
+
+    // 2. Pré-criação imediata das pastas no disco (Downloads) para cada carrossel
+    // "As pastas serão criadas assim que começar a rodar o programa,ele lerá o número de carrosseis,e irá criá-las dentro de downloads."
+    const baseFolder = settings.downloadFolder || 'FLOW_Downloads';
+    const folderList = carousels.map((c, idx) => {
+      const folderName = `Carrossel_${c.index || (idx + 1)}`;
+      return {
+        folderName: folderName,
+        title: c.title || `Carrossel ${idx + 1}`,
+        slidesCount: (c.slides || []).length
+      };
+    });
+
+    try {
+      safeSendMessage({
+        action: 'PREPARE_CAROUSEL_FOLDERS',
+        folders: folderList,
+        baseFolder: baseFolder,
+        useBaseFolder: false // Cria diretamente Carrossel_1, Carrossel_2... na raiz de Downloads
+      });
+      showToast(`📁 ${folderList.length} pastas pré-criadas em Downloads (${folderList.map(f => f.folderName).slice(0, 3).join(', ')}...)`, 'info');
+    } catch (fErr) {
+      console.warn('[FLOW Downloader] Erro ao pré-criar pastas:', fErr);
+    }
+
+    isScrollingAndDownloading = true;
+    cancelRequested = false;
+
+    // Atualiza botões do HUD e do Macro Studio
+    const hudBtn = document.getElementById('fd-btn-download-all');
+    const hudOrganizeBtn = document.getElementById('fd-btn-organize-carousels');
+    const hudCancelBtn = document.getElementById('fd-btn-cancel');
+
+    if (hudOrganizeBtn) {
+      hudOrganizeBtn.disabled = true;
+      hudOrganizeBtn.innerHTML = `
+        <svg class="fd-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="12" y1="2" x2="12" y2="6"></line>
+          <line x1="12" y1="18" x2="12" y2="22"></line>
+          <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line>
+          <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line>
+          <line x1="2" y1="12" x2="6" y2="12"></line>
+          <line x1="18" y1="12" x2="22" y2="12"></line>
+        </svg>
+        <span>Comparando e Organizando...</span>
+      `;
+    }
+    if (hudBtn) hudBtn.disabled = true;
+    if (hudCancelBtn) hudCancelBtn.style.display = 'flex';
+
+    // PASSO 1: Sobe a rolagem até o topo absoluto (0) para carregar todas as imagens desde o início
+    showToast('⬆️ Subindo ao topo da página para iniciar a leitura de todos os prompts...', 'info');
+    const scrollers = findScrollContainers();
+    const primaryScroller = scrollers[0] || {
+      scrollTo: () => window.scrollTo(0, 0),
+      scrollBy: (v) => window.scrollBy(0, v),
+      getScrollTop: () => window.scrollY,
+      getScrollHeight: () => document.documentElement.scrollHeight,
+      getClientHeight: () => window.innerHeight
+    };
+
+    for (const scroller of scrollers) {
+      scroller.scrollTo(0);
+    }
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+
+    await new Promise(r => setTimeout(r, 1200));
+
+    // Rastreamento das imagens e estatísticas por carrossel
+    const processedUrlsInThisRun = new Set();
+    const statsPerCarousel = {};
+    for (const f of folderList) {
+      statsPerCarousel[f.folderName] = 0;
+    }
+    let totalImagesOrganized = 0;
+    let totalBlocksMatched = 0;
+
+    /**
+     * Varre todos os blocos de geração visíveis na posição atual,
+     * compara o prompt à direita com os carrosséis e envia as imagens para download
+     */
+    async function processVisibleBlocks() {
+      const blocks = findGenerationBlocks();
+
+      for (const block of blocks) {
+        if (cancelRequested) break;
+
+        // Encontra todas as imagens geradas dentro do bloco
+        const blockImgs = Array.from(block.querySelectorAll('img')).filter(img => isGeneratedFlowImage(img));
+        if (blockImgs.length === 0) continue;
+
+        // Filtra apenas imagens que ainda não foram enviadas nesta execução
+        const pendingImgs = [];
+        for (const img of blockImgs) {
+          const rawUrl = img.currentSrc || img.src || img.dataset.src || '';
+          const fullUrl = normalizeImageUrl(rawUrl);
+          if (fullUrl && !processedUrlsInThisRun.has(fullUrl)) {
+            pendingImgs.push({ img, url: fullUrl });
+          }
+        }
+
+        if (pendingImgs.length === 0) continue;
+
+        // Extrai o prompt do painel direito do bloco
+        const promptText = extractPromptFromGenerationBlock(block);
+        const match = matchPromptToCarousels(promptText, carousels);
+
+        let targetFolder = 'Carrossel_1';
+        let slideInfo = 'Slide';
+
+        if (match) {
+          targetFolder = `Carrossel_${match.carouselIndex}`;
+          slideInfo = `Carrossel ${match.carouselIndex} • Slide ${match.slideIndex}`;
+          totalBlocksMatched++;
+          console.log(`[FLOW Organizar] Bloco combinado com sucesso: ${slideInfo} (${match.matchReason}) -> ${pendingImgs.length} imagens`);
+        } else {
+          // Se não encontrou correspondência com alta confiança, direciona para o primeiro carrossel
+          targetFolder = folderList[0] ? folderList[0].folderName : 'Carrossel_1';
+          console.log(`[FLOW Organizar] Bloco sem match exato. Destinando para ${targetFolder}`);
+        }
+
+        // Monta os itens para download na pasta correspondente
+        // "indo baixando de 2 em 2, 3 em 3, 4 em 4, de acordo com o que foi configurado"
+        const dateStamp = Date.now().toString().slice(-4);
+        const batchItems = pendingImgs.map((item, idx) => {
+          const slidePrefix = match && match.slide
+            ? `Slide_${String(match.slideIndex).padStart(2, '0')}`
+            : `Slide_${dateStamp}`;
+          const varNum = String(idx + 1).padStart(2, '0');
+          const filename = `${slidePrefix}_var${varNum}`;
+
+          return {
+            url: item.url,
+            filename: filename,
+            id: item.url
+          };
+        });
+
+        // Marca imediatamente como processadas para não baixar duplicado
+        for (const item of pendingImgs) {
+          processedUrlsInThisRun.add(item.url);
+          processedImageIds.add(item.url);
+          markCardAsDownloaded(item.img.closest('[role="article"], .card, button') || item.img);
+        }
+
+        // Envia para download no background diretamente na pasta correspondente
+        safeSendMessage({
+          action: 'DOWNLOAD_BATCH',
+          items: batchItems,
+          folder: targetFolder
+        });
+
+        statsPerCarousel[targetFolder] = (statsPerCarousel[targetFolder] || 0) + batchItems.length;
+        totalImagesOrganized += batchItems.length;
+
+        showToast(`📥 [${targetFolder}] Baixando ${batchItems.length} imagem(ns) do ${slideInfo}...`, 'info');
+        await new Promise(r => setTimeout(r, 250));
+      }
+    }
+
+    // Executa leitura inicial no topo
+    await processVisibleBlocks();
+
+    showToast('📜 Descendo progressivamente a página e comparando os prompts à direita...', 'info');
+
+    // PASSO 2: Loop de descida progressiva controlada em passos de 380px
+    let lastHeight = 0;
+    let lastUrlCount = processedUrlsInThisRun.size;
+    let bottomConfirmationCount = 0;
+    const maxSteps = 60;
+
+    for (let step = 1; step <= maxSteps; step++) {
+      if (cancelRequested) {
+        showToast('🛑 Organização interrompida pelo usuário.', 'info');
+        resetOrganizeHudButtons();
+        isScrollingAndDownloading = false;
+        return;
+      }
+
+      for (const scroller of scrollers) {
+        scroller.scrollBy(380);
+      }
+
+      await new Promise(r => setTimeout(r, 750));
+
+      if (cancelRequested) {
+        resetOrganizeHudButtons();
+        isScrollingAndDownloading = false;
+        return;
+      }
+
+      await processVisibleBlocks();
+
+      const currentHeight = primaryScroller.getScrollHeight();
+      const currentScrollTop = primaryScroller.getScrollTop();
+      const clientH = primaryScroller.getClientHeight();
+      const currentCount = processedUrlsInThisRun.size;
+
+      const isAtBottom = (currentScrollTop + clientH >= currentHeight - 35);
+
+      if (currentHeight > lastHeight + 10 || currentCount > lastUrlCount) {
+        bottomConfirmationCount = 0;
+        lastHeight = currentHeight;
+        lastUrlCount = currentCount;
+      } else if (isAtBottom) {
+        bottomConfirmationCount++;
+        if (bottomConfirmationCount >= 3) {
+          console.log('[FLOW Organizar] Fim da página alcançado com sucesso.');
+          break;
+        }
+      }
+    }
+
+    if (cancelRequested) {
+      resetOrganizeHudButtons();
+      isScrollingAndDownloading = false;
+      return;
+    }
+
+    // PASSO 3: Coleta final no fundo da página
+    await new Promise(r => setTimeout(r, 800));
+    await processVisibleBlocks();
+
+    // PASSO 4: "e subindo a página" - Retorna a rolagem para o topo suavemente
+    showToast('⬆️ Subindo a página de volta ao topo...', 'info');
+    for (const scroller of scrollers) {
+      scroller.scrollTo(0);
+    }
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    await new Promise(r => setTimeout(r, 600));
+
+    // PASSO 5: Relatório e encerramento
+    resetOrganizeHudButtons();
+    isScrollingAndDownloading = false;
+
+    if (totalImagesOrganized === 0) {
+      showToast('ℹ️ Nenhuma imagem nova do FLOW pendente para organizar.', 'info');
+      return;
+    }
+
+    const summaryParts = Object.entries(statsPerCarousel)
+      .filter(([_, count]) => count > 0)
+      .map(([folder, count]) => `${folder}: ${count} fotos`);
+
+    const summaryMsg = `🎉 ${totalImagesOrganized} imagens salvas e organizadas!\n${summaryParts.join(' | ')}`;
+    showToast(summaryMsg, 'success');
+
+    if (window.flowMacroInstance) {
+      window.flowMacroInstance.addLog(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📁 [ORGANIZAÇÃO POR CARROSSEL CONCLUÍDA!]\n• Total de imagens organizadas: ${totalImagesOrganized}\n• Blocos identificados com sucesso: ${totalBlocksMatched}\n• Distribuição por pastas:\n${summaryParts.map(s => '  - ' + s).join('\n')}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`, 'success');
+    }
+  }
+
+  function resetOrganizeHudButtons() {
+    resetHudButtons();
+    const hudOrganizeBtn = document.getElementById('fd-btn-organize-carousels');
+    if (hudOrganizeBtn) {
+      hudOrganizeBtn.disabled = false;
+      hudOrganizeBtn.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+          <polyline points="12 11 12 17"></polyline>
+          <polyline points="9 14 12 17 15 14"></polyline>
+        </svg>
+        <span>📁 Organizar por Carrossel</span>
+      `;
     }
   }
 
@@ -1437,6 +2059,16 @@
               <span>✈️ Configurar Bot Telegram</span>
             </button>
 
+            <!-- Botão Organizar por Carrossel (Comparação Inteligente) -->
+            <button class="fd-btn-primary" id="fd-btn-organize-carousels" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); margin-bottom: 6px; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);" title="Desce a página, compara os prompts à direita com os carrosséis e salva as imagens em suas respectivas pastas">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                <polyline points="12 11 12 17"></polyline>
+                <polyline points="9 14 12 17 15 14"></polyline>
+              </svg>
+              <span>📁 Organizar por Carrossel</span>
+            </button>
+
             <button class="fd-btn-primary" id="fd-btn-download-all">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -1476,8 +2108,15 @@
     const btnOpenTelegramStandalone = document.getElementById('fd-btn-open-telegram-standalone');
     const toggleAuto = document.getElementById('fd-toggle-auto');
     const selectQuality = document.getElementById('fd-select-quality');
+    const btnOrganizeCarousels = document.getElementById('fd-btn-organize-carousels');
     const btnDownloadAll = document.getElementById('fd-btn-download-all');
     const btnCancel = document.getElementById('fd-btn-cancel');
+
+    if (btnOrganizeCarousels) {
+      btnOrganizeCarousels.addEventListener('click', () => {
+        startOrganizedCarouselDownload();
+      });
+    }
 
     if (btnOpenMacro) {
       btnOpenMacro.addEventListener('click', () => {
@@ -1504,11 +2143,12 @@
     toggleAuto.addEventListener('change', (e) => {
       const val = e.target.checked;
       settings.autoDownload = val;
-      chrome.storage.local.set({ autoDownload: val });
-      safeSendMessage({
-        action: 'SAVE_SETTINGS',
-        settings: { autoDownload: val }
-      });
+      safeSetStorage({ autoDownload: val });
+      if (window.flowMacroInstance) {
+        window.flowMacroInstance.updateConfig({ autoDownloadResults: val });
+      }
+      const modalToggle = document.getElementById('fd-toggle-auto-download-results');
+      if (modalToggle) modalToggle.checked = val;
       updateHudUI();
       showToast(val ? '🟢 Download automático ativado!' : '⏸️ Download automático pausado.', val ? 'success' : 'info');
       if (val) scanAndInjectOverlayButtons();
@@ -1517,11 +2157,7 @@
     selectQuality.addEventListener('change', (e) => {
       const val = e.target.value;
       settings.quality = val;
-      chrome.storage.local.set({ quality: val });
-      safeSendMessage({
-        action: 'SAVE_SETTINGS',
-        settings: { quality: val }
-      });
+      safeSetStorage({ quality: val });
       showToast(`🎯 Resolução alterada para: ${val.toUpperCase()}`, 'info');
     });
 
@@ -1797,7 +2433,12 @@
                   <span>📚 Carrosséis Detectados no Roteiro:</span>
                   <span class="fd-badge-status" id="fd-carousels-count-badge" style="background: rgba(99, 102, 241, 0.2); color: #818cf8;">0 Carrosséis</span>
                 </span>
-                <span style="font-size: 11px; color: var(--fd-text-muted);">Clique para filtrar ou selecione "Todos" para gerar em lote com novos projetos</span>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <button type="button" class="fd-modal-btn-confirm" id="fd-btn-modal-organize-carousels" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 4px 12px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px; border: none; box-shadow: 0 2px 8px rgba(16,185,129,0.3); border-radius: 6px; cursor: pointer; color: #fff; font-weight: 600;" title="Compara os prompts na tela do FLOW e salva organizando em pastas de carrossel">
+                    📁 Comparar & Organizar em Pastas
+                  </button>
+                  <span style="font-size: 11px; color: var(--fd-text-muted);">Clique para filtrar ou selecione "Todos" para gerar em lote</span>
+                </div>
               </div>
               <div class="fd-carousel-chips" id="fd-carousel-chips">
                 <!-- Rendered dynamically -->
@@ -2157,6 +2798,14 @@
                   <rect x="4" y="4" width="16" height="16"></rect>
                 </svg>
                 <span>Parar</span>
+              </button>
+              <button class="fd-btn-macro-play" id="fd-btn-modal-organize-carousels-exec" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); margin-left: auto;" title="Compara os prompts na tela do FLOW e salva organizando em pastas de carrossel">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                  <polyline points="12 11 12 17"></polyline>
+                  <polyline points="9 14 12 17 15 14"></polyline>
+                </svg>
+                <span>📁 Organizar por Carrossel</span>
               </button>
             </div>
 
@@ -2719,10 +3368,14 @@
     const toggleAutoDownloadResults = macroModalElement.querySelector('#fd-toggle-auto-download-results');
     if (toggleAutoDownloadResults) {
       toggleAutoDownloadResults.addEventListener('change', (e) => {
-        engine.updateConfig({ autoDownloadResults: e.target.checked });
-        settings.autoDownload = e.target.checked;
-        chrome.storage.local.set({ autoDownload: e.target.checked });
-        showToast(e.target.checked ? '📥 Download automático de todas as imagens ao concluir ATIVADO!' : 'Download automático ao concluir desativado.', 'info');
+        const val = e.target.checked;
+        engine.updateConfig({ autoDownloadResults: val });
+        settings.autoDownload = val;
+        safeSetStorage({ autoDownload: val });
+        const hudToggle = document.getElementById('fd-toggle-auto');
+        if (hudToggle) hudToggle.checked = val;
+        updateHudUI();
+        showToast(val ? '📥 Download automático de todas as imagens ao gerar ATIVADO!' : 'Download automático desativado.', 'info');
       });
     }
 
@@ -2733,7 +3386,7 @@
         const mode = e.target.value;
         engine.updateConfig({ carouselFolderMode: mode });
         settings.carouselFolderMode = mode;
-        chrome.storage.local.set({ carouselFolderMode: mode });
+        safeSetStorage({ carouselFolderMode: mode });
         showToast(mode === 'individual' ? '📁 Pastas individuais por carrossel ATIVADAS!' : '📦 Pasta única consolidada ATIVADA!', 'info');
       });
     }
@@ -2775,7 +3428,7 @@
     if (toggleTgCover) {
       toggleTgCover.addEventListener('change', (e) => {
         engine.updateConfig({ telegramSendCoverPhoto: e.target.checked });
-        chrome.storage.local.set({ telegramSendCoverPhoto: e.target.checked });
+        safeSetStorage({ telegramSendCoverPhoto: e.target.checked });
       });
     }
 
@@ -2783,7 +3436,7 @@
     if (toggleTgPrompts) {
       toggleTgPrompts.addEventListener('change', (e) => {
         engine.updateConfig({ telegramSendDetailedPrompts: e.target.checked });
-        chrome.storage.local.set({ telegramSendDetailedPrompts: e.target.checked });
+        safeSetStorage({ telegramSendDetailedPrompts: e.target.checked });
       });
     }
 
@@ -2791,7 +3444,7 @@
     if (toggleTgChars) {
       toggleTgChars.addEventListener('change', (e) => {
         engine.updateConfig({ telegramSendCharacterThumbnails: e.target.checked });
-        chrome.storage.local.set({ telegramSendCharacterThumbnails: e.target.checked });
+        safeSetStorage({ telegramSendCharacterThumbnails: e.target.checked });
       });
     }
 
@@ -3159,6 +3812,15 @@
       enableMiniRunnerMode(false);
       showToast('⏹️ Macro totalmente encerrada e progresso resetado!', 'info');
     });
+
+    // Botões de Comparar e Organizar em Pastas de Carrossel no Modal
+    const btnModalOrganize1 = macroModalElement.querySelector('#fd-btn-modal-organize-carousels');
+    const btnModalOrganize2 = macroModalElement.querySelector('#fd-btn-modal-organize-carousels-exec');
+    const handleModalOrganizeClick = () => {
+      startOrganizedCarouselDownload();
+    };
+    if (btnModalOrganize1) btnModalOrganize1.addEventListener('click', handleModalOrganizeClick);
+    if (btnModalOrganize2) btnModalOrganize2.addEventListener('click', handleModalOrganizeClick);
 
     // Botão para limpar console de logs ao vivo
     const btnClearLogs = macroModalElement.querySelector('#fd-btn-clear-logs');
@@ -4816,6 +5478,7 @@
     // Exporta utilitários globais para integração com o motor de macro
     window.flowShowToast = showToast;
     window.flowStartBatchDownload = startScrollAndBatchDownload;
+    window.flowOrganizeCarousels = startOrganizedCarouselDownload;
     window.flowSettings = settings;
     window.flowFindGeneratedImages = findFlowImages;
   }

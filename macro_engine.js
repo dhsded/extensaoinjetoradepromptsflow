@@ -6219,6 +6219,11 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
       }
     }
 
+    // Pré-cria as pastas dos carrosséis no disco (Downloads) assim que começar a rodar o programa
+    if (this.carousels && this.carousels.length > 0) {
+      this.prepareCarouselFoldersInDownloads();
+    }
+
     if (this.prompts.length === 0) {
       this.addLog('⚠️ Nenhum prompt disponível para executar. Cole um roteiro ou carregue um PDF.', 'warning');
       return;
@@ -6260,6 +6265,45 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
     this.dismissFlowOnboardingBanners();
 
     this.runLoop();
+  }
+
+  /**
+   * Pré-cria as pastas no disco em Downloads para cada carrossel ativo
+   * Chamado automaticamente assim que o programa começa a rodar
+   */
+  async prepareCarouselFoldersInDownloads() {
+    if (!this.carousels || this.carousels.length === 0) return;
+    const activeCarousels = this.carousels.filter(c => c.enabled !== false);
+    if (activeCarousels.length === 0) return;
+
+    this.addLog(`📁 Pré-criando ${activeCarousels.length} pastas de carrossel em Downloads...`, 'info');
+
+    const folderList = activeCarousels.map((c, idx) => {
+      const folderName = `Carrossel_${c.index || (idx + 1)}`;
+      return {
+        folderName: folderName,
+        title: c.title || `Carrossel ${idx + 1}`,
+        slidesCount: (c.slides || []).length
+      };
+    });
+
+    try {
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {
+        chrome.runtime.sendMessage({
+          action: 'PREPARE_CAROUSEL_FOLDERS',
+          folders: folderList,
+          baseFolder: this.config.downloadFolder || 'FLOW_Downloads',
+          useBaseFolder: false
+        }, () => {
+          if (chrome.runtime.lastError) {
+            // Ignora se contexto não responder
+          }
+        });
+      }
+      this.addLog(`✅ ${folderList.length} pastas de carrossel pré-criadas no disco: ${folderList.map(f => f.folderName).join(', ')}`, 'success');
+    } catch (err) {
+      console.warn('[FLOW Macro] Aviso ao pré-criar pastas de carrossel:', err);
+    }
   }
 
   /**
@@ -7515,6 +7559,30 @@ ${userQuery || 'Analise o status atual do Google FLOW, verifique se há bloqueio
         this.addLog(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n✅ [SLIDE CONCLUÍDO COM SUCESSO!]\n• Slide ${slideNum}/${totalSlides}: "${item.title || ('Slide ' + slideNum)}"\n• Carrossel: "${carouselTitle}"${targetRepeats > 1 ? `\n• Repetição: ${rep + 1}/${targetRepeats}` : ''}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`, 'success');
         if (typeof window !== 'undefined' && typeof window.flowShowToast === 'function') {
           window.flowShowToast(`✅ Slide ${slideNum}/${totalSlides} concluído!`, 'success');
+        }
+
+        // =======================================================================
+        // Download Automático Imediato do Slide Concluído
+        // =======================================================================
+        const shouldAutoDownloadSlide = Boolean(
+          this.config.autoDownloadResults ||
+          (typeof window !== 'undefined' && window.flowSettings && window.flowSettings.autoDownload)
+        );
+
+        if (shouldAutoDownloadSlide && typeof window !== 'undefined' && typeof window.flowStartBatchDownload === 'function') {
+          const baseFolder = this.config.downloadFolder || (window.flowSettings && window.flowSettings.downloadFolder) || 'FLOW_Downloads';
+          let slideFolder = baseFolder;
+          if (this.config.carouselFolderMode !== 'single') {
+            const cleanCTitle = FlowMacroEngine.sanitizeFolderName(carouselTitle || `Carrossel`);
+            slideFolder = `${baseFolder}/${cleanCTitle}`;
+          }
+
+          try {
+            this.addLog(`📥 [Auto-Download] Coletando e salvando imagem gerada do slide ${slideNum}...`, 'info');
+            await window.flowStartBatchDownload(slideFolder, { onlyNew: true, quick: true });
+          } catch (dlErr) {
+            console.warn('[FLOW Macro] Aviso ao baixar imagem gerada do slide:', dlErr);
+          }
         }
 
         // 📸 Captura imagem de capa do carrossel ao concluir o 1º slide
