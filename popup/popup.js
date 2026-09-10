@@ -500,6 +500,46 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // ==========================================================================
+  // Botão "📁 Comparar & Organizar por Carrossel" no Popup
+  // ==========================================================================
+  const btnOrganizePopup = document.getElementById('btn-organize-carousels-popup');
+  if (btnOrganizePopup) {
+    btnOrganizePopup.addEventListener('click', async () => {
+      if (!activeTab || !activeTab.id || !isFlowUrl(activeTab.url)) {
+        alert('Abra a página do FLOW (Google Labs) para comparar e organizar imagens.');
+        return;
+      }
+
+      btnOrganizePopup.disabled = true;
+      btnOrganizePopup.style.opacity = '0.75';
+      const originalText = btnOrganizePopup.innerHTML;
+      btnOrganizePopup.innerHTML = `<span>⏳ Iniciando Comparação...</span>`;
+
+      const ready = await ensureContentScriptInjected(activeTab.id);
+      if (!ready) {
+        alert('Por favor, atualize a página do FLOW (pressione F5) e tente novamente.');
+        btnOrganizePopup.disabled = false;
+        btnOrganizePopup.style.opacity = '1';
+        btnOrganizePopup.innerHTML = originalText;
+        return;
+      }
+
+      chrome.tabs.sendMessage(activeTab.id, { action: 'ORGANIZE_CAROUSELS_TRIGGER' }, (res) => {
+        if (chrome.runtime.lastError) {
+          console.warn('[FLOW Downloader] Mensagem para aba:', chrome.runtime.lastError.message);
+          alert('Por favor, atualize a página do FLOW (pressione F5) e tente novamente.');
+          btnOrganizePopup.disabled = false;
+          btnOrganizePopup.style.opacity = '1';
+          btnOrganizePopup.innerHTML = originalText;
+        } else {
+          // Fecha a janelinha do popup suavemente para o usuário acompanhar a organização na página
+          setTimeout(() => window.close(), 300);
+        }
+      });
+    });
+  }
+
+  // ==========================================================================
   // 7. Botão "Baixar Todas da Aba Ativa"
   // ==========================================================================
   btnDownloadTab.addEventListener('click', async () => {

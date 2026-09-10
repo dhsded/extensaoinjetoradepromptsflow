@@ -249,6 +249,14 @@
         console.error('[FLOW Content] Erro ao abrir modal Macro Studio:', err);
         sendResponse({ success: false, error: err.message });
       }
+    } else if (message.action === 'ORGANIZE_CAROUSELS_TRIGGER') {
+      try {
+        startOrganizedCarouselDownload();
+        sendResponse({ success: true });
+      } catch (err) {
+        console.error('[FLOW Content] Erro ao disparar organização:', err);
+        sendResponse({ success: false, error: err.message });
+      }
     }
     return true;
   });
@@ -1992,7 +2000,7 @@
           <polyline points="12 11 12 17"></polyline>
           <polyline points="9 14 12 17 15 14"></polyline>
         </svg>
-        <span>📁 Organizar por Carrossel</span>
+        <span>📁 Comparar & Organizar em Pastas</span>
       `;
     }
     const modalOrganize1 = document.getElementById('fd-btn-modal-organize-carousels');
@@ -2194,7 +2202,7 @@
                 <polyline points="12 11 12 17"></polyline>
                 <polyline points="9 14 12 17 15 14"></polyline>
               </svg>
-              <span>📁 Organizar por Carrossel</span>
+              <span>📁 Comparar & Organizar em Pastas</span>
             </button>
 
             <button class="fd-btn-primary" id="fd-btn-download-all">
@@ -2933,7 +2941,7 @@
                   <polyline points="12 11 12 17"></polyline>
                   <polyline points="9 14 12 17 15 14"></polyline>
                 </svg>
-                <span>📁 Organizar por Carrossel</span>
+                <span>📁 Comparar & Organizar em Pastas</span>
               </button>
             </div>
 
