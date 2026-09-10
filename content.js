@@ -427,18 +427,18 @@
   function isGeneratedFlowImage(img) {
     if (!img) return false;
 
-    // 1. Exclusão estrita da própria extensão
+    // 1. Exclusão estrita da interface da própria extensão
     if (img.closest('[id*="fd-"], [class*="fd-"], #flow-macro-panel, #flow-downloader-hud-container, .fd-character-item')) {
       return false;
     }
 
-    // 2. Exclusão de Modais, Gavetas e Bibliotecas de Mídia (Aba "Carregamentos", Uploads, etc.)
-    if (img.closest('[role="dialog"], [role="presentation"], [aria-modal="true"], .cdk-overlay-pane, [class*="modal" i], [class*="drawer" i], [class*="dialog" i], [class*="sidebar" i], aside')) {
+    // 2. Exclusão de Modais de Uploads/Biblioteca fora do Canvas (não confunde com wrappers do Canvas)
+    if (img.closest('[role="dialog"]:not(main *):not([class*="canvas" i] *), [aria-modal="true"]:not(main *):not([class*="canvas" i] *), .cdk-overlay-pane, [id*="fd-modal"]')) {
       return false;
     }
 
-    // 3. Exclusão da Barra de Prompt, Campos de Entrada e Chips de Personagens Anexados
-    if (img.closest('form, [role="form"], [class*="prompt" i], [class*="input" i], [class*="chip" i], [class*="pill" i], [class*="attachment" i]')) {
+    // 3. Exclusão da Barra de Entrada de Prompt e Chips de Referência Anexados
+    if (img.closest('form, [role="form"], [class*="prompt" i], [class*="input" i], [class*="attachment" i], [class*="chip" i]')) {
       return false;
     }
 
@@ -455,21 +455,12 @@
       return false;
     }
 
-    // 5. Exclusão de Mídias de Personagens Cadastrados no Macro Studio
+    // 5. Exclusão de URLs que correspondam exatamente às imagens originais dos personagens cadastrados
+    // (Atenção: NUNCA filtrar pelo texto do card ou do prompt, pois os prompts de imagens geradas citam os personagens!)
     const knownChars = (window.flowMacroInstance && window.flowMacroInstance.characters) || [];
     const rawSrc = (img.currentSrc || img.src || img.dataset.src || '').toLowerCase();
-    const altText = (img.alt || '').toLowerCase();
-    const titleText = (img.title || '').toLowerCase();
-    const cardEl = img.closest('[role="article"], [role="group"], .card, button, [role="button"]') || img.parentElement;
-    const cardText = cardEl ? (cardEl.innerText || cardEl.textContent || '').toLowerCase() : '';
 
     for (const char of knownChars) {
-      const cName = (char.name || '').toLowerCase().trim();
-      if (cName.length >= 2) {
-        if (altText.includes(cName) || titleText.includes(cName) || rawSrc.includes(cName) || cardText.includes(cName)) {
-          return false;
-        }
-      }
       if (char.avatarUrl && (rawSrc.includes(char.avatarUrl.toLowerCase()) || img.src === char.avatarUrl)) {
         return false;
       }
@@ -478,22 +469,28 @@
       }
     }
 
-    // 6. Ignora SVGs, ícones pequenos e fotos de perfil
+    // 6. Ignora SVGs, ícones pequenos do sistema e fotos de perfil de conta
     if (
       !rawSrc ||
       rawSrc.startsWith('data:image/svg') ||
-      rawSrc.includes('avatar') ||
-      rawSrc.includes('logo') ||
-      rawSrc.includes('icon') ||
-      rawSrc.includes('profile') ||
       rawSrc.includes('/a/ACg8oc') ||
-      (img.naturalWidth > 0 && img.naturalWidth < 60) ||
-      (img.width > 0 && img.width < 60 && img.height > 0 && img.height < 60)
+      rawSrc.includes('/ogw/') ||
+      rawSrc.includes('favicon') ||
+      (img.naturalWidth > 0 && img.naturalWidth < 45) ||
+      (img.width > 0 && img.width < 45 && img.height > 0 && img.height < 45)
     ) {
       return false;
     }
 
-    // 7. O elemento DEVE pertencer ao Canvas principal ou Feed de Geração do FLOW
+    // 7. Validação de mídia Google ou localização no Canvas do FLOW
+    const isGoogleMedia = (
+      rawSrc.includes('googleusercontent.com') ||
+      rawSrc.includes('blob:') ||
+      rawSrc.includes('googleapis.com') ||
+      rawSrc.includes('flow.google.com') ||
+      rawSrc.startsWith('data:image/')
+    );
+
     const isInsideCanvas = img.closest([
       'main',
       '[role="main"]',
@@ -513,7 +510,6 @@
       '[class*="card" i]'
     ].join(', '));
 
-    const isGoogleMedia = rawSrc.includes('googleusercontent.com') || rawSrc.includes('blob:');
     if (!isInsideCanvas && !isGoogleMedia) {
       return false;
     }
@@ -570,7 +566,7 @@
     const docElem = document.documentElement;
     const body = document.body;
 
-    // 1. Prioridade máxima: Scrollers dedicados do Virtuoso do Google FLOW
+    // 1. Scrollers dedicados do Virtuoso do Google FLOW
     const virtuosoScrollers = document.querySelectorAll('[data-testid="virtuoso-scroller"], [data-virtuoso-scroller="true"]');
     for (const el of virtuosoScrollers) {
       if (el.closest('[id*="fd-"], [class*="fd-"]')) continue;
@@ -591,7 +587,30 @@
       });
     }
 
-    // 2. Rolagem da janela/documento
+    // 2. Rolagem de divs e seções internas do Canvas do FLOW com overflow ativo
+    const allDivs = document.querySelectorAll('main, [role="main"], [role="feed"], #main-content, section, div[class*="canvas" i], div[class*="scroller" i], div[class*="feed" i], div[class*="grid" i]');
+    for (const el of allDivs) {
+      if (el.closest('[id*="fd-"], [class*="fd-"]')) continue;
+      if (el.scrollHeight > el.clientHeight + 40 && el.clientHeight > 120) {
+        containers.push({
+          element: el,
+          isWindow: false,
+          getScrollTop: () => el.scrollTop,
+          getScrollHeight: () => el.scrollHeight,
+          getClientHeight: () => el.clientHeight,
+          scrollBy: (val) => {
+            el.scrollBy({ top: val, behavior: 'instant' });
+            el.dispatchEvent(new Event('scroll', { bubbles: true }));
+          },
+          scrollTo: (top) => {
+            el.scrollTo({ top: top, behavior: 'instant' });
+            el.dispatchEvent(new Event('scroll', { bubbles: true }));
+          }
+        });
+      }
+    }
+
+    // 3. Rolagem da janela/documento
     containers.push({
       element: window,
       isWindow: true,
@@ -602,31 +621,12 @@
       scrollTo: (top) => window.scrollTo({ top, behavior: 'instant' })
     });
 
-    // 3. Rolagem de divs e seções internas do Canvas
-    const allDivs = document.querySelectorAll('main, [role="main"], [role="feed"], #main-content, section, div[class*="canvas" i]');
-    for (const el of allDivs) {
-      if (el.closest('[id*="fd-"], [class*="fd-"]')) continue;
-      if (el.scrollHeight > el.clientHeight + 60 && el.clientHeight > 150) {
-        const style = window.getComputedStyle(el);
-        if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
-          containers.push({
-            element: el,
-            isWindow: false,
-            getScrollTop: () => el.scrollTop,
-            getScrollHeight: () => el.scrollHeight,
-            getClientHeight: () => el.clientHeight,
-            scrollBy: (val) => {
-              el.scrollBy({ top: val, behavior: 'instant' });
-              el.dispatchEvent(new Event('scroll', { bubbles: true }));
-            },
-            scrollTo: (top) => {
-              el.scrollTo({ top: top, behavior: 'instant' });
-              el.dispatchEvent(new Event('scroll', { bubbles: true }));
-            }
-          });
-        }
-      }
-    }
+    // Ordena priorizando containers que realmente possuem rolagem ativa (maior diferença scrollHeight - clientHeight)
+    containers.sort((a, b) => {
+      const scrollA = a.getScrollHeight() - a.getClientHeight();
+      const scrollB = b.getScrollHeight() - b.getClientHeight();
+      return scrollB - scrollA;
+    });
 
     return containers;
   }
@@ -1487,8 +1487,8 @@
       }
     }
 
-    // Aceita apenas correspondências com pontuação mínima de confiança (>= 45)
-    return (highestScore >= 45) ? bestMatch : null;
+    // Aceita correspondências com pontuação mínima de confiança (>= 30)
+    return (highestScore >= 30) ? bestMatch : null;
   }
 
   /**
@@ -1508,7 +1508,7 @@
       const t = (el.innerText || el.textContent || '').trim();
       return (
         t.length > 15 &&
-        (t.includes('Texto nos balões') || t.includes('Prompt de Imagem') || t.includes('PT-BR') || t.includes('Midjourney') || t.includes('Dall-E'))
+        (t.includes('Texto nos balões') || t.includes('Prompt de Imagem') || t.includes('PT-BR') || t.includes('PT:') || t.includes('Midjourney') || t.includes('Dall-E'))
       );
     });
 
@@ -1520,7 +1520,7 @@
     // 2. Extrai legendas e badges sob as imagens (ex: Texto nos balões: PT-BR: "...")
     const captions = Array.from(block.querySelectorAll('[class*="caption" i], [class*="subtitle" i], [class*="badge" i], span, div')).filter(el => {
       const t = (el.innerText || el.textContent || '').trim();
-      return t.length > 10 && (t.includes('Texto nos balões') || t.includes('PT-BR') || t.includes('Prompt:'));
+      return t.length > 10 && (t.includes('Texto nos balões') || t.includes('PT-BR') || t.includes('PT:') || t.includes('Prompt:'));
     });
 
     for (const cap of captions) {
@@ -1536,7 +1536,110 @@
   }
 
   /**
-   * Localiza todos os blocos de geração de imagens renderizados no Virtuoso do FLOW
+   * Localiza todos os cards/caixas de prompt na tela do FLOW
+   * @returns {Array<Object>} - Lista de objetos com elementos e posições geométricas
+   */
+  function findPromptCardsOnCanvas() {
+    const candidates = Array.from(document.querySelectorAll('div, section, article, [role="article"]')).filter(el => {
+      if (el.closest('#flow-macro-panel, #flow-downloader-hud-container, [id*="fd-"]')) return false;
+      const text = (el.innerText || el.textContent || '').trim();
+      if (text.length < 15) return false;
+      return (
+        text.includes('Texto nos balões') ||
+        text.includes('Prompt de Imagem') ||
+        text.includes('Midjourney') ||
+        text.includes('Dall-E') ||
+        text.includes('PT-BR:') ||
+        text.includes('PT:') ||
+        text.includes('Adicionar ao comando') ||
+        text.includes('Reutilizar comando')
+      );
+    });
+
+    // Mantém apenas os nós mais específicos
+    const specificNodes = candidates.filter(el => {
+      return !candidates.some(other => other !== el && el.contains(other));
+    });
+
+    return specificNodes.map(el => {
+      const rect = el.getBoundingClientRect();
+      const text = extractPromptFromGenerationBlock(el) || el.innerText || el.textContent || '';
+      return {
+        element: el,
+        text: text,
+        rect: rect,
+        centerX: rect.left + rect.width / 2,
+        centerY: rect.top + rect.height / 2
+      };
+    });
+  }
+
+  /**
+   * Determina o texto de prompt associado a uma imagem gerada (por alt, card, pai comum ou proximidade 2D)
+   * @param {Object} item - Objeto de imagem
+   * @param {Array<Object>} promptCards - Lista de cards de prompt da tela
+   * @returns {string}
+   */
+  function getBestPromptForImage(item, promptCards = []) {
+    const img = item.img;
+    const card = item.card;
+
+    // 1. Verifica se a imagem tem alt detalhado com o prompt
+    if (img && img.alt && img.alt.length > 20 && !img.alt.match(/\.(jpe?g|png|webp)$/i)) {
+      return img.alt;
+    }
+
+    // 2. Verifica se o próprio card contém os marcadores do prompt
+    if (card) {
+      const cText = (card.innerText || card.textContent || '').trim();
+      if (
+        cText.includes('Texto nos balões') ||
+        cText.includes('Prompt de Imagem') ||
+        cText.includes('PT-BR:') ||
+        cText.includes('PT:') ||
+        cText.includes('Midjourney') ||
+        cText.includes('Dall-E')
+      ) {
+        return cText;
+      }
+    }
+
+    // 3. Procura no card de prompt mais próximo
+    if (promptCards.length > 0 && img) {
+      // Prioridade 3a: Ancestral comum direto (mesma linha/seção do Canvas)
+      for (const pc of promptCards) {
+        const commonParent = img.closest('section, main > div, [role="feed"] > div, [role="article"], [class*="generation" i], [class*="card" i]');
+        if (commonParent && commonParent.contains(pc.element)) {
+          return pc.text;
+        }
+      }
+
+      // Prioridade 3b: Proximidade geométrica 2D no Canvas
+      const imgRect = img.getBoundingClientRect();
+      const imgCenterX = imgRect.left + imgRect.width / 2;
+      const imgCenterY = imgRect.top + imgRect.height / 2;
+
+      let closestCard = null;
+      let minDistance = Infinity;
+
+      for (const pc of promptCards) {
+        const dist = Math.hypot(imgCenterX - pc.centerX, imgCenterY - pc.centerY);
+        if (dist < minDistance) {
+          minDistance = dist;
+          closestCard = pc;
+        }
+      }
+
+      if (closestCard) {
+        return closestCard.text;
+      }
+    }
+
+    return item.prompt || extractPagePrompt('flow_image');
+  }
+
+  /**
+   * Localiza blocos de geração renderizados no Canvas do FLOW
    * @returns {Array<HTMLElement>}
    */
   function findGenerationBlocks() {
@@ -1563,7 +1666,7 @@
       return virtuosoItems;
     }
 
-    // 2. Fallback: agrupamento por ancestral das imagens geradas válidas
+    // 2. Agrupamento por ancestral das imagens geradas válidas
     const flowImgs = Array.from(document.querySelectorAll('img')).filter(img => isGeneratedFlowImage(img));
     const blocksSet = new Set();
     for (const img of flowImgs) {
@@ -1578,7 +1681,7 @@
   /**
    * Função independente de comparação e organização inteligente por carrossel:
    * 1. Lê o número de carrosséis e pré-cria as pastas correspondentes em Downloads (Carrossel_1, Carrossel_2, etc.)
-   * 2. Desce até o fim da página lendo os prompts no canto direito de cada bloco de geração
+   * 2. Captura todas as imagens presentes na tela e percorre o Canvas lendo os prompts
    * 3. Compara com os carrosséis e salva as imagens (de 2 em 2, 3 em 3, 4 em 4) em suas respectivas pastas
    * 4. Retorna a rolagem suavemente para o topo da página ao concluir
    */
@@ -1607,7 +1710,6 @@
     showToast(`🚀 Iniciando organização para ${totalCarouselsCount} carrosséis detectados...`, 'info');
 
     // 2. Pré-criação imediata das pastas no disco (Downloads) para cada carrossel
-    // "As pastas serão criadas assim que começar a rodar o programa,ele lerá o número de carrosseis,e irá criá-las dentro de downloads."
     const baseFolder = settings.downloadFolder || 'FLOW_Downloads';
     const folderList = carousels.map((c, idx) => {
       const folderName = `Carrossel_${c.index || (idx + 1)}`;
@@ -1633,7 +1735,7 @@
     isScrollingAndDownloading = true;
     cancelRequested = false;
 
-    // Atualiza botões do HUD e do Macro Studio
+    // Atualiza botões do HUD e do Macro Studio para estado ativo
     const hudBtn = document.getElementById('fd-btn-download-all');
     const hudOrganizeBtn = document.getElementById('fd-btn-organize-carousels');
     const hudCancelBtn = document.getElementById('fd-btn-cancel');
@@ -1655,8 +1757,27 @@
     if (hudBtn) hudBtn.disabled = true;
     if (hudCancelBtn) hudCancelBtn.style.display = 'flex';
 
-    // PASSO 1: Sobe a rolagem até o topo absoluto (0) para carregar todas as imagens desde o início
-    showToast('⬆️ Subindo ao topo da página para iniciar a leitura de todos os prompts...', 'info');
+    // Coleção acumulada de todas as imagens descobertas na sessão
+    const discoveredMap = new Map();
+
+    function collectCurrentImages() {
+      const promptCards = findPromptCardsOnCanvas();
+      const currentImages = findFlowImages();
+      for (const item of currentImages) {
+        if (!discoveredMap.has(item.url)) {
+          const promptText = getBestPromptForImage(item, promptCards);
+          discoveredMap.set(item.url, {
+            ...item,
+            fullPromptText: promptText
+          });
+        }
+      }
+    }
+
+    // PASSO 1: Coleta IMEDIATA das imagens visíveis na tela no momento em que o botão é clicado
+    collectCurrentImages();
+
+    // Identifica containers roláveis da página
     const scrollers = findScrollContainers();
     const primaryScroller = scrollers[0] || {
       scrollTo: () => window.scrollTo(0, 0),
@@ -1666,188 +1787,187 @@
       getClientHeight: () => window.innerHeight
     };
 
-    for (const scroller of scrollers) {
-      scroller.scrollTo(0);
-    }
-    window.scrollTo({ top: 0, behavior: 'instant' });
-    document.documentElement.scrollTop = 0;
-    document.body.scrollTop = 0;
+    const hasScroll = primaryScroller && (primaryScroller.getScrollHeight() > primaryScroller.getClientHeight() + 50);
 
-    await new Promise(r => setTimeout(r, 1200));
+    if (hasScroll) {
+      showToast('⬆️ Subindo ao topo da página para iniciar a leitura de todos os prompts...', 'info');
+      for (const scroller of scrollers) {
+        scroller.scrollTo(0);
+      }
+      window.scrollTo({ top: 0, behavior: 'instant' });
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
 
-    // Rastreamento das imagens e estatísticas por carrossel
-    const processedUrlsInThisRun = new Set();
-    const statsPerCarousel = {};
-    for (const f of folderList) {
-      statsPerCarousel[f.folderName] = 0;
-    }
-    let totalImagesOrganized = 0;
-    let totalBlocksMatched = 0;
+      await new Promise(r => setTimeout(r, 800));
+      collectCurrentImages();
 
-    /**
-     * Varre todos os blocos de geração visíveis na posição atual,
-     * compara o prompt à direita com os carrosséis e envia as imagens para download
-     */
-    async function processVisibleBlocks() {
-      const blocks = findGenerationBlocks();
+      showToast('📜 Descendo progressivamente a página e comparando os prompts...', 'info');
 
-      for (const block of blocks) {
-        if (cancelRequested) break;
+      // PASSO 2: Loop de descida progressiva controlada em passos de 380px
+      let lastHeight = 0;
+      let lastUrlCount = discoveredMap.size;
+      let bottomConfirmationCount = 0;
+      const maxSteps = 60;
 
-        // Encontra todas as imagens geradas dentro do bloco
-        const blockImgs = Array.from(block.querySelectorAll('img')).filter(img => isGeneratedFlowImage(img));
-        if (blockImgs.length === 0) continue;
+      for (let step = 1; step <= maxSteps; step++) {
+        if (cancelRequested) {
+          showToast('🛑 Organização interrompida pelo usuário.', 'info');
+          resetOrganizeHudButtons();
+          isScrollingAndDownloading = false;
+          return;
+        }
 
-        // Filtra apenas imagens que ainda não foram enviadas nesta execução
-        const pendingImgs = [];
-        for (const img of blockImgs) {
-          const rawUrl = img.currentSrc || img.src || img.dataset.src || '';
-          const fullUrl = normalizeImageUrl(rawUrl);
-          if (fullUrl && !processedUrlsInThisRun.has(fullUrl)) {
-            pendingImgs.push({ img, url: fullUrl });
+        for (const scroller of scrollers) {
+          scroller.scrollBy(380);
+        }
+
+        await new Promise(r => setTimeout(r, 700));
+
+        if (cancelRequested) {
+          resetOrganizeHudButtons();
+          isScrollingAndDownloading = false;
+          return;
+        }
+
+        collectCurrentImages();
+
+        const currentHeight = primaryScroller.getScrollHeight();
+        const currentScrollTop = primaryScroller.getScrollTop();
+        const clientH = primaryScroller.getClientHeight();
+        const currentCount = discoveredMap.size;
+
+        const isAtBottom = (currentScrollTop + clientH >= currentHeight - 35);
+
+        if (currentHeight > lastHeight + 10 || currentCount > lastUrlCount) {
+          bottomConfirmationCount = 0;
+          lastHeight = currentHeight;
+          lastUrlCount = currentCount;
+        } else if (isAtBottom) {
+          bottomConfirmationCount++;
+          if (bottomConfirmationCount >= 3) {
+            console.log('[FLOW Organizar] Fim da página alcançado com sucesso.');
+            break;
           }
         }
-
-        if (pendingImgs.length === 0) continue;
-
-        // Extrai o prompt do painel direito do bloco
-        const promptText = extractPromptFromGenerationBlock(block);
-        const match = matchPromptToCarousels(promptText, carousels);
-
-        let targetFolder = 'Carrossel_1';
-        let slideInfo = 'Slide';
-
-        if (match) {
-          targetFolder = `Carrossel_${match.carouselIndex}`;
-          slideInfo = `Carrossel ${match.carouselIndex} • Slide ${match.slideIndex}`;
-          totalBlocksMatched++;
-          console.log(`[FLOW Organizar] Bloco combinado com sucesso: ${slideInfo} (${match.matchReason}) -> ${pendingImgs.length} imagens`);
-        } else {
-          // Se não encontrou correspondência com alta confiança, direciona para o primeiro carrossel
-          targetFolder = folderList[0] ? folderList[0].folderName : 'Carrossel_1';
-          console.log(`[FLOW Organizar] Bloco sem match exato. Destinando para ${targetFolder}`);
-        }
-
-        // Monta os itens para download na pasta correspondente
-        // "indo baixando de 2 em 2, 3 em 3, 4 em 4, de acordo com o que foi configurado"
-        const dateStamp = Date.now().toString().slice(-4);
-        const batchItems = pendingImgs.map((item, idx) => {
-          const slidePrefix = match && match.slide
-            ? `Slide_${String(match.slideIndex).padStart(2, '0')}`
-            : `Slide_${dateStamp}`;
-          const varNum = String(idx + 1).padStart(2, '0');
-          const filename = `${slidePrefix}_var${varNum}`;
-
-          return {
-            url: item.url,
-            filename: filename,
-            id: item.url
-          };
-        });
-
-        // Marca imediatamente como processadas para não baixar duplicado
-        for (const item of pendingImgs) {
-          processedUrlsInThisRun.add(item.url);
-          processedImageIds.add(item.url);
-          markCardAsDownloaded(item.img.closest('[role="article"], .card, button') || item.img);
-        }
-
-        // Envia para download no background diretamente na pasta correspondente
-        safeSendMessage({
-          action: 'DOWNLOAD_BATCH',
-          items: batchItems,
-          folder: targetFolder
-        });
-
-        statsPerCarousel[targetFolder] = (statsPerCarousel[targetFolder] || 0) + batchItems.length;
-        totalImagesOrganized += batchItems.length;
-
-        showToast(`📥 [${targetFolder}] Baixando ${batchItems.length} imagem(ns) do ${slideInfo}...`, 'info');
-        await new Promise(r => setTimeout(r, 250));
       }
-    }
 
-    // Executa leitura inicial no topo
-    await processVisibleBlocks();
-
-    showToast('📜 Descendo progressivamente a página e comparando os prompts à direita...', 'info');
-
-    // PASSO 2: Loop de descida progressiva controlada em passos de 380px
-    let lastHeight = 0;
-    let lastUrlCount = processedUrlsInThisRun.size;
-    let bottomConfirmationCount = 0;
-    const maxSteps = 60;
-
-    for (let step = 1; step <= maxSteps; step++) {
       if (cancelRequested) {
-        showToast('🛑 Organização interrompida pelo usuário.', 'info');
         resetOrganizeHudButtons();
         isScrollingAndDownloading = false;
         return;
       }
 
+      // PASSO 3: Coleta final no fundo da página
+      await new Promise(r => setTimeout(r, 600));
+      collectCurrentImages();
+
+      // PASSO 4: "e subindo a página" - Retorna a rolagem para o topo suavemente
+      showToast('⬆️ Subindo a página de volta ao topo...', 'info');
       for (const scroller of scrollers) {
-        scroller.scrollBy(380);
+        scroller.scrollTo(0);
       }
+      window.scrollTo({ top: 0, behavior: 'instant' });
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+      await new Promise(r => setTimeout(r, 500));
+    } else {
+      // Se a página não possui scroll vertical extenso, aguarda e re-coleta
+      await new Promise(r => setTimeout(r, 400));
+      collectCurrentImages();
+    }
 
-      await new Promise(r => setTimeout(r, 750));
+    // PASSO 5: Validação e Fallback de Imagens
+    let allDiscovered = Array.from(discoveredMap.values());
 
-      if (cancelRequested) {
-        resetOrganizeHudButtons();
-        isScrollingAndDownloading = false;
-        return;
-      }
-
-      await processVisibleBlocks();
-
-      const currentHeight = primaryScroller.getScrollHeight();
-      const currentScrollTop = primaryScroller.getScrollTop();
-      const clientH = primaryScroller.getClientHeight();
-      const currentCount = processedUrlsInThisRun.size;
-
-      const isAtBottom = (currentScrollTop + clientH >= currentHeight - 35);
-
-      if (currentHeight > lastHeight + 10 || currentCount > lastUrlCount) {
-        bottomConfirmationCount = 0;
-        lastHeight = currentHeight;
-        lastUrlCount = currentCount;
-      } else if (isAtBottom) {
-        bottomConfirmationCount++;
-        if (bottomConfirmationCount >= 3) {
-          console.log('[FLOW Organizar] Fim da página alcançado com sucesso.');
-          break;
-        }
+    // Se a coleção ainda estiver vazia, varre diretamente via findFlowImages
+    if (allDiscovered.length === 0) {
+      const directImgs = findFlowImages();
+      for (const imgItem of directImgs) {
+        allDiscovered.push(imgItem);
       }
     }
 
-    if (cancelRequested) {
+    if (allDiscovered.length === 0) {
+      showToast('ℹ️ Nenhuma imagem gerada do FLOW detectada na tela para organizar.', 'info');
       resetOrganizeHudButtons();
       isScrollingAndDownloading = false;
       return;
     }
 
-    // PASSO 3: Coleta final no fundo da página
-    await new Promise(r => setTimeout(r, 800));
-    await processVisibleBlocks();
+    showToast(`🧠 Analisando e organizando ${allDiscovered.length} imagem(ns)...`, 'info');
 
-    // PASSO 4: "e subindo a página" - Retorna a rolagem para o topo suavemente
-    showToast('⬆️ Subindo a página de volta ao topo...', 'info');
-    for (const scroller of scrollers) {
-      scroller.scrollTo(0);
+    // PASSO 6: Comparação Inteligente e Agrupamento por Slide ("2 em 2, 3 em 3, 4 em 4")
+    const promptCards = findPromptCardsOnCanvas();
+    const groups = new Map(); // key: "Carrossel_X:::Slide_Y" -> { targetFolder, slidePrefix, items: [] }
+    let totalBlocksMatched = 0;
+
+    for (let i = 0; i < allDiscovered.length; i++) {
+      const item = allDiscovered[i];
+      const promptText = item.fullPromptText || getBestPromptForImage(item, promptCards);
+      const match = matchPromptToCarousels(promptText, carousels);
+
+      let targetFolder = 'Carrossel_1';
+      let slidePrefix = 'Slide_01';
+
+      if (match) {
+        targetFolder = `Carrossel_${match.carouselIndex}`;
+        slidePrefix = `Slide_${String(match.slideIndex).padStart(2, '0')}`;
+        totalBlocksMatched++;
+      } else {
+        // Fallback seguro: agrupa de 4 em 4 no primeiro carrossel (ou pasta padrão)
+        targetFolder = folderList[0] ? folderList[0].folderName : 'Carrossel_1';
+        const fallbackSlideNum = Math.floor(i / 4) + 1;
+        slidePrefix = `Slide_${String(fallbackSlideNum).padStart(2, '0')}`;
+      }
+
+      const groupKey = `${targetFolder}:::${slidePrefix}`;
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, { targetFolder, slidePrefix, items: [] });
+      }
+      groups.get(groupKey).items.push(item);
     }
-    window.scrollTo({ top: 0, behavior: 'instant' });
-    document.documentElement.scrollTop = 0;
-    document.body.scrollTop = 0;
-    await new Promise(r => setTimeout(r, 600));
 
-    // PASSO 5: Relatório e encerramento
+    // PASSO 7: Nomenclatura com variantes (_var01, _var02, _var03, _var04) e envio em lotes
+    const downloadsByFolder = new Map(); // targetFolder -> batchItems
+    const statsPerCarousel = {};
+    for (const f of folderList) {
+      statsPerCarousel[f.folderName] = 0;
+    }
+
+    for (const [groupKey, group] of groups.entries()) {
+      const { targetFolder, slidePrefix, items } = group;
+      if (!downloadsByFolder.has(targetFolder)) {
+        downloadsByFolder.set(targetFolder, []);
+      }
+
+      items.forEach((item, idx) => {
+        const varNum = String(idx + 1).padStart(2, '0');
+        const filename = `${slidePrefix}_var${varNum}`;
+        downloadsByFolder.get(targetFolder).push({
+          url: item.url,
+          filename: filename,
+          id: item.url
+        });
+
+        processedImageIds.add(item.url);
+        if (item.card) markCardAsDownloaded(item.card);
+      });
+    }
+
+    let totalImagesOrganized = 0;
+    for (const [folder, batchItems] of downloadsByFolder.entries()) {
+      safeSendMessage({
+        action: 'DOWNLOAD_BATCH',
+        items: batchItems,
+        folder: folder
+      });
+      statsPerCarousel[folder] = (statsPerCarousel[folder] || 0) + batchItems.length;
+      totalImagesOrganized += batchItems.length;
+    }
+
+    // PASSO 8: Relatório e encerramento
     resetOrganizeHudButtons();
     isScrollingAndDownloading = false;
-
-    if (totalImagesOrganized === 0) {
-      showToast('ℹ️ Nenhuma imagem nova do FLOW pendente para organizar.', 'info');
-      return;
-    }
 
     const summaryParts = Object.entries(statsPerCarousel)
       .filter(([_, count]) => count > 0)
@@ -1857,7 +1977,7 @@
     showToast(summaryMsg, 'success');
 
     if (window.flowMacroInstance) {
-      window.flowMacroInstance.addLog(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📁 [ORGANIZAÇÃO POR CARROSSEL CONCLUÍDA!]\n• Total de imagens organizadas: ${totalImagesOrganized}\n• Blocos identificados com sucesso: ${totalBlocksMatched}\n• Distribuição por pastas:\n${summaryParts.map(s => '  - ' + s).join('\n')}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`, 'success');
+      window.flowMacroInstance.addLog(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📁 [ORGANIZAÇÃO POR CARROSSEL CONCLUÍDA!]\n• Total de imagens organizadas: ${totalImagesOrganized}\n• Correspondências de prompt identificadas: ${totalBlocksMatched}\n• Distribuição por pastas:\n${summaryParts.map(s => '  - ' + s).join('\n')}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`, 'success');
     }
   }
 
@@ -1874,6 +1994,14 @@
         </svg>
         <span>📁 Organizar por Carrossel</span>
       `;
+    }
+    const modalOrganize1 = document.getElementById('fd-btn-modal-organize-carousels');
+    if (modalOrganize1) {
+      modalOrganize1.disabled = false;
+    }
+    const modalOrganize2 = document.getElementById('fd-btn-modal-organize-carousels-exec');
+    if (modalOrganize2) {
+      modalOrganize2.disabled = false;
     }
   }
 
