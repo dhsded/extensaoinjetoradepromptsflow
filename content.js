@@ -395,10 +395,11 @@
     if (
       src.includes('/a/ACg8oc') ||
       src.includes('/ogw/') ||
-      src.includes('avatar') ||
-      src.includes('profile') ||
-      src.includes('favicon') ||
-      src.includes('logo')
+      src.includes('/avatar') ||
+      src.includes('user_avatar') ||
+      src.includes('favicon.ico') ||
+      src.includes('/google_logo') ||
+      src.includes('googlelogo')
     ) {
       return null;
     }
@@ -424,11 +425,11 @@
   /**
    * Valida com rigor se o elemento é uma imagem legítima gerada pelo FLOW no Canvas
    * Rejeita estritamente:
-   * - Elementos da interface da extensão (HUD, modal do Macro Studio, avatares da lista)
-   * - Chips ou miniaturas anexadas na barra de prompt/comandos
-   * - Personagens de referência configurados no Macro Studio (Cer_Verde, avatares, etc.)
-   * - Cards de uploads dentro do modal/gaveta da biblioteca ("Carregamentos", etc.)
+   * - Elementos da interface da própria extensão (HUD, modal do Macro Studio, avatares da lista)
    * - Cabeçalhos, menus laterais e avatares de perfis do Google
+   * - Chips ou miniaturas anexadas especificamente na barra de prompt dock inferior
+   * - Cards de uploads dentro do modal/gaveta da biblioteca ("Carregamentos", etc.)
+   * - Avatares originais de personagens cadastrados no Macro Studio
    * @param {HTMLImageElement} img - Elemento de imagem
    * @returns {boolean}
    */
@@ -440,85 +441,71 @@
       return false;
     }
 
-    // 2. Exclusão de Modais de Uploads/Biblioteca fora do Canvas (não confunde com wrappers do Canvas)
-    if (img.closest('[role="dialog"]:not(main *):not([class*="canvas" i] *), [aria-modal="true"]:not(main *):not([class*="canvas" i] *), .cdk-overlay-pane, [id*="fd-modal"]')) {
+    // 2. Exclusão de Cabeçalhos, Barra Superior e Perfis do Google
+    if (img.closest('header, [role="banner"], nav, [class*="navbar" i], [class*="profile" i]')) {
       return false;
     }
 
-    // 3. Exclusão da Barra de Entrada de Prompt e Chips de Referência Anexados
-    if (img.closest('form, [role="form"], [class*="prompt" i], [class*="input" i], [class*="attachment" i], [class*="chip" i]')) {
-      return false;
-    }
-
-    const promptInput = document.querySelector('textarea, [contenteditable="true"], input[placeholder*="mudar"], input[placeholder*="prompt"], input[placeholder*="descrever"]');
-    if (promptInput) {
-      const promptContainer = promptInput.closest('form, [role="form"]') || (promptInput.parentElement ? promptInput.parentElement.parentElement : null);
-      if (promptContainer && (img === promptContainer || promptContainer.contains(img))) {
+    // 3. Exclusão de Modais de Biblioteca / Uploads ("Carregamentos") fora do Canvas
+    const dialogModal = img.closest('[role="dialog"], [aria-modal="true"]');
+    if (dialogModal && !dialogModal.closest('main, [class*="canvas" i]')) {
+      const modalText = (dialogModal.innerText || '').toLowerCase();
+      if (modalText.includes('carregamentos') || modalText.includes('biblioteca') || modalText.includes('upload') || modalText.includes('adicionar refer')) {
         return false;
       }
     }
 
-    // 4. Exclusão de Cabeçalhos, Barra Superior e Perfis do Google
-    if (img.closest('header, [role="banner"], nav, [class*="header" i], [class*="navbar" i], [class*="profile" i]')) {
-      return false;
+    // 4. Exclusão de chips ou miniaturas anexadas dentro do dock de prompt inferior
+    const promptInput = document.querySelector('textarea, [contenteditable="true"], input[placeholder*="mudar"], input[placeholder*="prompt"], input[placeholder*="descrever"], input[placeholder*="criar"]');
+    if (promptInput) {
+      const dock = promptInput.closest('form, [class*="dock" i], [class*="bottom-bar" i], [class*="footer" i]') || promptInput.parentElement;
+      if (dock && dock.tagName !== 'MAIN' && dock.tagName !== 'BODY' && !dock.matches('[class*="canvas" i]')) {
+        const dockRect = dock.getBoundingClientRect();
+        if (dockRect.height < 250 && dockRect.bottom >= window.innerHeight - 80 && dock.contains(img)) {
+          return false;
+        }
+      }
+    }
+
+    // Exclui chips de anexo de referência pequenos no rodapé
+    if (img.closest('[class*="chip" i], [class*="attachment" i], [class*="pill" i]')) {
+      const rect = img.getBoundingClientRect();
+      if (rect.bottom > window.innerHeight - 280 && (rect.width <= 75 || rect.height <= 75)) {
+        if (!img.closest('[class*="canvas" i], [data-testid*="virtuoso"], [role="article"], [class*="feed" i]')) {
+          return false;
+        }
+      }
     }
 
     // 5. Exclusão de URLs que correspondam exatamente às imagens originais dos personagens cadastrados
-    // (Atenção: NUNCA filtrar pelo texto do card ou do prompt, pois os prompts de imagens geradas citam os personagens!)
     const knownChars = (window.flowMacroInstance && window.flowMacroInstance.characters) || [];
-    const rawSrc = (img.currentSrc || img.src || img.dataset.src || '').toLowerCase();
+    const rawSrc = (img.currentSrc || img.src || img.dataset.src || img.getAttribute('src') || '').toLowerCase();
 
     for (const char of knownChars) {
-      if (char.avatarUrl && (rawSrc.includes(char.avatarUrl.toLowerCase()) || img.src === char.avatarUrl)) {
-        return false;
+      if (char.avatarUrl && char.avatarUrl.length > 20) {
+        const charUrl = char.avatarUrl.toLowerCase();
+        if (rawSrc === charUrl || (rawSrc.length > 30 && rawSrc.includes(charUrl))) {
+          return false;
+        }
       }
-      if (char.uploadedUrl && (rawSrc.includes(char.uploadedUrl.toLowerCase()) || img.src === char.uploadedUrl)) {
-        return false;
+      if (char.uploadedUrl && char.uploadedUrl.length > 20) {
+        const upUrl = char.uploadedUrl.toLowerCase();
+        if (rawSrc === upUrl || (rawSrc.length > 30 && rawSrc.includes(upUrl))) {
+          return false;
+        }
       }
     }
 
-    // 6. Ignora SVGs, ícones pequenos do sistema e fotos de perfil de conta
+    // 6. Ignora SVGs, ícones pequenos do sistema, avatares do Google e favicon
     if (
       !rawSrc ||
       rawSrc.startsWith('data:image/svg') ||
       rawSrc.includes('/a/ACg8oc') ||
       rawSrc.includes('/ogw/') ||
       rawSrc.includes('favicon') ||
-      (img.naturalWidth > 0 && img.naturalWidth < 45) ||
-      (img.width > 0 && img.width < 45 && img.height > 0 && img.height < 45)
+      (img.naturalWidth > 0 && img.naturalWidth < 60) ||
+      (img.width > 0 && img.width < 60 && img.height > 0 && img.height < 60)
     ) {
-      return false;
-    }
-
-    // 7. Validação de mídia Google ou localização no Canvas do FLOW
-    const isGoogleMedia = (
-      rawSrc.includes('googleusercontent.com') ||
-      rawSrc.includes('blob:') ||
-      rawSrc.includes('googleapis.com') ||
-      rawSrc.includes('flow.google.com') ||
-      rawSrc.startsWith('data:image/')
-    );
-
-    const isInsideCanvas = img.closest([
-      'main',
-      '[role="main"]',
-      '[role="feed"]',
-      '[role="article"]',
-      '[role="region"]',
-      'section',
-      '[class*="canvas" i]',
-      '[class*="workspace" i]',
-      '[class*="project" i]',
-      '[data-testid*="virtuoso"]',
-      '[class*="sc-" i]',
-      '[class*="grid" i]',
-      '[class*="feed" i]',
-      '[class*="stream" i]',
-      '[class*="generation" i]',
-      '[class*="card" i]'
-    ].join(', '));
-
-    if (!isInsideCanvas && !isGoogleMedia) {
       return false;
     }
 
@@ -541,12 +528,12 @@
         continue;
       }
 
-      const rawSrc = img.currentSrc || img.src || img.dataset.src || '';
+      const rawSrc = img.currentSrc || img.src || img.dataset.src || img.getAttribute('src') || '';
       const fullUrl = normalizeImageUrl(rawSrc);
       if (!fullUrl || seenUrls.has(fullUrl)) continue;
       seenUrls.add(fullUrl);
 
-      const card = img.closest('[role="article"], [role="group"], .card, button, [role="button"]') || img.parentElement || img;
+      const card = img.closest('[role="article"], [role="group"], [role="gridcell"], .card, button, [role="button"]') || img.parentElement || img;
       const prompt = extractPromptText(card, pagePrompt);
 
       items.push({
@@ -1560,7 +1547,11 @@
         text.includes('PT-BR:') ||
         text.includes('PT:') ||
         text.includes('Adicionar ao comando') ||
-        text.includes('Reutilizar comando')
+        text.includes('Reutilizar comando') ||
+        text.includes('Add to prompt') ||
+        text.includes('Reuse prompt') ||
+        text.includes('Remix') ||
+        el.matches('[class*="prompt-card" i], [class*="prompt-item" i], [class*="prompt-title" i], [class*="caption" i]')
       );
     });
 
@@ -1583,7 +1574,7 @@
   }
 
   /**
-   * Determina o texto de prompt associado a uma imagem gerada (por alt, card, pai comum ou proximidade 2D)
+   * Determina o texto de prompt associado a uma imagem gerada (por alt, card, pai comum, proximidade 2D ou painel lateral)
    * @param {Object} item - Objeto de imagem
    * @param {Array<Object>} promptCards - Lista de cards de prompt da tela
    * @returns {string}
@@ -1597,24 +1588,36 @@
       return img.alt;
     }
 
-    // 2. Verifica se o próprio card contém os marcadores do prompt
+    // 2. Verifica aria-label da imagem ou do card
+    const aria = (img && img.getAttribute && img.getAttribute('aria-label')) || (card && card.getAttribute && card.getAttribute('aria-label')) || '';
+    if (aria.length > 20 && !aria.toLowerCase().includes('download') && !aria.toLowerCase().includes('menu')) {
+      return aria;
+    }
+
+    // 3. Captura texto no próprio card ou em legendas sob a imagem
     if (card) {
-      const cText = (card.innerText || card.textContent || '').trim();
-      if (
-        cText.includes('Texto nos balões') ||
-        cText.includes('Prompt de Imagem') ||
-        cText.includes('PT-BR:') ||
-        cText.includes('PT:') ||
-        cText.includes('Midjourney') ||
-        cText.includes('Dall-E')
-      ) {
+      const clone = card.cloneNode(true);
+      clone.querySelectorAll('[id*="fd-"], [class*="fd-"], button, svg').forEach(b => b.remove());
+      const cText = (clone.innerText || clone.textContent || '').trim();
+      if (cText.length > 15) {
         return cText;
       }
     }
 
-    // 3. Procura no card de prompt mais próximo
-    if (promptCards.length > 0 && img) {
-      // Prioridade 3a: Ancestral comum direto (mesma linha/seção do Canvas)
+    // 4. Captura texto no bloco de geração ancestral da imagem (linha de 4/3/2 imagens geradas)
+    if (img) {
+      const block = img.closest('[role="article"], [class*="generation" i], [class*="grid" i], [class*="card" i], section, main > div');
+      if (block) {
+        const bText = extractPromptFromGenerationBlock(block);
+        if (bText && bText.length > 15) {
+          return bText;
+        }
+      }
+    }
+
+    // 5. Procura no card de prompt mais próximo geometricamente no Canvas
+    if (promptCards && promptCards.length > 0 && img) {
+      // Prioridade 5a: Ancestral comum direto (mesma linha/seção do Canvas)
       for (const pc of promptCards) {
         const commonParent = img.closest('section, main > div, [role="feed"] > div, [role="article"], [class*="generation" i], [class*="card" i]');
         if (commonParent && commonParent.contains(pc.element)) {
@@ -1622,7 +1625,7 @@
         }
       }
 
-      // Prioridade 3b: Proximidade geométrica 2D no Canvas
+      // Prioridade 5b: Proximidade geométrica 2D no Canvas
       const imgRect = img.getBoundingClientRect();
       const imgCenterX = imgRect.left + imgRect.width / 2;
       const imgCenterY = imgRect.top + imgRect.height / 2;
@@ -1640,6 +1643,16 @@
 
       if (closestCard) {
         return closestCard.text;
+      }
+    }
+
+    // 6. Verifica painel lateral de detalhes visível à direita do Canvas
+    const sidebarElements = document.querySelectorAll('aside, [role="complementary"], [class*="sidebar" i], [class*="detail" i]');
+    for (const sb of sidebarElements) {
+      if (sb.closest('#flow-macro-panel, #flow-downloader-hud-container, [id*="fd-"]')) continue;
+      const sText = (sb.innerText || sb.textContent || '').trim();
+      if (sText.length > 20 && !sText.toLowerCase().includes('macro studio')) {
+        return sText;
       }
     }
 
