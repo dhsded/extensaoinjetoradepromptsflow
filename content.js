@@ -572,19 +572,24 @@
         getScrollHeight: () => el.scrollHeight,
         getClientHeight: () => el.clientHeight,
         scrollBy: (val) => {
-          el.scrollBy({ top: val, behavior: 'instant' });
+          el.scrollTop += val;
+          try { el.scrollBy({ top: val, behavior: 'instant' }); } catch (e) {}
           el.dispatchEvent(new Event('scroll', { bubbles: true }));
+          el.dispatchEvent(new WheelEvent('wheel', { deltaY: val, bubbles: true, cancelable: true }));
         },
         scrollTo: (top) => {
-          el.scrollTo({ top: top, behavior: 'instant' });
+          el.scrollTop = top;
+          try { el.scrollTo({ top: top, behavior: 'instant' }); } catch (e) {}
           el.dispatchEvent(new Event('scroll', { bubbles: true }));
+          el.dispatchEvent(new WheelEvent('wheel', { deltaY: top > 0 ? 300 : -300, bubbles: true, cancelable: true }));
         }
       });
     }
 
     // 2. Rolagem de divs e seções internas do Canvas do FLOW com overflow ativo
-    const allDivs = document.querySelectorAll('main, [role="main"], [role="feed"], #main-content, section, div[class*="canvas" i], div[class*="scroller" i], div[class*="feed" i], div[class*="grid" i]');
-    for (const el of allDivs) {
+    const allDivs = document.querySelectorAll('main, [role="main"], [role="feed"], #main-content, section, div[class*="canvas" i], div[class*="scroller" i], div[class*="feed" i], div[class*="grid" i], [data-testid="virtuoso-item-list"]');
+    for (const rawEl of allDivs) {
+      const el = (rawEl.matches && rawEl.matches('[data-testid="virtuoso-item-list"]') && rawEl.parentElement) ? rawEl.parentElement : rawEl;
       if (el.closest('[id*="fd-"], [class*="fd-"]')) continue;
       if (el.scrollHeight > el.clientHeight + 40 && el.clientHeight > 120) {
         containers.push({
@@ -594,12 +599,16 @@
           getScrollHeight: () => el.scrollHeight,
           getClientHeight: () => el.clientHeight,
           scrollBy: (val) => {
-            el.scrollBy({ top: val, behavior: 'instant' });
+            el.scrollTop += val;
+            try { el.scrollBy({ top: val, behavior: 'instant' }); } catch (e) {}
             el.dispatchEvent(new Event('scroll', { bubbles: true }));
+            el.dispatchEvent(new WheelEvent('wheel', { deltaY: val, bubbles: true, cancelable: true }));
           },
           scrollTo: (top) => {
-            el.scrollTo({ top: top, behavior: 'instant' });
+            el.scrollTop = top;
+            try { el.scrollTo({ top: top, behavior: 'instant' }); } catch (e) {}
             el.dispatchEvent(new Event('scroll', { bubbles: true }));
+            el.dispatchEvent(new WheelEvent('wheel', { deltaY: top > 0 ? 300 : -300, bubbles: true, cancelable: true }));
           }
         });
       }
@@ -612,8 +621,17 @@
       getScrollTop: () => window.scrollY || docElem.scrollTop || body.scrollTop,
       getScrollHeight: () => Math.max(docElem.scrollHeight, body.scrollHeight),
       getClientHeight: () => window.innerHeight,
-      scrollBy: (val) => window.scrollBy({ top: val, behavior: 'instant' }),
-      scrollTo: (top) => window.scrollTo({ top, behavior: 'instant' })
+      scrollBy: (val) => {
+        window.scrollBy({ top: val, behavior: 'instant' });
+        document.documentElement.scrollTop += val;
+        document.body.scrollTop += val;
+        window.dispatchEvent(new WheelEvent('wheel', { deltaY: val, bubbles: true, cancelable: true }));
+      },
+      scrollTo: (top) => {
+        window.scrollTo({ top, behavior: 'instant' });
+        document.documentElement.scrollTop = top;
+        document.body.scrollTop = top;
+      }
     });
 
     // Ordena priorizando containers que realmente possuem rolagem ativa (maior diferença scrollHeight - clientHeight)
@@ -624,6 +642,70 @@
     });
 
     return containers;
+  }
+
+  /**
+   * Força o avanço da rolagem no Canvas do FLOW, acionando o React Virtuoso / Infinite Scroll
+   * Utiliza múltiplos mecanismos combinados:
+   * 1. Rolagem direta em todos os scrollers identificados (scrollTop += val e scrollBy)
+   * 2. Rolagem da window e documentElement
+   * 3. Chamada de scrollIntoView no último filho do [data-testid="virtuoso-item-list"]
+   * 4. Chamada de scrollIntoView na última imagem / bloco de geração renderizado
+   * 5. Disparo de WheelEvent com deltaY e Event('scroll')
+   * 6. Simulação de tecla PageDown para acionar listeners de teclado do canvas
+   * @param {number} distance - Quantidade de pixels a avançar
+   * @param {Array<Object>} scrollers - Lista de scrollers
+   */
+  function performActiveScrollDown(distance = 500, scrollers = []) {
+    // 1. Rola todos os containers scrollers identificados
+    if (Array.isArray(scrollers)) {
+      for (const s of scrollers) {
+        try {
+          if (s && typeof s.scrollBy === 'function') s.scrollBy(distance);
+        } catch (e) {}
+      }
+    }
+
+    // 2. Rola window e documentElement
+    try {
+      window.scrollBy({ top: distance, behavior: 'instant' });
+      if (document.documentElement) document.documentElement.scrollTop += distance;
+      if (document.body) document.body.scrollTop += distance;
+    } catch (e) {}
+
+    // 3. Força o Virtuoso Item List a acionar a renderização do próximo lote
+    try {
+      const virtuosoList = document.querySelector('[data-testid="virtuoso-item-list"]');
+      if (virtuosoList && virtuosoList.lastElementChild) {
+        virtuosoList.lastElementChild.scrollIntoView({ behavior: 'instant', block: 'end' });
+      }
+    } catch (e) {}
+
+    // 4. Se não achou virtuosoList, busca a última imagem gerada visível e rola até ela
+    try {
+      const allImgs = Array.from(document.querySelectorAll('img')).filter(img => isGeneratedFlowImage(img));
+      if (allImgs.length > 0) {
+        const lastImg = allImgs[allImgs.length - 1];
+        lastImg.scrollIntoView({ behavior: 'instant', block: 'end' });
+      }
+    } catch (e) {}
+
+    // 5. Dispara eventos de Wheel e Scroll com deltaY para simular interação real do usuário
+    try {
+      const wheelEv = new WheelEvent('wheel', { deltaY: distance, deltaMode: 0, bubbles: true, cancelable: true });
+      window.dispatchEvent(wheelEv);
+      document.dispatchEvent(wheelEv);
+      const scrollerEl = document.querySelector('[data-testid="virtuoso-scroller"], [data-virtuoso-scroller="true"]');
+      if (scrollerEl) {
+        scrollerEl.dispatchEvent(wheelEv);
+        scrollerEl.dispatchEvent(new Event('scroll', { bubbles: true }));
+      }
+    } catch (e) {}
+
+    // 6. Simula PageDown no teclado
+    try {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', code: 'PageDown', keyCode: 34, which: 34, bubbles: true }));
+    } catch (e) {}
   }
 
   // ==========================================================================
@@ -1172,11 +1254,11 @@
     } else {
       showToast('📜 Descendo progressivamente até o final para capturar todas as imagens...', 'info');
 
-      // PASSO 2: Loop de descida progressiva controlada em passos de 380px
+      // PASSO 2: Loop de descida progressiva controlada em passos de 500px
       let lastHeight = 0;
       let lastImageCount = collectedMap.size;
       let bottomConfirmationCount = 0;
-      const maxSteps = 60; // Suporta páginas longas com múltiplos carrosséis
+      const maxSteps = 350; // Suporta páginas longas com múltiplos carrosséis completos
 
       for (let step = 1; step <= maxSteps; step++) {
         if (cancelRequested) {
@@ -1186,10 +1268,8 @@
           return;
         }
 
-        // Rola todos os containers ativos em passos graduais de 380px
-        for (const scroller of scrollers) {
-          scroller.scrollBy(380);
-        }
+        // Executa avanço ativo de rolagem (Virtuoso + window + wheel events + last child)
+        performActiveScrollDown(500, scrollers);
 
         // Rola eventuais strips horizontais
         const horizontalStrips = document.querySelectorAll('[style*="overflow-x"], div, section');
@@ -1199,8 +1279,8 @@
           }
         }
 
-        // Aguarda 750ms por passo para o DOM virtual e as requisições de imagem renderizarem
-        await new Promise(r => setTimeout(r, 750));
+        // Aguarda 900ms por passo para o Virtuoso e os CDN nodes hidratarem
+        await new Promise(r => setTimeout(r, 900));
 
         if (cancelRequested) {
           resetHudButtons();
@@ -1211,22 +1291,30 @@
         collectAllVisible();
 
         const currentHeight = primaryScroller.getScrollHeight();
-        const currentScrollTop = primaryScroller.getScrollTop();
-        const clientH = primaryScroller.getClientHeight();
         const currentCount = collectedMap.size;
 
-        // Verifica se alcançou o fim físico da rolagem
-        const isAtBottom = (currentScrollTop + clientH >= currentHeight - 35);
+        if (step % 4 === 0 || currentCount > lastImageCount) {
+          showToast(`📜 Percorrendo página (${step}/${maxSteps}): ${currentCount} imagens detectadas...`, 'info');
+        }
 
-        if (currentHeight > lastHeight + 10 || currentCount > lastImageCount) {
+        // Verifica se alcançou o fim físico da rolagem em qualquer dos scrollers ou documento
+        const isAtBottom = scrollers.some(s => s.getScrollTop() + s.getClientHeight() >= s.getScrollHeight() - 60) ||
+                           (window.scrollY + window.innerHeight >= Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) - 60);
+
+        if (currentHeight > lastHeight + 15 || currentCount > lastImageCount) {
           bottomConfirmationCount = 0;
           lastHeight = currentHeight;
           lastImageCount = currentCount;
         } else if (isAtBottom) {
           bottomConfirmationCount++;
-          // Confirma 3 verificações consecutivas no fundo absoluto da página
-          if (bottomConfirmationCount >= 3) {
-            console.log('[FLOW Downloader] Fim definitivo da página verificado com sucesso.');
+          // Força impulsos extras no fundo para dar tempo de carregar novos chunks do Virtuoso
+          performActiveScrollDown(600, scrollers);
+          await new Promise(r => setTimeout(r, 1100));
+          collectAllVisible();
+
+          // Confirma 6 verificações consecutivas no fundo absoluto da página (~8 a 9 segundos de pausa)
+          if (bottomConfirmationCount >= 6) {
+            console.log('[FLOW Downloader] Fim definitivo da página verificado com sucesso após 6 confirmações.');
             break;
           }
         }
@@ -1386,6 +1474,49 @@
    * @param {Array<Object>} carousels - Lista de carrosséis carregados no Macro Studio
    * @returns {{ carousel: Object, slide: Object, carouselIndex: number, carouselTitle: string, slideIndex: number, score: number, matchReason: string }|null}
    */
+  const GENERIC_PROMPT_STOPWORDS = new Set([
+    'detailed', 'sketched', 'illustration', 'style', 'art', 'scene',
+    'character', 'characters', 'background', 'light', 'lighting', 'diffused',
+    'soft', 'prompt', 'image', 'dall', 'dalle', 'midjourney', 'flux', 'leonardo',
+    'texto', 'baloes', 'balao', 'dialogue', 'drawing', 'digital', 'render',
+    'high', 'quality', 'masterpiece', 'both', 'matte', 'with', 'and', 'the',
+    'for', 'from', 'this', 'that', 'they', 'them', 'their', 'there'
+  ]);
+
+  function extractTrigrams(words) {
+    const trigrams = new Set();
+    for (let i = 0; i <= words.length - 3; i++) {
+      trigrams.add(`${words[i]} ${words[i+1]} ${words[i+2]}`);
+    }
+    return trigrams;
+  }
+
+  /**
+   * Limpa metadados e botões de interface anexados ao texto do prompt no FLOW
+   * @param {string} raw - Texto bruto
+   * @returns {string} - Texto limpo
+   */
+  function cleanFlowPromptText(raw) {
+    if (!raw || typeof raw !== 'string') return '';
+    return raw
+      .replace(/(?:Data\s+de\s+cria[cç][aã]o|Created\s+at)\s*[\:\-][^\n]*/gi, '')
+      .replace(/(?:Propor[cç][aã]o|Aspect\s+ratio)\s*[\:\-][^\n]*/gi, '')
+      .replace(/(?:Modelo|Model)\s*[\:\-][^\n]*/gi, '')
+      .replace(/Nano\s+Banana[^\n]*/gi, '')
+      .replace(/(?:Reutilizar|Reuse)\s+(?:comando|prompt)/gi, '')
+      .replace(/(?:Adicionar\s+ao|Add\s+to)\s+(?:comando|prompt)/gi, '')
+      .replace(/(?:Salvar|Save|Download|Baixar|Compartilhar|Share)\b[^\n]*/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  /**
+   * Compara um texto de prompt extraído do Canvas do FLOW contra todos os slides de todos os carrosséis
+   * Retorna o carrossel vencedor, o slide correspondente e a pontuação de confiança
+   * @param {string} rawExtractedText - Texto lido no bloco de geração do FLOW (painel direito / legendas)
+   * @param {Array<Object>} carousels - Lista de carrosséis carregados no Macro Studio
+   * @returns {{ carousel: Object, slide: Object, carouselIndex: number, carouselTitle: string, slideIndex: number, score: number, matchReason: string }|null}
+   */
   function matchPromptToCarousels(rawExtractedText, carousels) {
     if (!rawExtractedText || !carousels || !Array.isArray(carousels) || carousels.length === 0) {
       return null;
@@ -1393,6 +1524,10 @@
 
     const normExtracted = normalizeTextForMatching(rawExtractedText);
     if (normExtracted.length < 5) return null;
+
+    const extractedWords = normExtracted.split(' ').filter(w => w.length >= 2);
+    const extractedTrigrams = extractTrigrams(extractedWords);
+    const extractedWordSet = new Set(extractedWords);
 
     let bestMatch = null;
     let highestScore = 0;
@@ -1406,63 +1541,82 @@
         let score = 0;
         let matchReason = '';
 
-        // 1. Prioridade Máxima: Diálogo do Balão (ptDialogue / balloonText)
+        // 1. Prioridade Diálogo do Balão em Português
         const dialogue = slide.ptDialogue || slide.balloonText || '';
         const normDialogue = normalizeTextForMatching(dialogue);
         if (normDialogue.length >= 8) {
           if (normExtracted.includes(normDialogue)) {
             score = 100;
-            matchReason = `Diálogo exato ("${dialogue.slice(0, 35)}...")`;
+            matchReason = `Diálogo exato ("${dialogue.slice(0, 30)}...")`;
           } else {
             const diagWords = normDialogue.split(' ').filter(w => w.length >= 3);
             if (diagWords.length > 0) {
-              const matchedWords = diagWords.filter(w => normExtracted.includes(w));
-              const diagRatio = matchedWords.length / diagWords.length;
-              if (diagRatio >= 0.70) {
-                score = Math.max(score, Math.round(diagRatio * 95));
-                matchReason = `Diálogo parcial (${Math.round(diagRatio * 100)}% das palavras)`;
-              }
-            }
-          }
-        }
-
-        // 2. Prioridade Média-Alta: Trecho característico do Prompt de Imagem
-        const imgPrompt = slide.imagePrompt || '';
-        const normImgPrompt = normalizeTextForMatching(imgPrompt);
-        if (normImgPrompt.length >= 20) {
-          const promptHead = normImgPrompt.slice(0, 50);
-          if (normExtracted.includes(promptHead)) {
-            if (score < 90) {
-              score = 90;
-              matchReason = 'Início do Prompt de Imagem idêntico';
-            }
-          } else {
-            const ignoredWords = new Set([
-              'detailed', 'sketched', 'illustration', 'style', 'art', 'scene',
-              'character', 'background', 'light', 'diffused', 'soft', 'prompt',
-              'image', 'dall', 'midjourney', 'texto', 'baloes', 'balao'
-            ]);
-            const pWords = normImgPrompt.split(' ').filter(w => w.length >= 4 && !ignoredWords.has(w));
-            if (pWords.length >= 4) {
-              const matchedPWords = pWords.filter(w => normExtracted.includes(w));
-              const pRatio = matchedPWords.length / pWords.length;
-              if (pRatio >= 0.35) {
-                const calculatedScore = Math.round(40 + (pRatio * 50));
-                if (calculatedScore > score) {
-                  score = calculatedScore;
-                  matchReason = `Sobreposição de palavras do prompt (${Math.round(pRatio * 100)}%)`;
+              const matchedDiagWords = diagWords.filter(w => extractedWordSet.has(w));
+              const diagRatio = matchedDiagWords.length / diagWords.length;
+              if (diagRatio >= 0.60) {
+                const diagScore = Math.round(diagRatio * 95);
+                if (diagScore > score) {
+                  score = diagScore;
+                  matchReason = `Diálogo parcial (${Math.round(diagRatio * 100)}% das palavras)`;
                 }
               }
             }
           }
         }
 
-        // 3. Prioridade Título do Slide
+        // 2. Prompt de Imagem em Inglês
+        const imgPrompt = slide.imagePrompt || '';
+        const normImgPrompt = normalizeTextForMatching(imgPrompt);
+        if (normImgPrompt.length >= 15) {
+          // 2a. Início idêntico do prompt (primeiros 45 caracteres)
+          const promptHead = normImgPrompt.slice(0, 45);
+          if (normExtracted.includes(promptHead)) {
+            if (score < 90) {
+              score = 90;
+              matchReason = 'Início do Prompt de Imagem idêntico';
+            }
+          }
+
+          // 2b. Tri-gramas característicos (sequências de 3 palavras contínuas)
+          const slideWords = normImgPrompt.split(' ').filter(w => w.length >= 2);
+          const slideTrigrams = extractTrigrams(slideWords);
+          let matchedTrigrams = 0;
+          for (const tg of slideTrigrams) {
+            if (extractedTrigrams.has(tg) || normExtracted.includes(tg)) {
+              matchedTrigrams++;
+            }
+          }
+
+          if (slideTrigrams.size > 0 && matchedTrigrams >= 2) {
+            const triRatio = matchedTrigrams / slideTrigrams.size;
+            const triScore = Math.min(96, Math.round(75 + (triRatio * 25)));
+            if (triScore > score) {
+              score = triScore;
+              matchReason = `Expressões idênticas do roteiro (${matchedTrigrams} frases coincidentes)`;
+            }
+          }
+
+          // 2c. Palavras distintivas exclusivas (removendo stop words genéricas de prompt)
+          const significantSlideWords = slideWords.filter(w => w.length >= 3 && !GENERIC_PROMPT_STOPWORDS.has(w));
+          if (significantSlideWords.length >= 3) {
+            const matchedSigWords = significantSlideWords.filter(w => extractedWordSet.has(w));
+            const sigRatio = matchedSigWords.length / significantSlideWords.length;
+            if (sigRatio >= 0.25) {
+              const wordScore = Math.min(94, Math.round(45 + (sigRatio * 50)));
+              if (wordScore > score) {
+                score = wordScore;
+                matchReason = `Sobreposição de palavras-chave (${Math.round(sigRatio * 100)}%: ${matchedSigWords.slice(0, 3).join(', ')})`;
+              }
+            }
+          }
+        }
+
+        // 3. Título do Slide
         const slideTitle = slide.slideTitle || '';
         const normTitle = normalizeTextForMatching(slideTitle);
-        if (normTitle.length >= 8 && normExtracted.includes(normTitle)) {
-          if (score < 70) {
-            score = 70;
+        if (normTitle.length >= 6 && normExtracted.includes(normTitle)) {
+          if (score < 60) {
+            score = 60;
             matchReason = `Título do slide ("${slideTitle}")`;
           }
         }
@@ -1487,24 +1641,133 @@
   }
 
   /**
+   * Extrai o texto completo e sem truncamento do prompt exibido no canto direito da geração no FLOW
+   * @param {HTMLElement} img - Elemento de imagem
+   * @param {HTMLElement} card - Elemento do card da imagem
+   * @returns {string}
+   */
+  function extractPromptFromRightCanto(img, card) {
+    if (!img && !card) return '';
+
+    const candidates = [];
+
+    // 1. Localiza o container da linha/bloco de geração no Canvas
+    let genBlock = null;
+    const startNode = img || card;
+    if (startNode) {
+      // 1a. Procura subindo até o item direto do virtuoso-item-list
+      let curr = startNode;
+      while (curr && curr.parentElement) {
+        if (curr.parentElement.getAttribute && curr.parentElement.getAttribute('data-testid') === 'virtuoso-item-list') {
+          genBlock = curr;
+          break;
+        }
+        curr = curr.parentElement;
+      }
+      // 1b. Fallback para seletores de blocos de geração estruturais
+      if (!genBlock) {
+        genBlock = startNode.closest([
+          '[data-testid="virtuoso-item-list"] > div',
+          '[role="article"]',
+          '[role="feed"] > div',
+          'div.sc-784d6f75-0',
+          'div.sc-784d6f75-1',
+          'section',
+          'main > div > div',
+          '[class*="generation" i]'
+        ].join(', '));
+      }
+    }
+
+    // 2. Se encontrou o bloco de geração, busca textos prioritariamente no canto direito (lado direito da linha)
+    if (genBlock) {
+      const imgRect = (img || card).getBoundingClientRect();
+
+      const allTextNodes = Array.from(genBlock.querySelectorAll('div, p, span, section, [role="region"], aside, textarea, pre, code, [class*="prompt" i], [class*="text" i], [class*="detail" i], [class*="caption" i]')).filter(el => {
+        if (el.closest('#flow-macro-panel, #flow-downloader-hud-container, [id*="fd-"], button, svg')) return false;
+        const raw = el.value || el.innerText || el.textContent || '';
+        const t = raw.trim();
+        if (t.length < 20) return false;
+        if (img && el.contains(img)) return false;
+        if (card && el.contains(card)) return false;
+        return true;
+      });
+
+      // Ordena priorizando nós que ficam geometricamente no canto direito do bloco
+      allTextNodes.sort((a, b) => {
+        const rectA = a.getBoundingClientRect();
+        const rectB = b.getBoundingClientRect();
+        const isRightA = rectA.left >= imgRect.right - 40;
+        const isRightB = rectB.left >= imgRect.right - 40;
+        if (isRightA && !isRightB) return -1;
+        if (!isRightA && isRightB) return 1;
+        const lenA = (a.value || a.innerText || a.textContent || '').length;
+        const lenB = (b.value || b.innerText || b.textContent || '').length;
+        return lenB - lenA;
+      });
+
+      for (const node of allTextNodes) {
+        const raw = node.value || node.innerText || node.textContent || '';
+        const clean = cleanFlowPromptText(raw);
+        if (clean.length > 25) {
+          candidates.push(clean);
+        }
+      }
+    }
+
+    // 3. Verifica o painel lateral de detalhes / inspector à direita da tela
+    const sidebarElements = document.querySelectorAll('aside, [role="complementary"], div[class*="sidebar" i], div[class*="detail" i], div[class*="panel" i]');
+    for (const sb of sidebarElements) {
+      if (sb.closest('#flow-macro-panel, #flow-downloader-hud-container, [id*="fd-"]')) continue;
+      const clean = cleanFlowPromptText(sb.innerText || sb.textContent || '');
+      if (clean.length > 25 && !clean.toLowerCase().includes('macro studio')) {
+        candidates.push(clean);
+      }
+    }
+
+    // 4. Captura alt da imagem se for detalhado (> 25 caracteres)
+    if (img && img.alt && img.alt.length > 25 && !img.alt.match(/\.(jpe?g|png|webp)$/i)) {
+      candidates.push(cleanFlowPromptText(img.alt));
+    }
+
+    // 5. Captura aria-label da imagem ou do card
+    const aria = (img && img.getAttribute && img.getAttribute('aria-label')) || (card && card.getAttribute && card.getAttribute('aria-label')) || '';
+    if (aria.length > 25 && !aria.toLowerCase().includes('download') && !aria.toLowerCase().includes('menu')) {
+      candidates.push(cleanFlowPromptText(aria));
+    }
+
+    // 6. Legenda do próprio card (se houver)
+    if (card) {
+      const clone = card.cloneNode(true);
+      clone.querySelectorAll('[id*="fd-"], [class*="fd-"], button, svg').forEach(b => b.remove());
+      const cText = cleanFlowPromptText(clone.innerText || clone.textContent || '');
+      if (cText.length > 20) {
+        candidates.push(cText);
+      }
+    }
+
+    // Retorna o candidato mais completo (maior número de caracteres limpos)
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => b.length - a.length);
+      return candidates[0];
+    }
+
+    return '';
+  }
+
+  /**
    * Extrai o texto do prompt e diálogos de um bloco de geração no Canvas do FLOW
-   * Lê o painel no canto direito da tela (conforme interface do FLOW) e as legendas sob as imagens
    * @param {HTMLElement} block - Elemento do bloco/linha no Canvas
    * @returns {string}
    */
   function extractPromptFromGenerationBlock(block) {
     if (!block) return '';
-
     const textPieces = [];
 
-    // 1. Procura por nós que contêm tags estruturadas do prompt no painel direito
     const candidateNodes = Array.from(block.querySelectorAll('div, p, span, section')).filter(el => {
       if (el.children.length > 8) return false;
       const t = (el.innerText || el.textContent || '').trim();
-      return (
-        t.length > 15 &&
-        (t.includes('Texto nos balões') || t.includes('Prompt de Imagem') || t.includes('PT-BR') || t.includes('PT:') || t.includes('Midjourney') || t.includes('Dall-E'))
-      );
+      return t.length > 20 && !el.closest('#flow-macro-panel, #flow-downloader-hud-container, [id*="fd-"], button, svg');
     });
 
     if (candidateNodes.length > 0) {
@@ -1512,22 +1775,11 @@
       textPieces.push(candidateNodes[0].innerText || candidateNodes[0].textContent || '');
     }
 
-    // 2. Extrai legendas e badges sob as imagens (ex: Texto nos balões: PT-BR: "...")
-    const captions = Array.from(block.querySelectorAll('[class*="caption" i], [class*="subtitle" i], [class*="badge" i], span, div')).filter(el => {
-      const t = (el.innerText || el.textContent || '').trim();
-      return t.length > 10 && (t.includes('Texto nos balões') || t.includes('PT-BR') || t.includes('PT:') || t.includes('Prompt:'));
-    });
-
-    for (const cap of captions) {
-      textPieces.push(cap.innerText || cap.textContent || '');
-    }
-
-    // 3. Se nenhum bloco específico foi capturado, utiliza o texto visível completo do bloco
     if (textPieces.length === 0) {
       textPieces.push(block.innerText || block.textContent || '');
     }
 
-    return textPieces.join('\n\n');
+    return cleanFlowPromptText(textPieces.join('\n\n'));
   }
 
   /**
@@ -1536,22 +1788,20 @@
    */
   function findPromptCardsOnCanvas() {
     const candidates = Array.from(document.querySelectorAll('div, section, article, [role="article"]')).filter(el => {
-      if (el.closest('#flow-macro-panel, #flow-downloader-hud-container, [id*="fd-"]')) return false;
+      if (el.closest('#flow-macro-panel, #flow-downloader-hud-container, [id*="fd-"], button')) return false;
       const text = (el.innerText || el.textContent || '').trim();
-      if (text.length < 15) return false;
+      if (text.length < 20) return false;
       return (
         text.includes('Texto nos balões') ||
         text.includes('Prompt de Imagem') ||
-        text.includes('Midjourney') ||
-        text.includes('Dall-E') ||
-        text.includes('PT-BR:') ||
+        text.includes('PT-BR') ||
         text.includes('PT:') ||
         text.includes('Adicionar ao comando') ||
         text.includes('Reutilizar comando') ||
         text.includes('Add to prompt') ||
         text.includes('Reuse prompt') ||
         text.includes('Remix') ||
-        el.matches('[class*="prompt-card" i], [class*="prompt-item" i], [class*="prompt-title" i], [class*="caption" i]')
+        el.matches('[class*="prompt-card" i], [class*="prompt-item" i], [class*="prompt-title" i], [class*="caption" i], [class*="detail" i]')
       );
     });
 
@@ -1562,7 +1812,7 @@
 
     return specificNodes.map(el => {
       const rect = el.getBoundingClientRect();
-      const text = extractPromptFromGenerationBlock(el) || el.innerText || el.textContent || '';
+      const text = cleanFlowPromptText(extractPromptFromGenerationBlock(el) || el.innerText || el.textContent || '');
       return {
         element: el,
         text: text,
@@ -1574,7 +1824,7 @@
   }
 
   /**
-   * Determina o texto de prompt associado a uma imagem gerada (por alt, card, pai comum, proximidade 2D ou painel lateral)
+   * Determina o texto de prompt associado a uma imagem gerada (por alt, card, pai comum, canto direito ou painel lateral)
    * @param {Object} item - Objeto de imagem
    * @param {Array<Object>} promptCards - Lista de cards de prompt da tela
    * @returns {string}
@@ -1583,41 +1833,14 @@
     const img = item.img;
     const card = item.card;
 
-    // 1. Verifica se a imagem tem alt detalhado com o prompt
-    if (img && img.alt && img.alt.length > 20 && !img.alt.match(/\.(jpe?g|png|webp)$/i)) {
-      return img.alt;
+    // Prioridade 1: Extração direta no Canto Direito do bloco de geração no FLOW (sem truncamento)
+    const rightCantoText = extractPromptFromRightCanto(img, card);
+    if (rightCantoText && rightCantoText.length > 25) {
+      return rightCantoText;
     }
 
-    // 2. Verifica aria-label da imagem ou do card
-    const aria = (img && img.getAttribute && img.getAttribute('aria-label')) || (card && card.getAttribute && card.getAttribute('aria-label')) || '';
-    if (aria.length > 20 && !aria.toLowerCase().includes('download') && !aria.toLowerCase().includes('menu')) {
-      return aria;
-    }
-
-    // 3. Captura texto no próprio card ou em legendas sob a imagem
-    if (card) {
-      const clone = card.cloneNode(true);
-      clone.querySelectorAll('[id*="fd-"], [class*="fd-"], button, svg').forEach(b => b.remove());
-      const cText = (clone.innerText || clone.textContent || '').trim();
-      if (cText.length > 15) {
-        return cText;
-      }
-    }
-
-    // 4. Captura texto no bloco de geração ancestral da imagem (linha de 4/3/2 imagens geradas)
-    if (img) {
-      const block = img.closest('[role="article"], [class*="generation" i], [class*="grid" i], [class*="card" i], section, main > div');
-      if (block) {
-        const bText = extractPromptFromGenerationBlock(block);
-        if (bText && bText.length > 15) {
-          return bText;
-        }
-      }
-    }
-
-    // 5. Procura no card de prompt mais próximo geometricamente no Canvas
+    // Prioridade 2: Card de prompt mais próximo geometricamente no Canvas
     if (promptCards && promptCards.length > 0 && img) {
-      // Prioridade 5a: Ancestral comum direto (mesma linha/seção do Canvas)
       for (const pc of promptCards) {
         const commonParent = img.closest('section, main > div, [role="feed"] > div, [role="article"], [class*="generation" i], [class*="card" i]');
         if (commonParent && commonParent.contains(pc.element)) {
@@ -1625,7 +1848,6 @@
         }
       }
 
-      // Prioridade 5b: Proximidade geométrica 2D no Canvas
       const imgRect = img.getBoundingClientRect();
       const imgCenterX = imgRect.left + imgRect.width / 2;
       const imgCenterY = imgRect.top + imgRect.height / 2;
@@ -1641,18 +1863,8 @@
         }
       }
 
-      if (closestCard) {
+      if (closestCard && closestCard.text && closestCard.text.length > 20) {
         return closestCard.text;
-      }
-    }
-
-    // 6. Verifica painel lateral de detalhes visível à direita do Canvas
-    const sidebarElements = document.querySelectorAll('aside, [role="complementary"], [class*="sidebar" i], [class*="detail" i]');
-    for (const sb of sidebarElements) {
-      if (sb.closest('#flow-macro-panel, #flow-downloader-hud-container, [id*="fd-"]')) continue;
-      const sText = (sb.innerText || sb.textContent || '').trim();
-      if (sText.length > 20 && !sText.toLowerCase().includes('macro studio')) {
-        return sText;
       }
     }
 
@@ -1785,12 +1997,18 @@
       const promptCards = findPromptCardsOnCanvas();
       const currentImages = findFlowImages();
       for (const item of currentImages) {
+        const promptText = getBestPromptForImage(item, promptCards);
         if (!discoveredMap.has(item.url)) {
-          const promptText = getBestPromptForImage(item, promptCards);
           discoveredMap.set(item.url, {
             ...item,
             fullPromptText: promptText
           });
+        } else {
+          // Atualiza se encontrou um texto de prompt mais completo nesta passagem
+          const existing = discoveredMap.get(item.url);
+          if (promptText && (!existing.fullPromptText || promptText.length > existing.fullPromptText.length)) {
+            existing.fullPromptText = promptText;
+          }
         }
       }
     }
@@ -1808,7 +2026,16 @@
       getClientHeight: () => window.innerHeight
     };
 
-    const hasScroll = primaryScroller && (primaryScroller.getScrollHeight() > primaryScroller.getClientHeight() + 50);
+    // Detecta se a página tem rolagem ou lista virtual Virtuoso que exige percurso
+    const hasScroll = scrollers.some(s => s.getScrollHeight() > s.getClientHeight() + 20) ||
+                      (document.documentElement.scrollHeight > window.innerHeight + 20) ||
+                      (document.querySelector('[data-testid="virtuoso-scroller"], [data-testid="virtuoso-item-list"]') !== null);
+
+    // Contabiliza total de slides esperados em todos os carrosséis
+    let totalExpectedSlides = 0;
+    for (const c of carousels) {
+      totalExpectedSlides += (c.slides || []).length;
+    }
 
     if (hasScroll) {
       showToast('⬆️ Subindo ao topo da página para iniciar a leitura de todos os prompts...', 'info');
@@ -1824,11 +2051,12 @@
 
       showToast('📜 Descendo progressivamente a página e comparando os prompts...', 'info');
 
-      // PASSO 2: Loop de descida progressiva controlada em passos de 380px
+      // PASSO 2: Loop de descida progressiva controlada em passos de 500px
       let lastHeight = 0;
       let lastUrlCount = discoveredMap.size;
       let bottomConfirmationCount = 0;
-      const maxSteps = 60;
+      let allSlidesMatchedRounds = 0;
+      const maxSteps = 350; // Suporta páginas longas com dezenas de carrosséis e centenas de gerações
 
       for (let step = 1; step <= maxSteps; step++) {
         if (cancelRequested) {
@@ -1838,11 +2066,10 @@
           return;
         }
 
-        for (const scroller of scrollers) {
-          scroller.scrollBy(380);
-        }
+        // Executa avanço ativo de rolagem (Virtuoso + window + wheel events + last child)
+        performActiveScrollDown(500, scrollers);
 
-        await new Promise(r => setTimeout(r, 700));
+        await new Promise(r => setTimeout(r, 950));
 
         if (cancelRequested) {
           resetOrganizeHudButtons();
@@ -1853,20 +2080,54 @@
         collectCurrentImages();
 
         const currentHeight = primaryScroller.getScrollHeight();
-        const currentScrollTop = primaryScroller.getScrollTop();
-        const clientH = primaryScroller.getClientHeight();
         const currentCount = discoveredMap.size;
 
-        const isAtBottom = (currentScrollTop + clientH >= currentHeight - 35);
+        if (step % 3 === 0 || currentCount > lastUrlCount) {
+          showToast(`📜 Percorrendo página (${step}/${maxSteps}): ${currentCount} imagens detectadas...`, 'info');
+        }
 
-        if (currentHeight > lastHeight + 10 || currentCount > lastUrlCount) {
+        // Verifica se TODOS os slides esperados de todos os carrosséis já foram detectados
+        if (totalExpectedSlides > 0) {
+          const matchedSlidesKeys = new Set();
+          for (const item of discoveredMap.values()) {
+            const pText = item.fullPromptText || item.prompt;
+            if (pText) {
+              const m = matchPromptToCarousels(pText, carousels);
+              if (m) {
+                matchedSlidesKeys.add(`${m.carouselIndex}_${m.slideIndex}`);
+              }
+            }
+          }
+          if (matchedSlidesKeys.size >= totalExpectedSlides) {
+            allSlidesMatchedRounds++;
+            // Confirma 3 passos adicionais para certificar que todas as variantes foram carregadas
+            if (allSlidesMatchedRounds >= 3) {
+              console.log(`[FLOW Organizar] Todos os ${totalExpectedSlides} slides dos carrosséis detectados com sucesso na tela!`);
+              break;
+            }
+          } else {
+            allSlidesMatchedRounds = 0;
+          }
+        }
+
+        // Verifica se alcançou o fundo da rolagem
+        const isAtBottom = scrollers.some(s => s.getScrollTop() + s.getClientHeight() >= s.getScrollHeight() - 60) ||
+                           (window.scrollY + window.innerHeight >= Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) - 60);
+
+        if (currentHeight > lastHeight + 15 || currentCount > lastUrlCount) {
           bottomConfirmationCount = 0;
           lastHeight = currentHeight;
           lastUrlCount = currentCount;
         } else if (isAtBottom) {
           bottomConfirmationCount++;
-          if (bottomConfirmationCount >= 3) {
-            console.log('[FLOW Organizar] Fim da página alcançado com sucesso.');
+          // Força impulsos extras no fundo para dar tempo de carregar novos blocos virtuais
+          performActiveScrollDown(650, scrollers);
+          await new Promise(r => setTimeout(r, 1100));
+          collectCurrentImages();
+
+          // Confirma 6 verificações consecutivas no fundo absoluto (~8 a 9 segundos)
+          if (bottomConfirmationCount >= 6) {
+            console.log('[FLOW Organizar] Fim definitivo da página verificado com sucesso após 6 confirmações.');
             break;
           }
         }
@@ -1879,7 +2140,7 @@
       }
 
       // PASSO 3: Coleta final no fundo da página
-      await new Promise(r => setTimeout(r, 600));
+      await new Promise(r => setTimeout(r, 800));
       collectCurrentImages();
 
       // PASSO 4: "e subindo a página" - Retorna a rolagem para o topo suavemente
@@ -1890,7 +2151,7 @@
       window.scrollTo({ top: 0, behavior: 'instant' });
       document.documentElement.scrollTop = 0;
       document.body.scrollTop = 0;
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 600));
     } else {
       // Se a página não possui scroll vertical extenso, aguarda e re-coleta
       await new Promise(r => setTimeout(r, 400));
@@ -1925,7 +2186,10 @@
     for (let i = 0; i < allDiscovered.length; i++) {
       const item = allDiscovered[i];
       const promptText = item.fullPromptText || getBestPromptForImage(item, promptCards);
-      const match = matchPromptToCarousels(promptText, carousels);
+      let match = matchPromptToCarousels(promptText, carousels);
+      if (!match && item.prompt) {
+        match = matchPromptToCarousels(item.prompt, carousels);
+      }
 
       let targetFolder = 'Carrossel_1';
       let slidePrefix = 'Slide_01';
