@@ -11,6 +11,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ==========================================================================
   const toggleAuto = document.getElementById('toggle-auto');                   // Checkbox de Download Automático
   const selectQuality = document.getElementById('select-quality');             // Dropdown de Resolução (1K, 2K, 4K)
+  const selectFormat = document.getElementById('select-format');               // Dropdown de Formato da Imagem (JPEG, PNG, WEBP)
   const inputFolder = document.getElementById('input-folder');                 // Campo de texto com o nome da subpasta de destino
   const togglePromptName = document.getElementById('toggle-prompt-name');       // Checkbox para incluir o prompt no nome do arquivo
   const toggleOverlayBtn = document.getElementById('toggle-overlay-btn');       // Checkbox para mostrar botões sobre os cards no FLOW
@@ -42,6 +43,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const s = data || {};
     toggleAuto.checked = s.autoDownload !== undefined ? !!s.autoDownload : false;
     selectQuality.value = s.quality || '1k';
+    if (selectFormat) selectFormat.value = s.imageFormat || 'jpeg';
     inputFolder.value = s.downloadFolder || 'FLOW_Downloads';
     togglePromptName.checked = s.nameWithPrompt !== false;
     toggleOverlayBtn.checked = s.showOverlayButtons !== false;
@@ -177,6 +179,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const updated = {
       autoDownload: toggleAuto.checked,
       quality: selectQuality.value,
+      imageFormat: selectFormat ? selectFormat.value : 'jpeg',
       downloadFolder: inputFolder.value.trim() || 'FLOW_Downloads',
       nameWithPrompt: togglePromptName.checked,
       showOverlayButtons: toggleOverlayBtn.checked,
@@ -205,6 +208,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       cfg.telegramSendCoverPhoto = updated.telegramSendCoverPhoto;
       cfg.telegramSendDetailedPrompts = updated.telegramSendDetailedPrompts;
       cfg.telegramSendCharacterThumbnails = updated.telegramSendCharacterThumbnails;
+      cfg.imageFormat = updated.imageFormat;
       chrome.storage.local.set({ flow_macro_config: cfg });
     });
 
@@ -222,6 +226,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Registra os ouvintes de evento nos controles de configuração
   toggleAuto.addEventListener('change', saveCurrentSettings);
   selectQuality.addEventListener('change', saveCurrentSettings);
+  if (selectFormat) selectFormat.addEventListener('change', saveCurrentSettings);
   inputFolder.addEventListener('input', saveCurrentSettings);
   togglePromptName.addEventListener('change', saveCurrentSettings);
   toggleOverlayBtn.addEventListener('change', saveCurrentSettings);

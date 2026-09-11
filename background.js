@@ -13,6 +13,7 @@
 const DEFAULT_SETTINGS = {
   autoDownload: false,         // Download automático ao gerar novas imagens (true/false)
   quality: '1k',               // Resolução padrão do download ('1k', '2k', '4k', 'direct')
+  imageFormat: 'jpeg',         // Formato de saída ('jpeg', 'png', 'webp') - Padrão: JPEG de alta qualidade (.jpg)
   downloadFolder: 'FLOW_Downloads', // Nome da subpasta dentro da pasta de downloads do usuário
   nameWithPrompt: true,        // Se verdadeiro, inclui o texto do prompt no nome do arquivo
   showOverlayButtons: true,    // Exibe botões flutuantes de download sobre cada card no FLOW
@@ -86,10 +87,10 @@ function sanitizeFolderPath(folderPath) {
  * Monta o caminho completo relativo de download incluindo a pasta de destino e extensão
  * @param {string} rawName - Nome base do arquivo
  * @param {string} folder - Pasta de destino
- * @param {string} ext - Extensão do arquivo ('png', 'jpg', 'webp')
- * @returns {string} - Caminho final formatado (ex: "FLOW_Downloads/Carrossel_01/meu_prompt.png")
+ * @param {string} ext - Extensão do arquivo ('jpg', 'png', 'webp')
+ * @returns {string} - Caminho final formatado (ex: "FLOW_Downloads/Carrossel_01/meu_prompt.jpg")
  */
-function formatFilename(rawName, folder, ext = 'png') {
+function formatFilename(rawName, folder, ext = 'jpg') {
   const dateStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   let finalExt = ext;
   // Preserva a extensão original caso o nome já termine com extensão válida
@@ -163,7 +164,66 @@ async function processQueue() {
 }
 
 /**
+ * Converte um blob de imagem para Data URL JPEG de alta qualidade utilizando OffscreenCanvas
+ * @param {Blob} blob - Blob da imagem original (WEBP, PNG, etc.)
+ * @param {number} quality - Qualidade do JPEG (0.0 a 1.0, padrão: 0.95)
+ * @returns {Promise<string>} - Data URL 'data:image/jpeg;base64,...'
+ */
+async function convertBlobToJpegDataUrl(blob, quality = 0.95) {
+  const imageBitmap = await createImageBitmap(blob);
+  const canvas = new OffscreenCanvas(imageBitmap.width, imageBitmap.height);
+  const ctx = canvas.getContext('2d');
+
+  // Preenche com fundo branco sólido caso a imagem possua transparência (evita fundo preto no JPEG)
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(imageBitmap, 0, 0);
+
+  const jpegBlob = await canvas.convertToBlob({ type: 'image/jpeg', quality: quality });
+  imageBitmap.close(); // Libera memória da GPU
+
+  return await blobToDataUrl(jpegBlob);
+}
+
+/**
+ * Converte um blob de imagem para Data URL PNG de alta qualidade
+ * @param {Blob} blob
+ * @returns {Promise<string>}
+ */
+async function convertBlobToPngDataUrl(blob) {
+  const imageBitmap = await createImageBitmap(blob);
+  const canvas = new OffscreenCanvas(imageBitmap.width, imageBitmap.height);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(imageBitmap, 0, 0);
+
+  const pngBlob = await canvas.convertToBlob({ type: 'image/png' });
+  imageBitmap.close();
+
+  return await blobToDataUrl(pngBlob);
+}
+
+/**
+ * Converte qualquer Blob para Data URL em blocos binários ultra-rápidos
+ * @param {Blob} blob
+ * @returns {Promise<string>}
+ */
+async function blobToDataUrl(blob) {
+  const buffer = await blob.arrayBuffer();
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  const chunkSize = 8192;
+  for (let i = 0; i < len; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
+    binary += String.fromCharCode.apply(null, chunk);
+  }
+  const base64 = btoa(binary);
+  return `data:${blob.type || 'image/jpeg'};base64,${base64}`;
+}
+
+/**
  * Dispara o download nativo do arquivo através da API chrome.downloads
+ * Converte imagens para o formato desejado (JPEG, PNG ou WEBP) com máxima fidelidade
  * @param {string} url - URL direta da imagem
  * @param {string} fullPath - Caminho e nome do arquivo no disco
  * @param {string} imageId - Identificador único da imagem no FLOW
@@ -171,11 +231,45 @@ async function processQueue() {
 async function executeDownload(url, fullPath, imageId) {
   if (cancelRequested) return null;
 
+  // Carrega configuração de formato do usuário ('jpeg', 'png', 'webp')
+  const settings = await chrome.storage.local.get(DEFAULT_SETTINGS);
+  const targetFormat = (settings.imageFormat || 'jpeg').toLowerCase();
+
+  let downloadUrl = url;
+  let finalPath = fullPath;
+
+  // Não converte arquivos de texto (.txt) nem vídeos (.mp4)
+  const isVideo = finalPath.toLowerCase().endsWith('.mp4');
+  const isText = finalPath.toLowerCase().endsWith('.txt') || (url && url.startsWith('data:text/'));
+
+  if (!isVideo && !isText) {
+    const desiredExt = targetFormat === 'png' ? 'png' : (targetFormat === 'webp' ? 'webp' : 'jpg');
+    finalPath = finalPath.replace(/\.(png|jpg|jpeg|webp)$/i, '') + `.${desiredExt}`;
+
+    // Se o formato configurado for JPEG ou PNG e a URL não for já do formato desejado:
+    if ((targetFormat === 'jpeg' || targetFormat === 'png') && url && !url.startsWith(`data:image/${targetFormat}`)) {
+      try {
+        const resp = await fetch(url);
+        if (resp.ok) {
+          const originalBlob = await resp.blob();
+          if (targetFormat === 'jpeg') {
+            downloadUrl = await convertBlobToJpegDataUrl(originalBlob, 0.95);
+          } else if (targetFormat === 'png') {
+            downloadUrl = await convertBlobToPngDataUrl(originalBlob);
+          }
+        }
+      } catch (convErr) {
+        console.warn(`[FLOW Downloader] Não foi possível converter para ${targetFormat.toUpperCase()}, baixando original:`, convErr);
+        downloadUrl = url;
+      }
+    }
+  }
+
   const startDownload = (destPath) => {
     return new Promise((resolve, reject) => {
       chrome.downloads.download(
         {
-          url: url,
+          url: downloadUrl,
           filename: destPath,
           saveAs: false,               // Salva direto sem abrir diálogo do Windows
           conflictAction: 'uniquify'   // Se arquivo já existir, adiciona (1), (2) automaticamente
@@ -194,10 +288,11 @@ async function executeDownload(url, fullPath, imageId) {
 
   let downloadId = null;
   try {
-    downloadId = await startDownload(fullPath);
+    downloadId = await startDownload(finalPath);
   } catch (err) {
-    console.warn(`[FLOW Downloader] Falha ao salvar em '${fullPath}': ${err.message}. Tentando fallback na raiz de Downloads...`);
-    const baseOnly = fullPath.split('/').pop() || `flow_${Date.now()}.png`;
+    console.warn(`[FLOW Downloader] Falha ao salvar em '${finalPath}': ${err.message}. Tentando fallback na raiz de Downloads...`);
+    const desiredExt = targetFormat === 'png' ? 'png' : (targetFormat === 'webp' ? 'webp' : 'jpg');
+    const baseOnly = (finalPath.split('/').pop() || `flow_${Date.now()}`).replace(/\.(png|jpg|jpeg|webp)$/i, '') + `.${desiredExt}`;
     try {
       downloadId = await startDownload(baseOnly);
     } catch (fallbackErr) {
@@ -233,7 +328,7 @@ async function executeDownload(url, fullPath, imageId) {
     console.warn('[FLOW Downloader] Aviso ao salvar histórico de download:', storageErr);
   }
 
-  console.log(`[FLOW Downloader] Imagem salva com sucesso: ${fullPath} (ID: ${downloadId})`);
+  console.log(`[FLOW Downloader] Imagem salva com sucesso: ${finalPath} (ID: ${downloadId}) [Formato: ${targetFormat.toUpperCase()}]`);
   return downloadId;
 }
 
@@ -248,10 +343,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case 'DOWNLOAD_MEDIA':
         case 'DOWNLOAD_IMAGE': {
           const settings = await chrome.storage.local.get(DEFAULT_SETTINGS);
+          const defaultExt = (settings.imageFormat === 'png') ? 'png' : ((settings.imageFormat === 'webp') ? 'webp' : 'jpg');
           const fullPath = formatFilename(
             message.filename,
             message.folder || settings.downloadFolder,
-            message.ext || 'png'
+            message.ext || defaultExt
           );
 
           downloadQueue.push({
@@ -268,9 +364,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case 'DOWNLOAD_BATCH': {
           const settings = await chrome.storage.local.get(DEFAULT_SETTINGS);
           const folder = message.folder || settings.downloadFolder;
+          const defaultExt = (settings.imageFormat === 'png') ? 'png' : ((settings.imageFormat === 'webp') ? 'webp' : 'jpg');
           
           for (const item of message.items) {
-            const fullPath = formatFilename(item.filename, folder, item.ext || 'png');
+            const fullPath = formatFilename(item.filename, folder, item.ext || defaultExt);
             downloadQueue.push({
               url: item.url,
               filename: fullPath,

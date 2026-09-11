@@ -87,6 +87,7 @@
   let settings = {
     autoDownload: false, // Download automático (padrão desligado para segurança)
     quality: '1k', // '1k', '2k', '4k', 'direct'
+    imageFormat: 'jpeg', // 'jpeg' (.jpg), 'png' (.png), 'webp' (.webp)
     downloadFolder: 'FLOW_Downloads',
     carouselFolderMode: 'individual', // 'individual' (subpastas por carrossel) | 'single' (pasta única)
     nameWithPrompt: true,
@@ -842,7 +843,8 @@
         url: imageUrl,
         filename: filename,
         folder: settings.downloadFolder,
-        id: imageUrl
+        id: imageUrl,
+        ext: (settings.imageFormat === 'png') ? 'png' : ((settings.imageFormat === 'webp') ? 'webp' : 'jpg')
       },
       (res) => {
         if (res && res.success) {
@@ -1499,7 +1501,8 @@
       return {
         url: item.url,
         filename: filename,
-        id: item.url
+        id: item.url,
+        ext: (settings.imageFormat === 'png') ? 'png' : ((settings.imageFormat === 'webp') ? 'webp' : 'jpg')
       };
     });
 
@@ -2368,7 +2371,8 @@
         downloadsByFolder.get(targetFolder).push({
           url: item.url,
           filename: filename,
-          id: item.url
+          id: item.url,
+          ext: (settings.imageFormat === 'png') ? 'png' : ((settings.imageFormat === 'webp') ? 'webp' : 'jpg')
         });
 
         processedImageIds.add(item.url);
@@ -3194,6 +3198,33 @@
                 <button class="fd-quantity-btn ${engine.config.quantity === 4 ? 'active' : ''}" data-qty="4">x4</button>
               </div>
 
+              <!-- Formato das Imagens de Download (JPEG, PNG, WEBP) -->
+              <div style="margin-top: 14px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px; padding: 10px 12px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                  <div style="display: flex; flex-direction: column;">
+                    <span style="font-size: 11.5px; font-weight: 700; color: #fff;">💾 Formato das Imagens Salvas:</span>
+                    <span style="font-size: 10px; color: #94a3b8;">Converte o WEBP nativo do FLOW automaticamente ao baixar</span>
+                  </div>
+                  <span id="fd-format-status-tag" style="font-size: 10px; padding: 2px 8px; border-radius: 6px; background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); font-weight: 600;">
+                    ${(settings.imageFormat || 'jpeg').toUpperCase()} (.${settings.imageFormat === 'png' ? 'png' : (settings.imageFormat === 'webp' ? 'webp' : 'jpg')})
+                  </span>
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;">
+                  <button type="button" class="fd-format-btn-card ${(settings.imageFormat || 'jpeg') === 'jpeg' ? 'active' : ''}" data-format="jpeg" style="padding: 7px 6px; border-radius: 8px; border: 1px solid ${(settings.imageFormat || 'jpeg') === 'jpeg' ? '#10b981' : 'rgba(255,255,255,0.1)'}; background: ${(settings.imageFormat || 'jpeg') === 'jpeg' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(0,0,0,0.2)'}; color: #fff; cursor: pointer; text-align: center; transition: all 0.2s;">
+                    <span style="font-size: 12px; font-weight: 700; display: block;">📸 JPEG (.jpg)</span>
+                    <span style="font-size: 9.5px; color: #10b981; display: block; margin-top: 2px;">Recomendado</span>
+                  </button>
+                  <button type="button" class="fd-format-btn-card ${(settings.imageFormat) === 'png' ? 'active' : ''}" data-format="png" style="padding: 7px 6px; border-radius: 8px; border: 1px solid ${(settings.imageFormat) === 'png' ? '#38bdf8' : 'rgba(255,255,255,0.1)'}; background: ${(settings.imageFormat) === 'png' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(0,0,0,0.2)'}; color: #fff; cursor: pointer; text-align: center; transition: all 0.2s;">
+                    <span style="font-size: 12px; font-weight: 700; display: block;">🖼️ PNG (.png)</span>
+                    <span style="font-size: 9.5px; color: #94a3b8; display: block; margin-top: 2px;">Sem Perdas</span>
+                  </button>
+                  <button type="button" class="fd-format-btn-card ${(settings.imageFormat) === 'webp' ? 'active' : ''}" data-format="webp" style="padding: 7px 6px; border-radius: 8px; border: 1px solid ${(settings.imageFormat) === 'webp' ? '#a855f7' : 'rgba(255,255,255,0.1)'}; background: ${(settings.imageFormat) === 'webp' ? 'rgba(168, 85, 247, 0.15)' : 'rgba(0,0,0,0.2)'}; color: #fff; cursor: pointer; text-align: center; transition: all 0.2s;">
+                    <span style="font-size: 12px; font-weight: 700; display: block;">🌐 WEBP (.webp)</span>
+                    <span style="font-size: 9.5px; color: #94a3b8; display: block; margin-top: 2px;">Original FLOW</span>
+                  </button>
+                </div>
+              </div>
+
               <!-- Delay, Repetitions and Extra Config -->
               <div style="margin-top: 16px; display: flex; flex-direction: column; gap: 12px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px;">
                 <div style="display: flex; align-items: center; justify-content: space-between;">
@@ -3986,6 +4017,47 @@
         });
       });
     }
+
+    // =========================================================================
+    // Seleção de Formato de Download (JPEG, PNG, WEBP)
+    // =========================================================================
+    const formatCards = macroModalElement.querySelectorAll('.fd-format-btn-card');
+    const formatStatusTag = macroModalElement.querySelector('#fd-format-status-tag');
+
+    const updateFormatUI = (newFormat) => {
+      if (!newFormat) return;
+      settings.imageFormat = newFormat;
+      safeSetStorage({ imageFormat: newFormat });
+
+      formatCards.forEach(card => {
+        const isSelected = card.getAttribute('data-format') === newFormat;
+        card.classList.toggle('active', isSelected);
+        if (isSelected) {
+          card.style.borderColor = newFormat === 'jpeg' ? '#10b981' : (newFormat === 'png' ? '#38bdf8' : '#a855f7');
+          card.style.background = newFormat === 'jpeg' ? 'rgba(16, 185, 129, 0.15)' : (newFormat === 'png' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)');
+        } else {
+          card.style.borderColor = 'rgba(255,255,255,0.1)';
+          card.style.background = 'rgba(0,0,0,0.2)';
+        }
+      });
+
+      if (formatStatusTag) {
+        const ext = newFormat === 'png' ? 'png' : (newFormat === 'webp' ? 'webp' : 'jpg');
+        formatStatusTag.textContent = `${newFormat.toUpperCase()} (.${ext})`;
+        formatStatusTag.style.color = newFormat === 'jpeg' ? '#10b981' : (newFormat === 'png' ? '#38bdf8' : '#a855f7');
+        formatStatusTag.style.borderColor = newFormat === 'jpeg' ? 'rgba(16, 185, 129, 0.3)' : (newFormat === 'png' ? 'rgba(56, 189, 248, 0.3)' : 'rgba(168, 85, 247, 0.3)');
+      }
+
+      const label = newFormat === 'jpeg' ? 'JPEG (.jpg)' : (newFormat === 'png' ? 'PNG (.png)' : 'WEBP (.webp)');
+      showToast(`💾 Formato de download definido: ${label}`, 'success');
+    };
+
+    formatCards.forEach(card => {
+      card.addEventListener('click', () => {
+        const fmt = card.getAttribute('data-format');
+        if (fmt) updateFormatUI(fmt);
+      });
+    });
 
     // Intervalo entre slides (padrão: 15s)
     const inputDelay = macroModalElement.querySelector('#fd-config-delay');
